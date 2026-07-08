@@ -5,3 +5,8 @@
 
 # macOS noise
 .DS_Store
+*.dSYM
+
+# Host test build output (produced by tests/Makefile)
+/tests/jr_tests
+/tests/jr_tests_san

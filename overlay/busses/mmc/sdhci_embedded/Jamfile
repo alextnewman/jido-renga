@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
+# SPDX-License-Identifier: MIT
+# SPDX-FileContributor: Generated with GitHub Copilot
+
+SubDir JIDO_RENGA_TOP overlay busses mmc sdhci_embedded ;
+
+# Modern C++ kernel add-on: no RTTI in the kernel.
+SubDirC++Flags -fno-rtti ;
+
+# Header dirs resolve against the captive Haiku submodule via HAIKU_TOP.
+SubDirSysHdrs $(HAIKU_TOP) headers os drivers ;
+SubDirHdrs $(HAIKU_TOP) src add-ons kernel bus_managers acpi acpica include ;
+UsePrivateKernelHeaders ;
+
+# The whole stack is one add-on: a flat folder of clean classes, not a chain of
+# module-glued drivers. Only .cpp translation units are listed; headers are
+# pulled in by inclusion.
+KernelAddon sdhci_embedded :
+	sdhci_embedded.cpp
+	SdhciController.cpp
+	SdhciEngine.cpp
+	Card.cpp
+	SdCard.cpp
+	MmcCard.cpp
+	Disk.cpp
+	Adma2Disk.cpp
+	SdmaDisk.cpp
+	PioDisk.cpp
+	Matcher.cpp
+	Personality.cpp
+;
