@@ -1,0 +1,12 @@
+SubDir JIDO_RENGA_TOP overlay drivers input cros_ec_keyboard ;
+
+# Header dirs resolve against the captive Haiku submodule via HAIKU_TOP.
+SubDirSysHdrs $(HAIKU_TOP) headers os drivers ;
+SubDirHdrs $(HAIKU_TOP) src add-ons kernel bus_managers acpi acpica include ;
+SubDirHdrs $(HAIKU_TOP) src add-ons kernel bus_managers ps2 ;
+UsePrivateHeaders [ FDirName kernel arch x86 ] input ;
+UsePrivateKernelHeaders ;
+
+KernelAddon cros_ec_keyboard :
+	Driver.cpp
+;

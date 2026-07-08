@@ -1,0 +1,22 @@
+SubDir JIDO_RENGA_TOP overlay drivers input i2c_atmel_mxt ;
+
+SubDirC++Flags -fno-rtti ;
+
+# Header dirs resolve against the captive Haiku submodule via HAIKU_TOP.
+SubDirSysHdrs $(HAIKU_TOP) headers os drivers ;
+SubDirHdrs $(HAIKU_TOP) src add-ons kernel bus_managers acpi acpica include ;
+UsePrivateHeaders [ FDirName kernel util ] input drivers device i2c ;
+UsePrivateKernelHeaders ;
+
+# DeviceList is pristine Haiku shared code (hid_shared) -- referenced, not
+# forked. Both the header and the source are pulled from the captive submodule.
+SubDirSysHdrs $(HAIKU_TOP) src add-ons kernel drivers input hid_shared ;
+SEARCH_SOURCE += [ FDirName $(HAIKU_TOP) src add-ons kernel drivers input hid_shared ] ;
+
+KernelAddon i2c_atmel_mxt :
+	DeviceList.cpp
+	Driver.cpp
+	MxtDevice.cpp
+	ObjectTable.cpp
+	TouchEngine.cpp
+;

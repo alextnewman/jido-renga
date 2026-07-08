@@ -1,0 +1,7 @@
+# Throwaway, local Haiku build output dirs (one per configured arch).
+# These are produced by running the captive haiku's configure from here;
+# see README.md.
+/generated*
+
+# macOS noise
+.DS_Store

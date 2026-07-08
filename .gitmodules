@@ -1,0 +1,8 @@
+[submodule "haiku"]
+	path = haiku
+	url = https://github.com/haiku/haiku.git
+	branch = master
+[submodule "buildtools"]
+	path = buildtools
+	url = https://github.com/haiku/buildtools.git
+	branch = master

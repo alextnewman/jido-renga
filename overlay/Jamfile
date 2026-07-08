@@ -1,0 +1,21 @@
+SubDir JIDO_RENGA_TOP overlay ;
+
+# Jidō Renga overlay root -- the build-time graft surface.
+#
+# Walked via DeferredSubInclude from the graft file
+# (config/UserBuildConfig.in, installed as HAIKU_OUTPUT_DIR/UserBuildConfig),
+# so every KernelAddon below resolves in the post-src context where PLATFORM
+# is valid.
+#
+# The directory layout mirrors Haiku's device-class categories on purpose:
+# jido-renga is a BUILD-TIME concept only. At runtime these add-ons deploy to
+# their canonical Haiku paths (add-ons/kernel/bus_managers, .../drivers/bin),
+# like Good Driver Citizens.
+
+# Shared jido-renga modules first -- leaf drivers may depend on the modules
+# they publish.
+SubInclude JIDO_RENGA_TOP overlay bus_managers iosf_mbi ;
+
+# Leaf drivers.
+SubInclude JIDO_RENGA_TOP overlay drivers input cros_ec_keyboard ;
+SubInclude JIDO_RENGA_TOP overlay drivers input i2c_atmel_mxt ;

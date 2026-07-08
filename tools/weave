@@ -1,0 +1,72 @@
+#!/bin/sh
+# weave — install (or refresh) the Jidō Renga graft into a Haiku build dir.
+#
+# Renders config/UserBuildConfig.in (substituting the absolute path to this
+# repo) and merges it into <output-dir>/UserBuildConfig inside a clearly
+# delimited marker block, so it is idempotent and never clobbers other content
+# the user keeps in their UserBuildConfig.
+#
+# Usage:
+#   tools/weave [OUTPUT_DIR]
+#
+#   OUTPUT_DIR  Haiku build output dir (HAIKU_OUTPUT_DIR) — the directory that
+#               holds the generated build (contains build/, objects/, ...).
+#               Defaults to $HAIKU_OUTPUT_DIR, else the first ../generated* dir
+#               next to a sibling haiku checkout.
+#
+# The submodule source tree is never touched; UserBuildConfig is the only seam.
+
+set -eu
+
+BEGIN_MARK='# >>> jido-renga graft (managed by tools/weave) >>>'
+END_MARK='# <<< jido-renga graft <<<'
+
+# Resolve repo root = parent of this script's dir, as an absolute path.
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+JR_TOP=$(CDPATH= cd -- "$script_dir/.." && pwd -P)
+template="$JR_TOP/config/UserBuildConfig.in"
+
+[ -f "$template" ] || { echo "weave: missing template: $template" >&2; exit 1; }
+
+# Pick the output dir.
+out="${1:-${HAIKU_OUTPUT_DIR:-}}"
+if [ -z "$out" ]; then
+	for cand in "$JR_TOP"/generated* "$JR_TOP"/../haiku/generated "$JR_TOP"/../generated; do
+		[ -d "$cand" ] && { out="$cand"; break; }
+	done
+fi
+[ -n "$out" ] || { echo "weave: no OUTPUT_DIR given and none auto-detected." >&2
+	echo "usage: tools/weave [OUTPUT_DIR]" >&2; exit 1; }
+[ -d "$out" ] || { echo "weave: output dir does not exist: $out" >&2; exit 1; }
+
+out=$(CDPATH= cd -- "$out" && pwd -P)
+target="$out/UserBuildConfig"
+
+# Render the block: substitute the repo path, wrap in markers.
+block=$(printf '%s\n%s\n%s\n' \
+	"$BEGIN_MARK" \
+	"$(sed -e "s|@JIDO_RENGA_TOP@|$JR_TOP|g" "$template")" \
+	"$END_MARK")
+
+# Merge: strip any prior managed block, trim surrounding blank lines, then
+# append the fresh block.
+if [ -f "$target" ]; then
+	existing=$(awk -v b="$BEGIN_MARK" -v e="$END_MARK" '
+		$0==b {skip=1; next} $0==e {skip=0; next} !skip {print}
+	' "$target")
+else
+	existing=""
+fi
+# Drop leading/trailing blank lines from whatever was left.
+existing=$(printf '%s\n' "$existing" | awk 'NF{p=1} p' | awk '
+	{ lines[NR]=$0 } END { last=NR; while (last>0 && lines[last]=="") last--;
+		for (i=1;i<=last;i++) print lines[i] }')
+
+if [ -n "$existing" ]; then
+	printf '%s\n\n%s\n' "$existing" "$block" > "$target"
+else
+	printf '%s\n' "$block" > "$target"
+fi
+
+echo "weave: grafted Jidō Renga into $target"
+echo "       JIDO_RENGA_TOP = $JR_TOP"

@@ -1,0 +1,22 @@
+SubDir HAIKU_TOP src add-ons kernel sdhci_embedded ;
+
+UsePrivateKernelHeaders ;
+SubDirHdrs $(HAIKU_TOP) src system kernel device_manager ;
+
+KernelAddon sdhci_embedded :
+	sdhci_host_manager.cpp
+	sdhci_host_manager.h
+	sdhci_host.cpp
+	sdhci_host.h
+	sdhci_engine.cpp
+	sdhci_engine.h
+	sdhci_bus.h
+	sdhci_sd_bus.cpp
+	sdhci_sd_bus.h
+	sdhci_mmc_bus_stub.cpp
+	sdhci_mmc_bus_stub.h
+	sdhci_disk.cpp
+	sdhci_disk.h
+	explicit_matcher.cpp
+	explicit_matcher.h
+;

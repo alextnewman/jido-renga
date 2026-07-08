@@ -1,0 +1,35 @@
+/*
+ * Copyright 2026, Haiku, Inc. All rights reserved.
+ * Distributed under the terms of the MIT License.
+ */
+#ifndef _I2C_ATMEL_MXT_DRIVER_H
+#define _I2C_ATMEL_MXT_DRIVER_H
+
+
+#include <Drivers.h>
+#include <KernelExport.h>
+#include <OS.h>
+#include <util/kernel_cpp.h>
+
+#include "DeviceList.h"
+
+
+#define DRIVER_NAME	"i2c_atmel_mxt"
+#define DEVICE_PATH_SUFFIX	"i2c"
+#define DEVICE_NAME	"I2C"
+
+
+extern DeviceList *gDeviceList;
+
+
+//#define TRACE_I2C_ATMEL_MXT
+#ifdef TRACE_I2C_ATMEL_MXT
+#	define TRACE(x...) dprintf(DRIVER_NAME ": " x)
+#else
+#	define TRACE(x...)
+#endif
+#define ERROR(x...) dprintf(DRIVER_NAME ": " x)
+#define TRACE_ALWAYS(x...)	dprintf(DRIVER_NAME ": " x)
+
+
+#endif	// _I2C_ATMEL_MXT_DRIVER_H

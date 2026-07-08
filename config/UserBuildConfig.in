@@ -1,0 +1,18 @@
+# Jidō Renga — Jam-native out-of-tree graft (template)
+#
+# Installed as <HAIKU_OUTPUT_DIR>/UserBuildConfig, which Jamrules globs and
+# includes automatically. This is the ONLY file written into the captive
+# Haiku build scope; the submodule source tree itself is never touched.
+#
+# The JIDO_RENGA_TOP placeholder below is substituted with the absolute path
+# to the jido-renga repo root by the setup tooling (tools/weave), e.g.:
+#     JIDO_RENGA_TOP = /path/to/jido-renga ;
+#
+# We only SET the foreign top variable here (Jamrules includes this before the
+# architecture/platform scaffolding exists) and DEFER the overlay walk to the
+# end of the root Jamfile via DeferredSubInclude, where KernelAddon has a valid
+# PLATFORM. See design notes for why a plain SubInclude here silently no-ops.
+
+JIDO_RENGA_TOP = @JIDO_RENGA_TOP@ ;
+
+DeferredSubInclude JIDO_RENGA_TOP overlay ;
