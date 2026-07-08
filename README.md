@@ -21,17 +21,18 @@
 
 # Jidō Renga
 
-**An out-of-tree driver overlay for [Haiku](https://www.haiku-os.org/).**
+**Out-of-tree device drivers for [Haiku](https://www.haiku-os.org/).**
 
-Jidō Renga (自動連歌, *"the poem that writes itself"*) is a set of modern C++
-Haiku kernel drivers that live and evolve **outside** the Haiku source tree.
-Haiku is present here only as a **captive git submodule**; this repository grafts
-its own drivers onto that submodule at build time without ever modifying it. All
-out-of-tree driver history lives only here.
+Haiku is an open-source operating system that carries the BeOS legacy forward —
+fast, coherent, and unapologetically focused on the personal computer. Jidō Renga
+(自動連歌, *"the poem that writes itself"*) develops modern C++ **kernel drivers**
+for it, so that more hardware runs Haiku well.
 
-Think of it as a vine encircling a tree: the tree (Haiku) is untouched and
-upstream; the vine (Jidō Renga) climbs it, draws from it, and bears its own
-fruit.
+Those drivers live and evolve **outside** the Haiku source tree. Haiku is present
+here only as a **captive git submodule**; this repository grafts its drivers onto
+that submodule at build time without ever modifying it. Think of a vine encircling
+a tree: the tree (Haiku) stands untouched and upstream; the vine (Jidō Renga)
+climbs it, draws from it, and bears its own fruit.
 
 > Run `tools/banner.sh` for the colored terminal lockup.
 
@@ -40,33 +41,23 @@ fruit.
 
 ---
 
-## Why
+## Goals
 
-Haiku has adopted a "no AI code" contribution policy. Jidō Renga is a place to
-build and maintain AI-assisted drivers for real hardware **separately**, taking
-advantage of Haiku's clean add-on architecture and its 1990s-lineage modular
-kernel — where a driver is just a shared object the kernel discovers and loads.
-The goal is simple: make the device work well, and keep that work in its own
-home. This project is **not** part of Haiku and does not present itself as such.
+- **Extend Haiku; don't break it.** Every driver adds hardware support without
+  touching a line of Haiku's own sources. The system stays exactly what upstream
+  shipped — augmented, never forked.
+- **Follow Haiku's lead.** Match its driver patterns and APIs, honor the
+  BeOS-derived sensibilities the project has cultivated for decades, and write to
+  Haiku's [coding guidelines](https://www.haiku-os.org/development/coding-guidelines).
+  A Jidō Renga driver should read like it belongs in the tree it augments.
+- **Keep AI-assisted work in its own home.** These drivers are developed with AI
+  assistance. Haiku's own [`AGENTS.md`](https://github.com/haiku/haiku/blob/master/AGENTS.md)
+  asks that such work stay out of its tree, and Jidō Renga respects that: the code
+  is insulated at the driver layer, kept out-of-tree, and clearly its own — not
+  part of Haiku, and never presenting itself as such.
 
----
-
-## The two rules that shape everything
-
-**1. Jidō Renga is a *build-time* concept only.** The `overlay/` layout, the
-`JIDO_RENGA_TOP` variable, the graft — none of it exists at runtime. Shipped
-add-ons deploy to their **canonical Haiku paths** (`add-ons/kernel/bus_managers/`,
-`add-ons/kernel/drivers/bin/`, …) and behave like any other driver. Nothing in
-the shipped binaries knows it came from an overlay.
-
-**2. Vendoring happens at build time; it never leaks into code.** Overlay
-`#include`s never name "jido-renga" — shared modules publish their API under a
-neutral include root (e.g. `<common/iosf_mbi.h>`). Referencing the captive's
-kernel ABI or its pristine sources is correct build-time vendoring, not a leak.
-
-The directory layout under `overlay/` mirrors **Haiku's device-class
-categories** on purpose, so a driver's overlay location matches where it lands in
-the tree.
+At runtime none of this shows. Each add-on installs to its canonical Haiku path
+and behaves like any other driver — a good citizen of the system it joins.
 
 ---
 
@@ -131,39 +122,17 @@ identity — `<upstream>+jido-renga-<version>` (e.g. `hrev57937+jido-renga-0.1.0
 | `cros_ec_keyboard` | drivers/input | ACPI HID `GOOG000A` | ChromeOS Embedded Controller keyboard (i8042-class). Self-contained. |
 | `i2c_atmel_mxt` | drivers/input | Atmel maXTouch | I²C touchscreen. The exemplar factored C++ driver: an `MxtDevice` owns transport / object-table discovery / worker thread / event ring buffer, with a separate `TouchEngine`. |
 
-Per-driver development logs live in [`docs/development/`](docs/development/). The
-design study for the eventual SDHCI/MMC boot-disk driver — the real challenge,
-since SD/MMC is the boot medium and must ship as a true early-boot core driver —
-is in [`docs/design/sdhci-worker-architecture.md`](docs/design/sdhci-worker-architecture.md).
+Per-driver development logs live in [`docs/development/`](docs/development/), with
+deeper design notes under [`docs/`](docs/).
 
 ---
 
 ## Status
 
-**Proven**
-
-- Jam-native foreign-`TOP` graft: `overlay/**` sources compile with the Haiku
-  kernel cross-toolchain via `DeferredSubInclude` + the `UserBuildConfig` seam.
-  The captive tree is never modified.
-- **Full out-of-tree build against a pristine captive:** a fresh `haiku` master
-  (where these sources do *not* exist) plus `buildtools`, configured as a sibling
-  `generated.x86_64/`, builds all three overlay add-ons to valid `x86-64` ELF
-  kernel objects — proving the overlay is their sole provider.
-- Captive `haiku` and `buildtools` are pinned git **submodules**; the overlay is
-  grafted purely at build time.
-- The shared `<common/iosf_mbi.h>` vendoring compiles clean — no `jido-renga`
-  leak in any `#include`.
-- **Derivative revision** `<upstream>+jido-renga-<version>` composed and
-  delivered end-to-end (clears *"revision could not be determined"*).
-- `tools/weave` installs the graft idempotently and non-destructively.
-
-**Next**
-
-- Extract and refactor the SDHCI/MMC driver (the early-boot boot-disk case).
-- Produce the two build outputs: a runtime-loadable add-on pack, and an
-  `anyboot` image with early-boot drivers inserted.
-- Write the skill-ready driver-authoring guide (`device_manager` + ACPI
-  layering) that motivated this workspace.
+Early and experimental. The out-of-tree graft, the derivative-revision model, and
+the build flow are in place, and the drivers above build against a pinned Haiku.
+Expect churn: drivers land as hardware is brought up, and interfaces here are free
+to change until they have earned their keep.
 
 ---
 
