@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
+# SPDX-License-Identifier: MIT
+# SPDX-FileContributor: Generated with GitHub Copilot
+
 # Jidō Renga — Jam-native out-of-tree graft (template)
 #
 # Installed as <HAIKU_OUTPUT_DIR>/UserBuildConfig, which Jamrules globs and

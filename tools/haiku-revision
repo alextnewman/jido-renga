@@ -1,4 +1,8 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
+# SPDX-License-Identifier: MIT
+# SPDX-FileContributor: Generated with GitHub Copilot
+
 # haiku-revision — compose the Jidō Renga derivative Haiku revision string.
 #
 #     <upstream>+jido-renga-<version>

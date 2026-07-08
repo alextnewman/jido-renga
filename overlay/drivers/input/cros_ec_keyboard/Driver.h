@@ -1,10 +1,6 @@
-/*
- * Copyright 2026, Haiku, Inc. All rights reserved.
- * Distributed under the terms of the MIT License.
- *
- * Authors:
- *		Alex Newman
- */
+// SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
+// SPDX-License-Identifier: MIT
+// SPDX-FileContributor: Generated with Qwen 3.6
 
 //! ChromeOS EC keyboard driver -- native driver for the 8042-class interface
 //! emulated by the ChromeOS Embedded Controller (WINKY / Chromebook 2).

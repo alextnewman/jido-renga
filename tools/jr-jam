@@ -1,4 +1,8 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
+# SPDX-License-Identifier: MIT
+# SPDX-FileContributor: Generated with GitHub Copilot
+
 # jr-jam — run Haiku's jam with the Jidō Renga derivative revision preset.
 #
 # Why a wrapper: jam imports environment variables as jam variables at STARTUP,

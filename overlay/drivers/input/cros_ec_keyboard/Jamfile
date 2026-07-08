@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
+# SPDX-License-Identifier: MIT
+# SPDX-FileContributor: Generated with GitHub Copilot
+
 SubDir JIDO_RENGA_TOP overlay drivers input cros_ec_keyboard ;
 
 # Header dirs resolve against the captive Haiku submodule via HAIKU_TOP.

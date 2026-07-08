@@ -1,0 +1,28 @@
+version = 1
+
+# Licensing for files that cannot carry an inline SPDX header (Markdown with
+# leading frontmatter, dotfiles, ASCII-art banner). Code, build, and tooling
+# files carry their SPDX tags inline; see any *.cpp/*.h/Jamfile or tools/*.
+#
+# The root LICENSE and the LICENSES/ directory are not Covered Files per the
+# REUSE 3.3 specification, so they are intentionally absent here.
+
+[[annotations]]
+path = [".gitignore", ".gitmodules", "tools/banner.txt"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 The Jidō Renga Authors"
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = ["README.md", "AGENTS.md", "skills/**"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 The Jidō Renga Authors"
+SPDX-License-Identifier = "MIT"
+SPDX-FileContributor = "Generated with GitHub Copilot"
+
+[[annotations]]
+path = ["docs/**"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 The Jidō Renga Authors"
+SPDX-License-Identifier = "MIT"
+SPDX-FileContributor = "Generated with Qwen 3.6"

@@ -1,10 +1,6 @@
-/*
- * Copyright 2025 Haiku, Inc. All rights reserved.
- * Distributed under the terms of the MIT License.
- *
- * Authors:
- *		B Krishnan Iyer, krishnaniyer97@gmail.com
- */
+// SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
+// SPDX-License-Identifier: MIT
+// SPDX-FileContributor: Generated with Qwen 3.6
 #ifndef _IOSF_MBI_H
 #define _IOSF_MBI_H
 

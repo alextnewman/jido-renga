@@ -1,7 +1,6 @@
-/*
- * Copyright 2026, Haiku, Inc. All rights reserved.
- * Distributed under the terms of the MIT License.
- */
+// SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
+// SPDX-License-Identifier: MIT
+// SPDX-FileContributor: Generated with Qwen 3.6
 #ifndef _I2C_ATMEL_MXT_TOUCH_ENGINE_H
 #define _I2C_ATMEL_MXT_TOUCH_ENGINE_H
 

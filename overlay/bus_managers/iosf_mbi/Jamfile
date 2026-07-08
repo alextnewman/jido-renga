@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
+# SPDX-License-Identifier: MIT
+# SPDX-FileContributor: Generated with GitHub Copilot
+
 SubDir JIDO_RENGA_TOP overlay bus_managers iosf_mbi ;
 
 # Kernel ABI comes from the captive Haiku submodule (correct build-time

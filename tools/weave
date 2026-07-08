@@ -1,4 +1,8 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
+# SPDX-License-Identifier: MIT
+# SPDX-FileContributor: Generated with GitHub Copilot
+
 # weave — install (or refresh) the Jidō Renga graft into a Haiku build dir.
 #
 # Renders config/UserBuildConfig.in (substituting the absolute path to this
