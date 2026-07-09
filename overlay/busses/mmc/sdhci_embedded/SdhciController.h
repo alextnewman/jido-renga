@@ -55,9 +55,15 @@ public:
 private:
 	status_t _MapResources();
 	status_t _SelectPersonality();
+	status_t _ApplyOcpFixup();		// IOSF-MBI, before any SDHCI register access
+	status_t _InstallInterrupt();	// after Engine.Init, before identify
 	status_t _IdentifyCard();		// synchronous
 	status_t _PublishDisk();
-	void _StartWatcher();			// lazy, after publish
+	void _StartWatcher();			// lazy, after publish; only if removable
+
+	// ISR trampoline -> Engine.HandleInterruptMeow(). A bare "meow": it reads no
+	// registers and forwards to the engine's lossy CV pulse (see SdhciEngine).
+	static int32 _InterruptHandler(void* self);
 
 	static int32 _WatcherEntry(void* self);
 	int32 _WatcherLoop();
@@ -69,14 +75,17 @@ private:
 	area_id					fRegisterArea = -1;
 	volatile RegisterBlock*	fRegs = nullptr;
 	uint8_t					fIrq = 0;
+	bool					fInterruptInstalled = false;
 
 	const HostPersonality*	fPersonality = nullptr;
+	Quirk					fQuirks = Quirk::None;
 	SdhciEngine				fEngine;
 	Card*					fCard = nullptr;
 	Disk*					fDisk = nullptr;
 
 	thread_id				fWatcher = -1;
 	volatile bool			fWatcherRunning = false;
+	bool					fRemovable = false;		// gates the hot-plug watcher
 	bool					fCardPublished = false;
 };
 

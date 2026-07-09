@@ -24,7 +24,7 @@ PioDisk::Restrictions() const
 
 
 status_t
-PioDisk::Transfer(off_t, const physical_entry*, size_t, bool, size_t&)
+PioDisk::Transfer(off_t, const generic_io_vec*, size_t, bool, size_t&)
 {
 	// Deliberately unimplemented: PIO is a reference path, never a runtime one.
 	return B_NOT_SUPPORTED;

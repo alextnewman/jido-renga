@@ -30,17 +30,19 @@ constexpr Quirk kByteSdQuirks =
 	| Quirk::NeedsIosfOcpFixup;
 
 const MatchProfile kProfiles[] = {
-	// Intel Bay Trail eMMC (SCC eMMC controller), UID 1.
+	// Intel Bay Trail eMMC (SCC eMMC controller), UID 1. Soldered: not removable,
+	// no card-detect line -> no hot-plug watcher, powered on unconditionally.
 	{
 		"80860F14", 1,
-		CardDialect::Mmc, DmaStrategy::Adma2, kByteEmmcQuirks,
+		CardDialect::Mmc, false, DmaStrategy::Adma2, kByteEmmcQuirks,
 		PersonalityKind::BayTrail,
 		"Intel Bay Trail eMMC Host (sdhci_emb)",
 	},
-	// Intel Bay Trail SD (SCC SD controller), any UID.
+	// Intel Bay Trail SD (SCC SD controller), any UID. Removable slot -> the
+	// Controller starts the lazy insert/remove watcher after boot.
 	{
 		"80860F16", kAnyUid,
-		CardDialect::Sd, DmaStrategy::Adma2, kByteSdQuirks,
+		CardDialect::Sd, true, DmaStrategy::Adma2, kByteSdQuirks,
 		PersonalityKind::BayTrail,
 		"Intel Bay Trail SD Host (sdhci_emb)",
 	},

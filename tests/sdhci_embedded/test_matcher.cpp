@@ -17,6 +17,7 @@ JR_TEST(matcher, baytrail_emmc_matches_hid_and_uid)
 	JR_CHECK(p != nullptr);
 	if (p != nullptr) {
 		JR_CHECK(p->dialect == CardDialect::Mmc);
+		JR_CHECK(!p->removable);	// soldered eMMC: no hot-plug watcher
 		JR_CHECK(p->dma == DmaStrategy::Adma2);
 		JR_CHECK(p->personality == PersonalityKind::BayTrail);
 		JR_CHECK(Has(p->quirks, Quirk::EmmcHardwareReset));
@@ -42,6 +43,7 @@ JR_TEST(matcher, baytrail_sd_matches_any_uid)
 	JR_CHECK(a == b);
 	if (a != nullptr) {
 		JR_CHECK(a->dialect == CardDialect::Sd);
+		JR_CHECK(a->removable);	// SD slot: hot-plug watcher runs
 		JR_CHECK(!Has(a->quirks, Quirk::EmmcHardwareReset));
 		JR_CHECK(std::strstr(a->prettyName, "SD") != nullptr);
 	}

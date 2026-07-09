@@ -40,6 +40,8 @@ struct MatchProfile {
 	const char*		hid;			// ACPI _HID / _CID to match
 	uint32_t		uid;			// _UID, or kAnyUid
 	CardDialect		dialect;
+	bool			removable;		// physical slot: soldered eMMC is false, so
+									// the Controller starts no hot-plug watcher
 	DmaStrategy		dma;
 	Quirk			quirks;
 	PersonalityKind	personality;

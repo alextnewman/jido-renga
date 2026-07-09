@@ -28,18 +28,14 @@ SdmaDisk::Restrictions() const
 
 
 status_t
-SdmaDisk::Transfer(off_t position, const physical_entry* vecs, size_t vecCount,
+SdmaDisk::Transfer(off_t position, const generic_io_vec* vecs, size_t vecCount,
 	bool isWrite, size_t& bytesTransferred)
 {
 	if (vecCount != 1)
 		return B_BAD_VALUE;			// single-segment strategy
 
-	const uint32_t bytes = static_cast<uint32_t>(vecs[0].size);
+	const uint32_t bytes = static_cast<uint32_t>(vecs[0].length);
 	const uint32_t blocks = bytes / fCard.SectorSize();
-
-	fEngine.ProgramSdma(static_cast<uint32_t>(vecs[0].address),
-		static_cast<uint16_t>(fCard.SectorSize()),
-		static_cast<uint16_t>(blocks));
 
 	const bool sectors = fCard.UsesSectorAddressing();
 	const uint32_t address = sectors
@@ -50,8 +46,17 @@ SdmaDisk::Transfer(off_t position, const physical_entry* vecs, size_t vecCount,
 		? (blocks > 1 ? Cmd::WriteMultipleBlocks : Cmd::WriteSingleBlock)
 		: (blocks > 1 ? Cmd::ReadMultipleBlocks : Cmd::ReadSingleBlock);
 
+	// Stage the single SDMA buffer address + geometry onto the ticket; the
+	// worker programs the DMA registers and issues the command as one step
+	// inside its bus lock, so we never poke hardware from this thread.
+	DataTransfer data;
+	data.blockSize = static_cast<uint16_t>(fCard.SectorSize());
+	data.blockCount = blocks;
+	data.sdmaAddress = static_cast<uint32_t>(vecs[0].base);
+
 	CommandOutcome outcome;
-	status_t status = fEngine.Execute(command, address, ReplyType::R1, outcome);
+	status_t status = fEngine.ExecuteData(command, address, ReplyType::R1, data,
+		outcome);
 	if (status != B_OK)
 		return status;
 

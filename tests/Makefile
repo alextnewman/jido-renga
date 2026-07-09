@@ -12,7 +12,8 @@
 
 CXX ?= c++
 CXXFLAGS := -std=c++17 -Wall -Wextra -Wshadow -O1 -g -pthread \
-	-I. -I../overlay/busses/mmc/sdhci_embedded
+	-I. -I../overlay/busses/mmc/sdhci_embedded \
+	-I../overlay/bus_managers/iosf_mbi
 
 DRIVER_DIR := ../overlay/busses/mmc/sdhci_embedded
 
@@ -32,6 +33,7 @@ TEST_SRC := \
 	sdhci_embedded/test_transaction.cpp \
 	sdhci_embedded/test_concurrency.cpp \
 	sdhci_embedded/test_csd.cpp \
+	iosf_mbi/test_iosf_mbi_protocol.cpp \
 	sdhci_embedded/test_main.cpp
 
 BIN := jr_tests

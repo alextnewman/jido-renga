@@ -90,3 +90,36 @@ JR_TEST(command, transfer_mode_words)
 	JR_CHECK_EQ(ComputeTransferMode(Cmd::GoIdleState), 0x0000);
 	JR_CHECK_EQ(ComputeTransferMode(Cmd::SendCsd), 0x0000);
 }
+
+
+// Regression guard: the engine writes the raw enum value to the command
+// register, so SD's ACMD41 (opcode 41, after a CMD55 prefix) must NOT be issued
+// with eMMC CMD1's opcode (1). Conflating them silently sent ACMD1 and broke SD
+// power-up negotiation on the known-good path.
+JR_TEST(command, sd_op_cond_opcode_is_acmd41_not_cmd1)
+{
+	JR_CHECK_EQ(static_cast<uint8_t>(Cmd::SdSendOpCond), 41u);
+	JR_CHECK_EQ(static_cast<uint8_t>(Cmd::MmcSendOpCond), 1u);
+	JR_CHECK(Cmd::SdSendOpCond != Cmd::MmcSendOpCond);
+}
+
+
+// ACMD41 has no data phase, so its transfer-mode word must be zero (no DMA/read
+// bits) even though it shares CMD1's retry policy.
+JR_TEST(command, sd_op_cond_has_no_data_phase)
+{
+	JR_CHECK_EQ(ComputeTransferMode(Cmd::SdSendOpCond), 0x0000);
+}
+
+
+// The SD op-cond helper must resolve to the exact same power-on-tolerant policy
+// as eMMC CMD1 (long retry budget + OCR validation under the Bay Trail quirks).
+JR_TEST(command, sd_op_cond_shares_cmd1_policy)
+{
+	const CommandConstraints sd = GetSdOpCondConstraints(kByt);
+	const CommandConstraints mmc = GetCommandConstraints(Cmd::MmcSendOpCond, kByt);
+	JR_CHECK_EQ(sd.maxRetries, mmc.maxRetries);
+	JR_CHECK_EQ(sd.maxRetries, 20);
+	JR_CHECK(sd.validateOcr);
+	JR_CHECK_EQ(sd.validateOcr, mmc.validateOcr);
+}

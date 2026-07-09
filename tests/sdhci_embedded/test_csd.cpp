@@ -112,3 +112,30 @@ JR_TEST(csd, emmc_sector_count)
 	JR_CHECK_EQ(g.capacityBytes, 0x01D59000ull * 512ull);
 	JR_CHECK_EQ(g.blockSize, 512u);
 }
+
+
+JR_TEST(csd, emmc_sector_count_zero_is_invalid)
+{
+	// A failed or empty EXT_CSD read leaves SEC_COUNT at 0. We must NOT decode
+	// that into a "valid" 0-sector disk and publish it -- the card-init path
+	// relies on !valid to reject the read.
+	uint8_t extCsd[512] = {0};
+	const CardGeometry g = DecodeEmmcSectorCount(extCsd);
+	JR_CHECK(!g.valid);
+	JR_CHECK_EQ(g.blockCount, 0ull);
+	JR_CHECK_EQ(g.capacityBytes, 0ull);
+}
+
+
+JR_TEST(csd, decode_sd_csd_wraps_reassemble_then_decode)
+{
+	// DecodeSdCsd is the one-shot the SD identify path actually calls; it must be
+	// exactly ReassembleR2 followed by DecodeCsd for an arbitrary raw response.
+	uint32_t resp[4] = {0x0a404000u, 0x3b377f80u, 0x5a83a900u, 0x00260032u};
+	const CardGeometry viaWrapper = DecodeSdCsd(resp);
+	const CardGeometry viaSteps = DecodeCsd(ReassembleR2(resp));
+	JR_CHECK_EQ(viaWrapper.capacityBytes, viaSteps.capacityBytes);
+	JR_CHECK_EQ(viaWrapper.blockCount, viaSteps.blockCount);
+	JR_CHECK_EQ(viaWrapper.csdStructure, viaSteps.csdStructure);
+	JR_CHECK_EQ((int)viaWrapper.valid, (int)viaSteps.valid);
+}

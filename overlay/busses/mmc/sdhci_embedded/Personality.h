@@ -35,8 +35,6 @@ public:
 
 class HostPersonality {
 public:
-	virtual ~HostPersonality() = default;
-
 	virtual const char* Name() const noexcept = 0;
 
 	// Reject transient garbage OCR values from uninitialized registers. Return
@@ -62,6 +60,15 @@ public:
 	// True if the timeout counter is driven by the SD clock domain (so the
 	// divider must be recomputed on every clock change).
 	virtual bool TimeoutClockUsesSdClock() const noexcept { return false; }
+
+protected:
+	// Personalities are stateless, statically-stored singletons that are never
+	// deleted through this base, so the destructor is intentionally protected
+	// and NON-virtual. That keeps the whole hierarchy trivially destructible:
+	// the kernel runtime provides neither atexit/__cxa_atexit (destructor
+	// registration for static-storage objects) nor __cxa_guard_* (function-local
+	// static guards), so a public virtual destructor here would fail to link.
+	~HostPersonality() = default;
 };
 
 

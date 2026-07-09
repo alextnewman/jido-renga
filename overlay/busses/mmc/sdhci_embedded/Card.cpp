@@ -21,10 +21,21 @@ Card::Probe(SdhciEngine& engine)
 {
 	CommandOutcome outcome;
 
-	// CMD0: reset every card on the bus to the idle state.
-	engine.Execute(Cmd::GoIdleState, 0, ReplyType::None, outcome);
+	// eMMC vendor hardware reset (no-op without the quirk): force a clean card
+	// state before the very first command.
+	engine.EmmcHardwareReset();
 
-	// CMD8 (SEND_IF_COND): SD 2.0+ echoes the check pattern; eMMC ignores it.
+	// CMD0: reset every card on the bus to the idle state. A timeout here means
+	// the slot is empty (removable) -- there is nothing to identify.
+	if (engine.Execute(Cmd::GoIdleState, 0, ReplyType::None, outcome) != B_OK)
+		return nullptr;
+
+	// Spec requires >= 8 clocks after CMD0; Bay Trail needs far longer (~20ms)
+	// or the next command times out.
+	snooze(30000);
+
+	// CMD8 (SEND_IF_COND): SD 2.0+ echoes the check pattern; eMMC (which reads
+	// CMD8 as the 512-byte EXT_CSD data command) and SD v1 do not answer.
 	// 0x1AA = 2.7-3.6V, check pattern 0xAA.
 	const bool isSd = engine.Execute(Cmd::SendIfCond, 0x1aa, ReplyType::R7,
 		outcome) == B_OK && (outcome.response[0] & 0xff) == 0xaa;
@@ -34,6 +45,9 @@ Card::Probe(SdhciEngine& engine)
 		card = new(std::nothrow) SdCard;
 		engine.SetDialect(CardDialect::Sd);
 	} else {
+		// CMD8 with no data phase can leave an eMMC in an error state; reset the
+		// bus to clear it before attempting the MMC (CMD1) identification.
+		engine.RecoverBus();
 		card = new(std::nothrow) MmcCard;
 		engine.SetDialect(CardDialect::Mmc);
 	}

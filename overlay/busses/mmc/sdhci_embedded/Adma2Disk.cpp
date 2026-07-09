@@ -30,30 +30,21 @@ Adma2Disk::Restrictions() const
 
 
 status_t
-Adma2Disk::Transfer(off_t position, const physical_entry* vecs, size_t vecCount,
+Adma2Disk::Transfer(off_t position, const generic_io_vec* vecs, size_t vecCount,
 	bool isWrite, size_t& bytesTransferred)
 {
 	// Build the descriptor table from the scatter list (tested pure code).
 	Adma2Builder builder(fDescriptors, kAdma2MaxDescriptors);
 	size_t total = 0;
 	for (size_t i = 0; i < vecCount; i++) {
-		if (!builder.AddSegment(static_cast<uint32_t>(vecs[i].address),
-				static_cast<uint32_t>(vecs[i].size))) {
+		if (!builder.AddSegment(static_cast<uint32_t>(vecs[i].base),
+				static_cast<uint32_t>(vecs[i].length))) {
 			return B_BUFFER_OVERFLOW;
 		}
-		total += vecs[i].size;
+		total += vecs[i].length;
 	}
 	if (!builder.Finalize())
 		return B_BAD_VALUE;
-
-	// Implementation point (DMA frontier): the descriptor table's physical base
-	// still has to come from a DMA map of fDescriptors. When wiring it, do NOT
-	// call a ProgramAdma() from this (Disk) thread: that would poke the DMA
-	// registers outside the engine's bus lock and could interleave with a
-	// command another caller is issuing. Instead stage the physical base + block
-	// geometry onto the Transaction (it already carries adma2Table/adma2Entries/
-	// blockSize/blockCount) and have the worker program ADMA2 inside
-	// _IssueToHardware, so DMA setup and command issue are one serialized step.
 
 	const bool sectors = fCard.UsesSectorAddressing();
 	const uint32_t address = sectors
@@ -65,8 +56,20 @@ Adma2Disk::Transfer(off_t position, const physical_entry* vecs, size_t vecCount,
 		? (blocks > 1 ? Cmd::WriteMultipleBlocks : Cmd::WriteSingleBlock)
 		: (blocks > 1 ? Cmd::ReadMultipleBlocks : Cmd::ReadSingleBlock);
 
+	// Stage the descriptor table (virtual pointer + entry count) and geometry
+	// onto the ticket. The worker resolves the table's physical base via
+	// get_memory_map, switches to ADMA2 mode, programs the address, and issues
+	// the command -- all inside its bus lock, so DMA setup and command issue are
+	// one serialized step and cannot interleave with another caller.
+	DataTransfer data;
+	data.blockSize = static_cast<uint16_t>(fCard.SectorSize());
+	data.blockCount = blocks;
+	data.adma2Table = fDescriptors;
+	data.adma2Entries = builder.Count();
+
 	CommandOutcome outcome;
-	status_t status = fEngine.Execute(command, address, ReplyType::R1, outcome);
+	status_t status = fEngine.ExecuteData(command, address, ReplyType::R1, data,
+		outcome);
 	if (status != B_OK)
 		return status;
 

@@ -69,8 +69,14 @@ class MmcCard final : public Card {
 public:
 	status_t Identify(SdhciEngine& engine) override;
 	CardDialect Dialect() const override { return CardDialect::Mmc; }
-	bool UsesSectorAddressing() const override { return true; }
+	bool UsesSectorAddressing() const override { return fSectorAddressing; }
 	const char* PrettyName() const override { return "eMMC"; }
+
+private:
+	// Set from the CMD1 OCR access-mode echo (bit 30). Extended-capacity eMMC
+	// (> 2 GiB, the Bay Trail target) is sector-addressed; smaller parts are
+	// byte-addressed. Default true for the expected soldered target.
+	bool fSectorAddressing = true;
 };
 
 

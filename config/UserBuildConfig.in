@@ -16,6 +16,13 @@
 # architecture/platform scaffolding exists) and DEFER the overlay walk to the
 # end of the root Jamfile via DeferredSubInclude, where KernelAddon has a valid
 # PLATFORM. See design notes for why a plain SubInclude here silently no-ops.
+#
+# NOTE: HAIKU_REVISION is deliberately NOT set here. Jamrules includes this file
+# (line ~120) AFTER the RemotePackageRepository include (line ~111) that already
+# demands the revision at parse time -- so an override here fires too late and
+# the build dies with "Haiku revision could not be determined." weave instead
+# records it in <output>/build/BuildConfig (Jamrules includes that at line ~62,
+# before anything needs it). See tools/weave and config/revision.conf.
 
 JIDO_RENGA_TOP = @JIDO_RENGA_TOP@ ;
 

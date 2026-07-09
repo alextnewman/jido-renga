@@ -152,6 +152,11 @@ public:
 	bool InternalStable() const volatile { return (fBits & (1u << 1)) != 0; }
 	void EnableSdClock() volatile { fBits = static_cast<uint16_t>(fBits | (1u << 2)); }
 	void DisableSdClock() volatile { fBits = static_cast<uint16_t>(fBits & ~(1u << 2)); }
+	// PLL Enable (bit 3, SDHCI 4.10+). Bay Trail's programming sequence brings
+	// the internal clock up, waits for stability, enables the PLL, waits again,
+	// then gates SDCLK on -- skipping the PLL step leaves the card at an
+	// unstable clock on this silicon.
+	void EnablePll() volatile { fBits = static_cast<uint16_t>(fBits | (1u << 3)); }
 
 private:
 	volatile uint16_t fBits;
@@ -214,6 +219,11 @@ public:
 		const uint32_t freq = fBits & 0x3f;
 		return mhz ? freq * 1000 : freq;
 	}
+
+	// Supported bus-voltage support bits (24=3.3V, 25=3.0V, 26=1.8V).
+	bool Supports3v3() const volatile { return (fBits >> 24) & 1; }
+	bool Supports3v0() const volatile { return (fBits >> 25) & 1; }
+	bool Supports1v8() const volatile { return (fBits >> 26) & 1; }
 
 private:
 	volatile uint64_t fBits;

@@ -499,7 +499,7 @@ The original `_ParseT9Contact` only set `contact->press = true` inside the `if (
 - [Atmel maXTouch OBP Specification](atmel-maxtouch-trackpad-spec.md) — device protocol reference
 - [ChromeOS EC Keyboard Driver Log](cros-ec-keyboard-driver-development-log.md) — open_cookie pattern, IRQ discovery
 - [Haiku Synchronization Primitives](The Haiku Book_ Synchronization primitives.html) — ConditionVariable, mutex semantics
-- [SDHCI Worker Architecture](sdhci-worker-architecture.md) — VirtualControllerState pattern, worker-driven design
+- [SDHCI embedded driver architecture](../design/sdhci_embedded.md) — the meow-bus worker, pure convergence policy, and container-of-1 controller
 - `src/add-ons/kernel/drivers/input/cros_ec_keyboard/` — ring buffer + CV pattern, ACPI _CRS walk
 - `src/add-ons/kernel/drivers/input/i2c_elan/` — touchpad device module structure (no temporal averaging)
 - `src/add-ons/kernel/busses/i2c/pch/pch_i2c.cpp` — PCH I2C controller exec_command with busy flag and STOP_DET handling

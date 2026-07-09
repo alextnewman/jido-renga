@@ -42,12 +42,15 @@ SdCard::Identify(SdhciEngine& engine)
 	for (int i = 0; i < 64; i++) {
 		if (SendAppPrefix(engine, 0) != B_OK)
 			continue;
-		status = engine.Execute(Cmd::MmcSendOpCond, 0x40ff8000, ReplyType::R3,
+		status = engine.Execute(Cmd::SdSendOpCond, 0x40ff8000, ReplyType::R3,
 			opCond, outcome);
 		if (status == B_OK && (outcome.response[0] & (1u << 31)) != 0) {
 			fHighCapacity = (outcome.response[0] & (1u << 30)) != 0;
 			break;
 		}
+		// Card still powering up (bit 31 clear): wait before re-polling. This is
+		// a card-readiness wait, not the command hot path, so a snooze is right.
+		snooze(100000);
 		status = B_TIMED_OUT;
 	}
 	if (status != B_OK)
@@ -59,8 +62,12 @@ SdCard::Identify(SdhciEngine& engine)
 	for (int i = 0; i < 4; i++)
 		fCid[i] = outcome.response[i];
 
-	// CMD3 (SEND_RELATIVE_ADDR): the card proposes its RCA.
+	// CMD3 (SEND_RELATIVE_ADDR): the card proposes its RCA. Accept it only once
+	// the card reports it has entered the data (stby) state -- status field
+	// 0x5xx in the low 16 bits of the R6 response.
 	if (engine.Execute(Cmd::SendRelativeAddr, 0, ReplyType::R6, outcome) != B_OK)
+		return B_ERROR;
+	if ((outcome.response[0] & 0xff00) != 0x500)
 		return B_ERROR;
 	fRca = static_cast<uint16_t>(outcome.response[0] >> 16);
 
@@ -81,7 +88,9 @@ SdCard::Identify(SdhciEngine& engine)
 		return B_ERROR;
 	}
 
-	engine.SetBusWidth(4);
+	// Bus stays 1-bit: the working reference never issues ACMD6 for SD, running
+	// data at 1-bit / 25 MHz. Widening is a deferred speed item (see the
+	// improvement log), not a parity requirement.
 	return B_OK;
 }
 

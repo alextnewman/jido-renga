@@ -9,8 +9,18 @@ SubDirC++Flags -fno-rtti ;
 
 # Header dirs resolve against the captive Haiku submodule via HAIKU_TOP.
 SubDirSysHdrs $(HAIKU_TOP) headers os drivers ;
+# The IOSF-MBI bus manager's public API is published from the overlay's shared
+# include root and consumed here as <common/iosf_mbi.h> (BayTrail OCP fixup).
+SubDirSysHdrs $(JIDO_RENGA_TOP) overlay headers ;
 SubDirHdrs $(HAIKU_TOP) src add-ons kernel bus_managers acpi acpica include ;
 UsePrivateKernelHeaders ;
+UsePrivateHeaders drivers ;
+
+# The block-IO scheduler + DMA-resource machinery lives in the kernel's
+# device_manager source dir (IOSchedulerSimple.h, dma_resources.h, IORequest.h).
+# The Disk strategies decompose IORequests through it, so reach those headers the
+# same way the in-tree mmc_disk driver does.
+SubDirHdrs $(HAIKU_TOP) src system kernel device_manager ;
 
 # The whole stack is one add-on: a flat folder of clean classes, not a chain of
 # module-glued drivers. Only .cpp translation units are listed; headers are
@@ -19,6 +29,7 @@ KernelAddon sdhci_embedded :
 	sdhci_embedded.cpp
 	SdhciController.cpp
 	SdhciEngine.cpp
+	AcpiCrs.cpp
 	Card.cpp
 	SdCard.cpp
 	MmcCard.cpp

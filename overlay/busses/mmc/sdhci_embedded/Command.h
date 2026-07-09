@@ -33,14 +33,17 @@ enum class Cmd : uint8_t {
 	EraseStart			= 32,
 	EraseEnd			= 33,
 	Erase				= 38,
+	SdSendOpCond		= 41,	// ACMD41 (issued after a CMD55 prefix; no CMD41
+								// conflict, so it lives here to reach the register)
 	AppCmd				= 55,	// CMD55 prefix for application commands
 };
 
 
-// Application commands (sent after a CMD55 prefix).
+// Application commands whose opcode collides with a normal command of the same
+// index (so they cannot live in Cmd). Issued after a CMD55 prefix. ACMD41 has
+// no such collision and lives in Cmd above.
 enum class AppCmd : uint8_t {
-	SetBusWidth			= 6,	// ACMD6
-	SdSendOpCond		= 41,	// ACMD41
+	SetBusWidth			= 6,	// ACMD6 (collides with CMD6 MmcSwitch)
 };
 
 
@@ -119,8 +122,9 @@ GetCommandConstraints(Cmd command, Quirk quirks) noexcept
 
 	switch (command) {
 		case Cmd::MmcSendOpCond:
-			// SD_SEND_OP_COND (ACMD41) shares this policy path via index 1's
-			// sibling below; both need power-on tolerance on Bay Trail.
+		case Cmd::SdSendOpCond:
+			// CMD1 (eMMC) and ACMD41 (SD) share this policy path: both need
+			// power-on tolerance and OCR validation on Bay Trail.
 			if (Has(quirks, Quirk::PowerOnDelay)) {
 				c.maxRetries = 20;
 				c.validateOcr = true;
@@ -189,7 +193,7 @@ GetCommandConstraints(Cmd command, Quirk quirks) noexcept
 constexpr CommandConstraints
 GetSdOpCondConstraints(Quirk quirks) noexcept
 {
-	return GetCommandConstraints(Cmd::MmcSendOpCond, quirks);
+	return GetCommandConstraints(Cmd::SdSendOpCond, quirks);
 }
 
 

@@ -6,8 +6,17 @@
 #include <KernelExport.h>
 #include <device_manager.h>
 
+#include <util/iovec_support.h>	// generic_io_vec (physical segments from the IO op)
+
 #include "Adma2.h"
 #include "Types.h"
+
+
+// Kernel IO-scheduling machinery lives in the global namespace; forward-declare
+// so this header stays light (the definitions are pulled into Disk.cpp only).
+class DMAResource;
+class IOSchedulerSimple;
+struct IOOperation;
 
 
 namespace jr::sdhci {
@@ -42,7 +51,7 @@ struct DmaRestrictions {
 // lifetime.
 class Disk {
 public:
-	virtual ~Disk() = default;
+	virtual ~Disk();
 
 	// DMA restrictions this strategy imposes (max segment size, boundary,
 	// alignment). The block IO scheduler decomposes requests to honor these.
@@ -52,7 +61,9 @@ public:
 	virtual const char* StrategyName() const = 0;
 
 	// Execute one already-decomposed transfer described by the physical vecs.
-	virtual status_t Transfer(off_t position, const physical_entry* vecs,
+	// The vecs come straight from the IO operation (post-DMAResource
+	// translation), so their addresses are physical.
+	virtual status_t Transfer(off_t position, const generic_io_vec* vecs,
 		size_t vecCount, bool isWrite, size_t& bytesTransferred) = 0;
 
 	// devfs read/write entry points route through here after scheduling.
@@ -61,9 +72,9 @@ public:
 	uint64_t Capacity() const;
 	uint32_t BlockSize() const;
 
-	// Factory: pick the strategy from what the controller/card advertise.
-	// Bay Trail eMMC uses ADMA2; SDMA is the fallback; PIO is intentionally
-	// unused (present only as a correctness reference).
+	// Factory: pick the strategy from what the controller/card advertise, then
+	// build its DMA resource + IO scheduler. Bay Trail eMMC uses ADMA2; SDMA is
+	// the fallback; PIO is intentionally unused (present only as a reference).
 	static Disk* Create(DmaStrategy strategy, SdhciController& controller,
 		Card& card, SdhciEngine& engine);
 
@@ -71,9 +82,21 @@ protected:
 	Disk(SdhciController& controller, Card& card, SdhciEngine& engine)
 		: fController(controller), fCard(card), fEngine(engine) {}
 
+	// Build the DMAResource (from this strategy's Restrictions()) and the block
+	// IO scheduler, wiring the scheduler callback to _RunOperation.
+	status_t InitIo();
+
 	SdhciController&	fController;
 	Card&				fCard;
 	SdhciEngine&		fEngine;
+
+private:
+	// IOSchedulerSimple callback: hand one decomposed operation to the strategy.
+	static status_t _IoCallback(void* data, IOOperation* operation);
+	status_t _RunOperation(IOOperation* operation);
+
+	DMAResource*		fDmaResource = nullptr;
+	IOSchedulerSimple*	fScheduler = nullptr;
 };
 
 
@@ -84,7 +107,7 @@ public:
 	DmaRestrictions Restrictions() const override;
 	DmaStrategy Strategy() const override { return DmaStrategy::Adma2; }
 	const char* StrategyName() const override { return "ADMA2"; }
-	status_t Transfer(off_t position, const physical_entry* vecs, size_t vecCount,
+	status_t Transfer(off_t position, const generic_io_vec* vecs, size_t vecCount,
 		bool isWrite, size_t& bytesTransferred) override;
 
 private:
@@ -99,7 +122,7 @@ public:
 	DmaRestrictions Restrictions() const override;
 	DmaStrategy Strategy() const override { return DmaStrategy::Sdma; }
 	const char* StrategyName() const override { return "SDMA"; }
-	status_t Transfer(off_t position, const physical_entry* vecs, size_t vecCount,
+	status_t Transfer(off_t position, const generic_io_vec* vecs, size_t vecCount,
 		bool isWrite, size_t& bytesTransferred) override;
 };
 
@@ -113,7 +136,7 @@ public:
 	DmaRestrictions Restrictions() const override;
 	DmaStrategy Strategy() const override { return DmaStrategy::Pio; }
 	const char* StrategyName() const override { return "PIO(unused)"; }
-	status_t Transfer(off_t position, const physical_entry* vecs, size_t vecCount,
+	status_t Transfer(off_t position, const generic_io_vec* vecs, size_t vecCount,
 		bool isWrite, size_t& bytesTransferred) override;
 };
 

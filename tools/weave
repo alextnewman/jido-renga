@@ -5,10 +5,24 @@
 
 # weave — install (or refresh) the Jidō Renga graft into a Haiku build dir.
 #
-# Renders config/UserBuildConfig.in (substituting the absolute path to this
-# repo) and merges it into <output-dir>/UserBuildConfig inside a clearly
-# delimited marker block, so it is idempotent and never clobbers other content
-# the user keeps in their UserBuildConfig.
+# Two seams are written, both inside the generated build dir (the captive
+# submodule source tree is never touched):
+#
+#   1. <output>/UserBuildConfig — renders config/UserBuildConfig.in (substituting
+#      the absolute path to this repo). Sets JIDO_RENGA_TOP and defers the
+#      overlay SubInclude. Jamrules globs & includes this automatically (~line
+#      120 of Jamrules).
+#
+#   2. <output>/build/BuildConfig — records HAIKU_REVISION. The captive Haiku is
+#      a pinned mirror with no hrev tags, and the submodule .git is a gitlink
+#      FILE, so Haiku's git-based revision detection can't run. The revision is
+#      needed at PARSE time by the RemotePackageRepository include (~Jamrules
+#      line 111), which is BEFORE UserBuildConfig is read — so it cannot live in
+#      UserBuildConfig. BuildConfig is included very early (~Jamrules line 62),
+#      before anything demands the revision, and is the right home for it.
+#
+# Both edits are wrapped in clearly delimited marker blocks, so weave is
+# idempotent and never clobbers content the user keeps in those files.
 #
 # Usage:
 #   tools/weave [OUTPUT_DIR]
@@ -17,13 +31,37 @@
 #               holds the generated build (contains build/, objects/, ...).
 #               Defaults to $HAIKU_OUTPUT_DIR, else the first ../generated* dir
 #               next to a sibling haiku checkout.
-#
-# The submodule source tree is never touched; UserBuildConfig is the only seam.
 
 set -eu
 
-BEGIN_MARK='# >>> jido-renga graft (managed by tools/weave) >>>'
-END_MARK='# <<< jido-renga graft <<<'
+GRAFT_BEGIN='# >>> jido-renga graft (managed by tools/weave) >>>'
+GRAFT_END='# <<< jido-renga graft <<<'
+REV_BEGIN='# >>> jido-renga revision (managed by tools/weave) >>>'
+REV_END='# <<< jido-renga revision <<<'
+
+# merge_block <file> <begin-marker> <end-marker> <block-body>
+# Replace (or append) a marker-delimited managed block inside <file>, preserving
+# any surrounding user content. Creates <file> if absent.
+merge_block() {
+	mb_file=$1; mb_begin=$2; mb_end=$3; mb_body=$4
+	mb_block=$(printf '%s\n%s\n%s\n' "$mb_begin" "$mb_body" "$mb_end")
+	if [ -f "$mb_file" ]; then
+		mb_existing=$(awk -v b="$mb_begin" -v e="$mb_end" '
+			$0==b {skip=1; next} $0==e {skip=0; next} !skip {print}
+		' "$mb_file")
+	else
+		mb_existing=""
+	fi
+	# Drop leading/trailing blank lines from whatever was left.
+	mb_existing=$(printf '%s\n' "$mb_existing" | awk 'NF{p=1} p' | awk '
+		{ lines[NR]=$0 } END { last=NR; while (last>0 && lines[last]=="") last--;
+			for (i=1;i<=last;i++) print lines[i] }')
+	if [ -n "$mb_existing" ]; then
+		printf '%s\n\n%s\n' "$mb_existing" "$mb_block" > "$mb_file"
+	else
+		printf '%s\n' "$mb_block" > "$mb_file"
+	fi
+}
 
 # Resolve repo root = parent of this script's dir, as an absolute path.
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
@@ -44,33 +82,24 @@ fi
 [ -d "$out" ] || { echo "weave: output dir does not exist: $out" >&2; exit 1; }
 
 out=$(CDPATH= cd -- "$out" && pwd -P)
-target="$out/UserBuildConfig"
 
-# Render the block: substitute the repo path, wrap in markers.
-block=$(printf '%s\n%s\n%s\n' \
-	"$BEGIN_MARK" \
-	"$(sed -e "s|@JIDO_RENGA_TOP@|$JR_TOP|g" "$template")" \
-	"$END_MARK")
+# Seam 1: UserBuildConfig (JIDO_RENGA_TOP + deferred overlay walk).
+userBuildConfig=$(sed -e "s|@JIDO_RENGA_TOP@|$JR_TOP|g" "$template")
+merge_block "$out/UserBuildConfig" "$GRAFT_BEGIN" "$GRAFT_END" "$userBuildConfig"
 
-# Merge: strip any prior managed block, trim surrounding blank lines, then
-# append the fresh block.
-if [ -f "$target" ]; then
-	existing=$(awk -v b="$BEGIN_MARK" -v e="$END_MARK" '
-		$0==b {skip=1; next} $0==e {skip=0; next} !skip {print}
-	' "$target")
+# Seam 2: BuildConfig (HAIKU_REVISION, needed early — see header). Use ?= so an
+# explicit `jam -sHAIKU_REVISION=...` on the command line still wins.
+rev=$("$script_dir/haiku-revision")
+buildConfig="$out/build/BuildConfig"
+if [ -f "$buildConfig" ]; then
+	revBody=$(printf 'HAIKU_REVISION ?= "%s" ;' "$rev")
+	merge_block "$buildConfig" "$REV_BEGIN" "$REV_END" "$revBody"
 else
-	existing=""
-fi
-# Drop leading/trailing blank lines from whatever was left.
-existing=$(printf '%s\n' "$existing" | awk 'NF{p=1} p' | awk '
-	{ lines[NR]=$0 } END { last=NR; while (last>0 && lines[last]=="") last--;
-		for (i=1;i<=last;i++) print lines[i] }')
-
-if [ -n "$existing" ]; then
-	printf '%s\n\n%s\n' "$existing" "$block" > "$target"
-else
-	printf '%s\n' "$block" > "$target"
+	echo "weave: WARNING: $buildConfig not found — run configure first;" >&2
+	echo "       HAIKU_REVISION was not recorded (build will fail at revision" >&2
+	echo "       determination until it is)." >&2
 fi
 
-echo "weave: grafted Jidō Renga into $target"
+echo "weave: grafted Jidō Renga into $out/UserBuildConfig"
 echo "       JIDO_RENGA_TOP = $JR_TOP"
+[ -f "$buildConfig" ] && echo "       HAIKU_REVISION = $rev  (recorded in build/BuildConfig)"

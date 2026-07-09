@@ -24,17 +24,24 @@ MmcCard::Identify(SdhciEngine& engine)
 {
 	CommandOutcome outcome;
 
-	// CMD1 (SEND_OP_COND): sector addressing (bit 30) + voltage window. The
-	// op-cond constraints carry the long busy-poll retry budget with OCR
-	// validation, which the Bay Trail personality needs to reject garbage.
+	// CMD1 (SEND_OP_COND): access-mode + HCS (bit 31 valid-marker per the
+	// reference) + sector addressing (bit 30) + voltage window. The op-cond
+	// constraints carry the long busy-poll retry budget with OCR validation,
+	// which the Bay Trail personality needs to reject garbage.
 	const CommandConstraints opCond = GetCommandConstraints(Cmd::MmcSendOpCond,
 		Quirk::None);
 	status_t status = B_ERROR;
 	for (int i = 0; i < 64; i++) {
-		status = engine.Execute(Cmd::MmcSendOpCond, 0x40ff8000, ReplyType::R3,
+		status = engine.Execute(Cmd::MmcSendOpCond, 0xc0ff8000, ReplyType::R3,
 			opCond, outcome);
-		if (status == B_OK && (outcome.response[0] & (1u << 31)) != 0)
+		if (status == B_OK && (outcome.response[0] & (1u << 31)) != 0) {
+			// Bit 30 echoed back means the card accepted sector addressing
+			// (extended capacity, > 2 GiB); otherwise it is byte-addressed.
+			fSectorAddressing = (outcome.response[0] & (1u << 30)) != 0;
 			break;
+		}
+		// Card still busy (bit 31 clear): wait for internal power-up.
+		snooze(200000);
 		status = B_TIMED_OUT;
 	}
 	if (status != B_OK)
@@ -68,12 +75,23 @@ MmcCard::Identify(SdhciEngine& engine)
 		return B_ERROR;
 	}
 
-	// EXT_CSD (CMD8) carries the authoritative SEC_COUNT for >2 GiB eMMC. The
-	// data-phase read of the 512-byte EXT_CSD block is wired by the Disk layer
-	// during controller bring-up; DecodeEmmcSectorCount() then supersedes the
-	// CSD estimate. (Implementation point: EXT_CSD data read.)
+	// EXT_CSD (CMD8) carries the authoritative SEC_COUNT for >2 GiB eMMC, which
+	// the CSD alone caps at 2 GiB. Read the 512-byte block over single-buffer
+	// SDMA (the proven DMA mode) and let SEC_COUNT supersede the CSD estimate
+	// when present. NOTE: the eMMC data path is unproven on this hardware (see
+	// improvement log); the pure decoder is host-tested, but this read is not.
+	uint8_t extCsd[512];
+	if (engine.ReadDataBlock(Cmd::SendExtCsd, 0, ReplyType::R1, extCsd,
+			sizeof(extCsd)) == B_OK) {
+		const CardGeometry extGeometry = DecodeEmmcSectorCount(extCsd);
+		if (extGeometry.blockCount != 0)
+			fSectorCount = extGeometry.blockCount;
+	}
 
-	engine.SetBusWidth(8);
+	// Bus stays 1-bit / 25 MHz: the reference attempts the device-first CMD6
+	// HS + 8-bit upgrade in the disk layer, but that path was never made to work
+	// on this hardware. Keeping identification width avoids faking a broken
+	// upgrade; the proper redesign is a deferred speed item (see improvement log).
 	return B_OK;
 }
 

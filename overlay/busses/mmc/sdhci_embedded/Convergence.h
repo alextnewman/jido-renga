@@ -44,12 +44,45 @@ namespace irq {
 } // namespace irq
 
 
+// Interrupt-status bit groups the engine acts on, kept beside the bit names so
+// the "which bits matter" policy lives in one host-testable place instead of
+// buried in the engine's translation unit.
+//
+//   kDrainMask  -- the completion/timeout/error bits a command's poll loop
+//                  latches; write-1-to-cleared once before an issue and once at
+//                  the terminal verdict so each attempt starts from a clean slate.
+//   kSignalMask -- the sources we keep signal-enabled so they may pulse the ISR
+//                  "meow". A superset of the command bits that also includes the
+//                  card insert/remove events, so the idle worker (see
+//                  StormSafeIdleClear) is responsible for clearing them.
+constexpr uint32_t kDrainMask = irq::kCommandComplete | irq::kTransferComplete
+	| irq::kCommandTimeout | irq::kDataTimeout | irq::kDataCrc | irq::kErrorBit;
+constexpr uint32_t kSignalMask = irq::kCommandComplete | irq::kTransferComplete
+	| irq::kCardInsertion | irq::kCardRemoval | irq::kCommandTimeout
+	| irq::kDataTimeout;
+
+
 // A spurious "meow": the status word is all-zeros (nothing latched) or all-ones
 // (an unpopulated/floating IRQ line). Neither reflects real completion.
 constexpr bool
 IsSpuriousMeow(uint32_t intStatus) noexcept
 {
 	return intStatus == 0x00000000u || intStatus == 0xffffffffu;
+}
+
+
+// What the worker must write-1-to-clear when it wakes with NO pending
+// transaction. The SDHCI interrupt line is level-triggered, so a signal-enabled
+// bit that stays latched (classically a card insert/remove, which no command
+// drain clears) would re-fire the ISR forever -- the "meow" never stops and the
+// real-time worker spins. There is no command result to preserve on the idle
+// path, so we clear every signal-enabled bit; a spurious all-zero/all-ones word
+// is left untouched so we never write garbage back onto a floating line. This is
+// the pure twin of the reference driver's idle-path interrupt_status clear.
+constexpr uint32_t
+StormSafeIdleClear(uint32_t intStatus) noexcept
+{
+	return IsSpuriousMeow(intStatus) ? 0u : (intStatus & kSignalMask);
 }
 
 
@@ -123,11 +156,16 @@ enum class AttemptResult : uint8_t {
 };
 
 
-// What the convergence loop should do after one attempt.
+// What the convergence loop should do after one attempt. The two reset flavors
+// mirror the reference worker exactly: a plain line reset recovers the command
+// and data state machines cheaply, while a full bus reset (terminate power +
+// clock, settle, restore) is the heavy hammer the Bay Trail errata require when
+// the SD-domain timeout clock has frozen or the controller is wedged busy.
 enum class RetryAction : uint8_t {
 	Succeed,			// converged; return success to the caller
-	Retry,				// try again after backoff
-	RetryWithBusReset,	// reset the bus, then try again (data recovery)
+	Retry,				// re-issue as-is, no reset (spurious OCR only)
+	RetryResetLines,	// reset the command+data lines, then re-issue
+	RetryWithBusReset,	// terminate + restore the whole bus, then re-issue
 	Fail,				// give up; propagate the failure
 };
 
@@ -138,9 +176,15 @@ enum class RetryAction : uint8_t {
 //   attempt      -- 0-based index of the attempt that just ran
 //   maxAttempts  -- constraints.Attempts() (>= 1)
 //
-// The rules mirror the tested worker: OCR spuriousness always retries within
-// budget; a genuinely absent card aborts immediately; data faults and busy on
-// bus-reset commands recover via reset; everything else fails.
+// The rules mirror the reference worker's _ConvergeCommand:
+//   * OCR spuriousness re-issues within budget, never resetting anything (the
+//     command *completed*; only its payload was garbage);
+//   * any timeout (command or data) or data-CRC fault is one recovery class --
+//     abort if the card physically left or the budget is spent, else reset and
+//     retry, choosing the full bus reset when the command is flagged for it and
+//     the cheap line reset otherwise;
+//   * a busy controller is always recovered with a full bus reset;
+//   * a hard error never retries.
 constexpr RetryAction
 DecideRetry(AttemptResult outcome, uint32_t attempt, uint32_t maxAttempts,
 	const CommandConstraints& constraints, bool cardPresent) noexcept
@@ -153,27 +197,26 @@ DecideRetry(AttemptResult outcome, uint32_t attempt, uint32_t maxAttempts,
 
 		case AttemptResult::SpuriousOcr:
 			// A completed command with a garbage OCR is not a real success.
-			// Retry within budget; if exhausted, treat as failure.
+			// Retry within budget; if exhausted, treat as failure. No reset:
+			// the command line is healthy, only the payload lied.
 			return haveBudget ? RetryAction::Retry : RetryAction::Fail;
 
 		case AttemptResult::Busy:
-			if (!haveBudget)
-				return RetryAction::Fail;
-			return constraints.needsBusResetOnError
-				? RetryAction::RetryWithBusReset : RetryAction::Retry;
+			// The controller was still inhibited when we tried to issue. The
+			// reference worker unconditionally terminates and restores the bus
+			// to clear a wedged inhibit before retrying.
+			return haveBudget ? RetryAction::RetryWithBusReset : RetryAction::Fail;
 
 		case AttemptResult::CommandTimeout:
-			if (!haveBudget)
-				return RetryAction::Fail;
-			// No point retrying a timeout if the card physically left.
-			return cardPresent ? RetryAction::Retry : RetryAction::Fail;
-
 		case AttemptResult::DataTimeout:
 		case AttemptResult::DataCrc:
-			if (!haveBudget)
+			// A late ISR may have refreshed presence between attempts; a card
+			// that physically left never recovers, and an exhausted budget is
+			// terminal. Otherwise recover per the command's reset policy.
+			if (!cardPresent || !haveBudget)
 				return RetryAction::Fail;
 			return constraints.needsBusResetOnError
-				? RetryAction::RetryWithBusReset : RetryAction::Retry;
+				? RetryAction::RetryWithBusReset : RetryAction::RetryResetLines;
 
 		case AttemptResult::Error:
 		default:
