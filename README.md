@@ -142,6 +142,32 @@ The full mechanics — the Jam-native graft, the host build environment, and the
 recipe for adding a new driver — are in the
 [overlay build skill](skills/jido-renga-overlay-build/SKILL.md).
 
+### Into a bootable image
+
+The line above builds the add-ons as **loose files** under the build dir. To
+fold them into a Haiku **anyboot** image that loads them at boot, ask jam for an
+image profile instead of the individual targets:
+
+```sh
+../tools/jr-jam -q @nightly-anyboot        # -> haiku-nightly-anyboot.iso
+```
+
+The overlay grafts each add-on into the image's **non-packaged** kernel add-on
+tree (`/boot/system/non-packaged/add-ons/kernel/…`) — the writable seam the
+kernel and `device_manager` scan alongside the packaged tree. The captive's
+read-only packagefs is never touched; the drivers simply ride along beside it.
+The result is `generated.x86_64/haiku-nightly-anyboot.iso`: stock Haiku plus
+these drivers, ready to write to a USB stick (`dd`, Etcher, …) and boot.
+
+> The first anyboot build is a full Haiku build — it compiles the OS and pulls
+> HaikuPorts packages, so it is long and needs a network. Later builds are
+> incremental. `@minimum-anyboot` yields a smaller image; `@nightly-anyboot` is
+> the usual desktop.
+
+Set `JIDO_RENGA_INSTALL_IN_IMAGE = 0` in `UserBuildConfig` (before the overlay
+is walked) to opt out and keep building loose add-ons only — e.g. to drop onto a
+running system's own `non-packaged` tree by hand.
+
 ---
 
 ## Revision model

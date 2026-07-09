@@ -82,6 +82,11 @@ tools/weave generated.x86_64
 # 3. Build from inside the build dir, via the jr-jam wrapper.
 cd generated.x86_64
 ../tools/jr-jam -q iosf_mbi cros_ec_keyboard i2c_atmel_mxt
+
+# 4. (optional) Fold the add-ons into a bootable anyboot image instead of
+#    building them loose. The overlay grafts each into the image's non-packaged
+#    kernel add-on tree, so the captive's read-only packagefs is untouched.
+../tools/jr-jam -q @nightly-anyboot           # -> haiku-nightly-anyboot.iso
 ```
 
 `generated*/` is throwaway and never committed. Any surrounding Haiku checkout
@@ -139,9 +144,16 @@ paths, `HOST_PYTHON`), flags, and targets pass straight through. Export
 5. **Register the module** by adding a `SubInclude JIDO_RENGA_TOP overlay
    <class> <name> ;` line to the appropriate `Jamfile` (shared modules before
    the leaves that consume them).
-6. **Build it** with `../tools/jr-jam -q <name>` from the build dir and confirm
+6. **Wire it into images** so it ships in an anyboot build: add an
+   `AddFilesToHaikuImage system non-packaged add-ons kernel <path> : <name> ;`
+   line to the image-integration block at the end of `overlay/Jamfile`. Match
+   the driver's runtime add-on path — `busses/<bus>` for a host controller,
+   `bus_managers` for a shared bus module, `drivers/<class>` for a leaf. A
+   `bus_manager` reached by name must sit where `get_module` maps it (the file
+   `bus_managers/<name>` answers `get_module("bus_managers/<name>/v1")`).
+7. **Build it** with `../tools/jr-jam -q <name>` from the build dir and confirm
    it produces a valid kernel ELF object.
-7. **Document it** with a short note under `docs/development/<name>.md` if the
+8. **Document it** with a short note under `docs/development/<name>.md` if the
    driver has non-obvious hardware behavior.
 
 ## Files you will touch

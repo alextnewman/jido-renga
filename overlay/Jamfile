@@ -26,3 +26,46 @@ SubInclude JIDO_RENGA_TOP overlay busses mmc sdhci_embedded ;
 # Leaf drivers.
 SubInclude JIDO_RENGA_TOP overlay drivers input cros_ec_keyboard ;
 SubInclude JIDO_RENGA_TOP overlay drivers input i2c_atmel_mxt ;
+
+# --- Image integration ------------------------------------------------------
+#
+# Graft the built add-ons into a Haiku image so they LOAD at boot -- this is
+# what turns `jam @nightly-anyboot` (or any *-image target) into an anyboot
+# with these drivers present. Runs here, after the SubIncludes above have
+# defined the KernelAddon targets and while the image container already exists
+# (build/jam/BuildSetup defines HAIKU_IMAGE_CONTAINER_NAME unconditionally), so
+# the ordering is always valid; for a standalone `jam sdhci_embedded` it simply
+# registers install rules the add-on target never triggers -- a harmless no-op.
+#
+# Everything lands under system/non-packaged/. The packaged tree
+# (/boot/system/add-ons/kernel) is owned by packagefs -- composed read-only from
+# the captive's .hpkg files -- so loose out-of-tree files dropped there are
+# masked. The kernel and device_manager scan the non-packaged add-on dirs too
+# (src/system/kernel/module.cpp; device_manager.cpp _AddPath), which is exactly
+# the writable seam for out-of-tree drivers: nothing in the captive is touched.
+#
+# Set JIDO_RENGA_INSTALL_IN_IMAGE = 0 in UserBuildConfig (before the overlay
+# walk) to build the add-ons as loose files only -- e.g. to copy onto a running
+# system's /boot/system/non-packaged/add-ons/kernel by hand -- without wiring
+# them into an image.
+JIDO_RENGA_INSTALL_IN_IMAGE ?= 1 ;
+if $(JIDO_RENGA_INSTALL_IN_IMAGE) = 1 {
+	# Bus manager: a flat file in bus_managers/. The name matters -- sdhci's
+	# OCP fixup resolves it by get_module("bus_managers/iosf_mbi/v1"), which
+	# maps to the file .../bus_managers/iosf_mbi.
+	AddFilesToHaikuImage system non-packaged add-ons kernel bus_managers
+		: iosf_mbi ;
+
+	# Host controller: the device_manager scans busses/mmc/ and probes each
+	# add-on it finds there.
+	AddFilesToHaikuImage system non-packaged add-ons kernel busses mmc
+		: sdhci_embedded ;
+
+	# Leaf (device_manager) drivers: the modern flat layout,
+	# drivers/<category>/<name> -- mirrors in-tree AddNewDriversToPackage input,
+	# not the legacy drivers/bin + drivers/dev symlink pair.
+	AddFilesToHaikuImage system non-packaged add-ons kernel drivers input
+		: cros_ec_keyboard ;
+	AddFilesToHaikuImage system non-packaged add-ons kernel drivers input
+		: i2c_atmel_mxt ;
+}
