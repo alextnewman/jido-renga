@@ -5,6 +5,9 @@ improvement ideas for `sdhci_embedded`. Nothing here blocks boot parity with the
 `dev/dense/emmc-emergency` fork; these are items to **discuss and fix after** we
 can boot the drive and it works as well as the fork.
 
+From §10 on this log also captures overlay-wide build lessons and sibling-driver
+(input) findings, since those share the same "note it, discuss later" workflow.
+
 The guiding rule during convergence: reach parity first, prefer the documented
 "meow bus" ideals over the fork's actual hot-path code, and record every place
 where we knowingly diverge or defer.
@@ -293,3 +296,74 @@ not catch.
   C++, avoid function-local statics with non-trivial init, and give any polymorphic
   base that is never deleted through the base a protected non-virtual destructor.
   kcheck cannot catch either because it never links.
+
+## 11. Input drivers (cros_ec_keyboard, i2c_atmel_mxt) — quality-pass findings
+
+A test/quality pass mirroring the sdhci_embedded work was run over the two input
+drivers before the first anyboot attempt. Both **build and link cleanly**, pass the
+kernel-C++ hygiene scan (no function-local statics, RTTI, or exceptions — the class
+of bug that bit `Personality`), carry full SPDX, and register correctly with
+device_manager. Two trace-only `-Wunused-but-set-variable` warnings were fixed
+(cros_ec `Driver.cpp` `id[2]`, mxt `MxtDevice.cpp` T100 `amplitude`) with the
+existing `(void)var;` idiom, and a stale `ObjectTable.h` comment that called the
+start address "big-endian" was corrected (the wire format is little-endian; the
+parser and the new tests confirm it). Host tests were added for the mxt
+object-table parser (`tests/i2c_atmel_mxt/test_object_table.cpp`). The items below
+are deferred for discussion.
+
+### 11.1 maXTouch CRC-24 is dead, self-inconsistent, and likely mis-specified
+
+- **Status:** latent, **not boot-affecting.** The controller in the WINKY runs with
+  message CRC disabled (`MxtDevice.cpp` ~L792, "CRC disabled on this device"), and
+  `ObjectTable::VerifyCRC` has **no caller anywhere in the driver** — the whole
+  CRC-24 surface is currently dead code.
+- **Three independent problems** (all pinned as characterization tests so any change
+  trips review):
+  1. **Batch vs. streaming disagree.** `mxt_crc24_compute` (batch, pair-based) and
+     `mxt_crc24_update`/`finish` (streaming) return different results for the same
+     bytes — `{01 02 03 04}` gives batch `0x000001` but streaming `0x020003`. At
+     most one can be correct.
+  2. **Polynomial looks wrong.** The code uses `0x001B0001` and claims it is the
+     "reflected form of Atmel's 0x80001B". Linux's `atmel_mxt_ts` `mxt_crc24` uses
+     `crcpoly = 0x80001B`, tests bit `0x1000000`, and masks `0x00FFFFFF` **once at
+     the end**; the bit-reflection of `0x80001B` is not `0x001B0001`, and the
+     per-iteration mask here does not match the reference structure either.
+  3. **VerifyCRC hashes the wrong bytes.** It computes over `(uint8*)fObjects,
+     count * sizeof(mxt_object_entry)` — the **padded in-memory struct array**
+     (8 bytes/entry after alignment), not the 6-byte-packed wire format the
+     controller checksums. Even with a correct polynomial it could never match.
+- **Deferred:** do not rewrite blind. Validate against a real object-table read and
+  its reported CRC on the WINKY, then port Linux's `mxt_crc24` verbatim and CRC the
+  raw wire bytes (not the struct). No hardware to verify against right now.
+
+### 11.2 T100 touch report aux-byte order is a fixed-offset assumption
+
+- `MxtDevice::_ParseT100Message` reads `amplitude`/`area` at hard-coded message
+  offsets and reports `area` as pressure. Real T100 aux bytes are governed by the
+  `TCHAUX` config: only the enabled fields (vector, amplitude, area) are present, in
+  a fixed order, so a device configured differently shifts every offset.
+- **Impact is minor today:** the clickpad button comes from T19 GPIO, not pressure,
+  so pressure fidelity is cosmetic. **Deferred:** parse `TCHAUX` from the T100 config
+  and compute aux offsets dynamically when pressure/vector actually matter.
+
+### 11.3 Input drivers were not architected for host testing → shim seam
+
+- Unlike sdhci_embedded (whose pure core deliberately includes only `<stdint.h>` and
+  a self-contained `Types.h`), the mxt/cros_ec sources pull in kernel headers
+  transitively (`Driver.h` → `Drivers.h`/`KernelExport.h`/`OS.h`/`kernel_cpp.h` plus
+  the vendored `DeviceList.h`). To unit-test the object-table parser off-target we
+  added a minimal kernel-header shim under `tests/shims/` (fixed-width types, a
+  `dprintf` no-op, an empty `DeviceList`) and compile `ObjectTable.cpp` **unmodified**
+  against it.
+- **Note for the SKILL / future drivers:** either keep parseable logic in a
+  self-contained pure core (sdhci's approach — cleanest) or accept a small shim.
+  cros_ec_keyboard actually *has* unit-testable logic — the `_cros_ec_decode_byte`
+  scancode state machine (E0/E1 extended prefixes, the E1 Pause sequence, F0 break
+  handling, keymap range checks) — but it is a `static` function buried in the
+  monolithic ~1400-line `Driver.cpp` and coupled to a `driver_cookie` that carries
+  a kernel `ConditionVariable` and the key ring. Testing it host-side would mean
+  compiling the whole kernel-heavy TU (device_manager, ACPI, KBC port I/O,
+  ConditionVariable, spinlocks). **Deferred improvement:** extract the decode
+  state machine into its own pure translation unit (mirroring sdhci's
+  Matcher/Personality split) so it can be unit-tested against captured EC byte
+  streams; until then it stays covered by build + hygiene + registration checks.

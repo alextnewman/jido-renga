@@ -543,6 +543,7 @@ _bring_up_device(driver_cookie* d)
 		_kbc_dev_response_direct(&resp, kTimeoutDevResp);
 		id[i] = resp;
 	}
+	(void)id;	// consumed to keep the KBC in sync; value only traced
 	TRACE("bring-up: ID=0x%02x%02x\n", id[0], id[1]);
 
 	// Select scan-code set 2 (controller translates to set 1).

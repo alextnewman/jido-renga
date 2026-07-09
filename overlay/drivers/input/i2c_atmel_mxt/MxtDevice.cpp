@@ -1248,6 +1248,7 @@ MxtDevice::_ParseT100Message(const uint8* msg, size_t msgSize,
 		amplitude = msg[6];
 	if (msgSize >= 8)
 		area = msg[7];
+	(void)amplitude;	// used in TRACE below
 
 	TRACE("T100: id=0x%02x type=%u x=%u y=%u area=%u amp=%u\n",
 		msg[0], type, x, y, area, amplitude);

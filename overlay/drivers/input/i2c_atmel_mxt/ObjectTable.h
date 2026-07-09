@@ -15,7 +15,7 @@
 // Object entry structure (6 bytes each)
 typedef struct {
 	uint8	type;			// Object type (1-255)
-	uint16	startAddress;	// Start address (big-endian)
+	uint16	startAddress;	// Start address (host order; little-endian on the wire)
 	uint8	size;			// Size in bytes (stored as size_minus_one)
 	uint8	instances;		// Instance count (stored as instances_minus_one)
 	uint8	numReportIDs;	// Number of report IDs

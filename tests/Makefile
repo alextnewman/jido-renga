@@ -2,9 +2,16 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileContributor: Generated with GitHub Copilot
 
-# Host build for the sdhci_embedded "pure core" unit tests. These exercise the
-# kernel-independent logic (matcher, command policy, convergence, ADMA2, CSD,
-# transactions, personalities) off-target -- no Haiku toolchain required.
+# Host build for the Jidō Renga "pure core" unit tests. These exercise the
+# kernel-independent logic off-target -- no Haiku toolchain required.
+#
+# Covered:
+#   * sdhci_embedded  (matcher, command policy, convergence, ADMA2, CSD,
+#                      transactions, personalities)
+#   * iosf_mbi        (mailbox protocol)
+#   * i2c_atmel_mxt   (object-table parser + CRC characterization) -- compiled
+#                     against the minimal kernel-header shims in shims/ so a real
+#                     driver translation unit can run on the host.
 #
 #   make        build and run
 #   make build  compile only
@@ -13,14 +20,17 @@
 CXX ?= c++
 CXXFLAGS := -std=c++17 -Wall -Wextra -Wshadow -O1 -g -pthread \
 	-I. -I../overlay/busses/mmc/sdhci_embedded \
-	-I../overlay/bus_managers/iosf_mbi
+	-I../overlay/bus_managers/iosf_mbi \
+	-Ishims -I../overlay/drivers/input/i2c_atmel_mxt
 
 DRIVER_DIR := ../overlay/busses/mmc/sdhci_embedded
+MXT_DIR := ../overlay/drivers/input/i2c_atmel_mxt
 
 # Pure-core sources with out-of-line definitions.
 CORE_SRC := \
 	$(DRIVER_DIR)/Matcher.cpp \
-	$(DRIVER_DIR)/Personality.cpp
+	$(DRIVER_DIR)/Personality.cpp \
+	$(MXT_DIR)/ObjectTable.cpp
 
 TEST_SRC := \
 	framework/test_worker_rig.cpp \
@@ -34,6 +44,7 @@ TEST_SRC := \
 	sdhci_embedded/test_concurrency.cpp \
 	sdhci_embedded/test_csd.cpp \
 	iosf_mbi/test_iosf_mbi_protocol.cpp \
+	i2c_atmel_mxt/test_object_table.cpp \
 	sdhci_embedded/test_main.cpp
 
 BIN := jr_tests
