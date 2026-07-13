@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
 // SPDX-License-Identifier: MIT
 // SPDX-FileContributor: Generated with Qwen 3.6
+// SPDX-FileContributor: Generated with GitHub Copilot
 
 //! Driver for Atmel maXTouch touch controllers.
 // Based on Object-Based Protocol (OBP) specification for WINKY Chromebook 2
@@ -151,17 +152,16 @@ i2c_atmel_mxt_free(void* _cookie)
 static float
 i2c_atmel_mxt_support(device_node* parent)
 {
-	TRACE_ALWAYS("i2c_atmel_mxt_support: node=%p\n", parent);
-
 	// Make sure parent is really the I2C bus manager
-	const char* bus;
-	if (sDeviceManager->get_attr_string(parent, B_DEVICE_BUS, &bus, false))
-		return -1;
+	const char* bus = NULL;
+	const status_t busStatus
+		= sDeviceManager->get_attr_string(parent, B_DEVICE_BUS, &bus, false);
+	if (busStatus != B_OK || bus == NULL) {
+		return 0.0f;
+	}
 
 	if (strcmp(bus, "i2c"))
 		return 0.0;
-
-	TRACE_ALWAYS("i2c_atmel_mxt_support: bus=%s\n", bus);
 
 	// Check whether it's an Atmel maXTouch device
 	uint64 handlePointer;

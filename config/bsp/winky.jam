@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
+# SPDX-License-Identifier: MIT
+# SPDX-FileContributor: Generated with GitHub Copilot
+
+# Winky is an exclusive BSP: Jido Renga owns each controller it supports.
+# Entries are paths inside haiku.hpkg, not host paths or packagefs paths.
+JIDO_RENGA_BSP_OMIT_HAIKU_PACKAGE_FILES +=
+	add-ons/kernel/bus_managers/i2c
+	add-ons/kernel/busses/mmc/sdhci
+	;
+JIDO_RENGA_BSP_OMIT_HAIKU_BOOT_MODULE_TARGETS += sdhci ;
+
+# The image lists are grouped by Haiku's canonical kernel add-on directories.
+# Future BSPs can declare their own lists without changing overlay/Jamfile.
+JIDO_RENGA_BSP_IMAGE_BUS_MANAGERS +=
+	iosf_mbi
+	;
+JIDO_RENGA_BSP_IMAGE_I2C_BUS_MANAGER = i2c_guarded ;
+JIDO_RENGA_BSP_IMAGE_BUSSES_MMC += sdhci_embedded ;
+JIDO_RENGA_BSP_IMAGE_DRIVERS_INPUT +=
+	cros_ec_keyboard
+	i2c_atmel_mxt
+	;
+
+# Stage two mounts only haiku.hpkg's packagefs view before entering the kernel.
+# The embedded controller hosts boot media, and its IOSF-MBI dependency must be
+# present in that package's boot-module set before device discovery starts.
+JIDO_RENGA_BSP_BOOT_MODULE_TARGETS +=
+	iosf_mbi
+	sdhci_embedded
+	;

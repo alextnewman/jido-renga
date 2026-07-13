@@ -12,19 +12,19 @@
 using namespace jr::sdhci;
 
 
-// Drive the *real* pure poll classifier over the FakeController's assumed status
-// evolution, exactly as the engine's worker loop would, and return the status
-// word we would have completed on (or 0 if we never converged).
+// Drive the real snapshot accumulator and poll classifier over the
+// FakeController's one-shot status evolution, exactly as the engine worker does.
 static uint32_t
 DriveToDone(const jr::test::FakeController& hw, bool dataPresent, uint32_t& atPoll)
 {
+	uint32_t accumulated = 0;
 	for (uint32_t n = 0; n < 100; n++) {
-		const uint32_t status = hw.StatusAtPoll(n);
-		const PollVerdict verdict = ClassifyPoll(status, dataPresent);
+		accumulated = AccumulateInterruptStatus(accumulated, hw.StatusAtPoll(n));
+		const PollVerdict verdict = ClassifyPoll(accumulated, dataPresent);
 		if (verdict == PollVerdict::CommandComplete
 			|| verdict == PollVerdict::TransferComplete) {
 			atPoll = n;
-			return status;
+			return accumulated;
 		}
 	}
 	atPoll = 100;

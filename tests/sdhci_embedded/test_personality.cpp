@@ -62,11 +62,11 @@ JR_TEST(personality, baytrail_overrides_cmd12_to_r1b)
 }
 
 
-JR_TEST(personality, baytrail_timeout_and_reset_hooks)
+JR_TEST(personality, baytrail_timeout_is_capability_driven)
 {
 	const HostPersonality& p = GetPersonality(PersonalityKind::BayTrail);
-	JR_CHECK_EQ(p.TimeoutClockKHz(), 1000u);
-	JR_CHECK(p.TimeoutClockUsesSdClock());
+	JR_CHECK_EQ(p.TimeoutClockKHz(), 0u);
+	JR_CHECK(!p.TimeoutClockUsesSdClock());
 
 	FakeQuirkTarget target;
 	p.PostResetInit(target);

@@ -81,16 +81,38 @@ tools/weave generated.x86_64
 
 # 3. Build from inside the build dir, via the jr-jam wrapper.
 cd generated.x86_64
-../tools/jr-jam -q iosf_mbi cros_ec_keyboard i2c_atmel_mxt
+../tools/jr-jam -q iosf_mbi i2c_guarded sdhci_embedded \
+  cros_ec_keyboard i2c_atmel_mxt
 
-# 4. (optional) Fold the add-ons into a bootable anyboot image instead of
-#    building them loose. The overlay grafts each into the image's non-packaged
-#    kernel add-on tree, so the captive's read-only packagefs is untouched.
+# 4. (optional) Fold the selected BSP's add-ons into a bootable anyboot image
+#    instead of building them loose. The overlay composes each into haiku.hpkg
+#    and applies that BSP's declared upstream omissions without editing captive
+#    sources or package recipes.
 ../tools/jr-jam -q @nightly-anyboot           # -> haiku-nightly-anyboot.iso
 ```
 
 `generated*/` is throwaway and never committed. Any surrounding Haiku checkout
 outside the submodules is only an extraction source and is never referenced.
+The default BSP is `winky`; set `JIDO_RENGA_BSP = none` in `UserBuildConfig`
+before the overlay walk to build the add-ons without a BSP image policy.
+
+### Proven Winky composition
+
+The hardware-validated Winky image applies three surgical policies:
+
+1. Omit stock `add-ons/kernel/busses/mmc/sdhci`, package
+   `sdhci_embedded` in its canonical bus directory, and create its boot link.
+2. Package `iosf_mbi` and create its boot link so the SDHCI dependency is
+   available before boot-media discovery.
+3. Omit stock `add-ons/kernel/bus_managers/i2c`, but package the internal
+   `i2c_guarded` target under the canonical filename
+   `add-ons/kernel/bus_managers/i2c`. The filename matters because
+   `get_module("bus_managers/i2c/...")` maps to it; the distinct Jam target name
+   avoids colliding with the captive target.
+
+The third policy is a defensive normalization of optional HID/CID attributes,
+not a claim that the stock manager can never work. It preserves all stock
+consumers, including `i2c_elan`.
 
 ## The derivative-revision seam
 
@@ -144,23 +166,73 @@ paths, `HOST_PYTHON`), flags, and targets pass straight through. Export
 5. **Register the module** by adding a `SubInclude JIDO_RENGA_TOP overlay
    <class> <name> ;` line to the appropriate `Jamfile` (shared modules before
    the leaves that consume them).
-6. **Wire it into images** so it ships in an anyboot build: add an
-   `AddFilesToHaikuImage system non-packaged add-ons kernel <path> : <name> ;`
-   line to the image-integration block at the end of `overlay/Jamfile`. Match
-   the driver's runtime add-on path — `busses/<bus>` for a host controller,
-   `bus_managers` for a shared bus module, `drivers/<class>` for a leaf. A
-   `bus_manager` reached by name must sit where `get_module` maps it (the file
-   `bus_managers/<name>` answers `get_module("bus_managers/<name>/v1")`).
+6. **Wire it into a BSP manifest** under `config/bsp/`. Declare the add-on in
+   that BSP's directory-specific image list and, if it exclusively replaces an
+   upstream add-on, add the exact `haiku.hpkg` path to the BSP omission list.
+   The shared image integration in `overlay/Jamfile` installs those lists into
+   `haiku.hpkg`. Match the driver's runtime add-on path —
+   `busses/<bus>` for a host controller, `bus_managers` for a shared bus
+   module, `drivers/<class>` for a leaf. A `bus_manager` reached by name must
+   sit where `get_module` maps it (the file `bus_managers/<name>` answers
+   `get_module("bus_managers/<name>/v1")`). If its overlay Jam target needs a
+   distinct name to avoid colliding with the captive target, add an explicit
+   package-time rename to the canonical filename; never expose the private
+   overlay target name as a runtime path.
+   If the add-on or one of its modules is needed to discover boot media, also
+   declare its Jam target in the BSP's boot-module target list. The shared
+   image integration then uses Haiku's native package helper to create the
+   `add-ons/kernel/boot` link to its canonical packaged location.
 7. **Build it** with `../tools/jr-jam -q <name>` from the build dir and confirm
    it produces a valid kernel ELF object.
 8. **Document it** with a short note under `docs/development/<name>.md` if the
    driver has non-obvious hardware behavior.
 
+## Release validation
+
+Before shipping a BSP milestone:
+
+```sh
+# Pure policy/concurrency coverage.
+make -C tests
+
+# Cross-link every overlay module used by the BSP.
+cd generated.x86_64
+../tools/jr-jam -q iosf_mbi i2c_guarded sdhci_embedded \
+  cros_ec_keyboard i2c_atmel_mxt
+
+# Compose the real package/image, not only loose add-ons.
+../tools/jr-jam -q @nightly-anyboot
+
+# Inspect the system package using the host package tool.
+package_tool=$(find objects/linux -path '*/tools/package/package' \
+  -type f -print -quit)
+"$package_tool" list -p \
+  objects/haiku/x86_64/packaging/packages/haiku.hpkg \
+  | grep -E 'add-ons/kernel/(boot|bus_managers|busses/mmc|drivers/input)'
+```
+
+For Winky, require all of these:
+
+- `add-ons/kernel/boot/sdhci_embedded`
+- `add-ons/kernel/bus_managers/i2c`
+- `add-ons/kernel/bus_managers/iosf_mbi`
+- `add-ons/kernel/busses/mmc/sdhci_embedded`
+- `add-ons/kernel/drivers/input/i2c_atmel_mxt`
+- `add-ons/kernel/drivers/input/i2c_elan`
+- no stock `add-ons/kernel/busses/mmc/sdhci`
+
+When a target is renamed during packaging, extract the canonical package entry
+and compare it with the built target. Record SHA-256 values for the anyboot,
+`haiku.hpkg`, and critical replacement binaries in the hardware validation
+ledger. Build success is not hardware proof: update that ledger only after the
+actual boot, identification, I/O, and device behavior have been observed.
+
 ## Files you will touch
 
 - `overlay/**` — driver sources, module Jamfiles, shared headers.
 - `overlay/Jamfile` — the overlay walk (module registration order).
-- `config/UserBuildConfig.in` — graft template (rarely changes).
+- `config/UserBuildConfig.in` — graft template and default BSP selection.
+- `config/bsp/` — declarative BSP replacement, omission, and image add-on lists.
 - `config/revision.conf` — `UPSTREAM_REVISION`, `JIDO_RENGA_VERSION`.
 - `tools/weave` — installs/refreshes the graft; run after re-configuring a build
   dir.

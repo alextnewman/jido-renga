@@ -1,5 +1,10 @@
 # sdhci_embedded — The Meow Bus Architecture
 
+The normative Winky/Bay Trail hardware, electrical, timing, IOSF, and DMA
+contract lives in
+[`../hardware/winky-bay-trail-sdhci.md`](../hardware/winky-bay-trail-sdhci.md).
+This document defines the driver's software architecture and concurrency model.
+
 > Supersedes `sdhci-worker-architecture.md`. That earlier record described an
 > older, monolithic `SdhciBus` implementation. This document describes the
 > shipping `sdhci_embedded` add-on: the same hard-won hardware discipline,
@@ -26,11 +31,13 @@ deeply unreliable under pressure.
 The design answer is the **meow bus**:
 
 - The interrupt is modeled as a **cat**. The ISR only *meows* — "something
-  happened, maybe." It reads no state, acknowledges no bits, touches no driver
-  data. A meow is an **unordered hint**, never a fact and never a counter.
-- A single **worker thread** is the cat's owner. It is the *sole* accessor of
-  the hardware. When it is nudged (or a lazy timer fires), it gets up and
-  *looks* — it polls the registers and lets a pure policy decide what is real.
+  happened, maybe." It reads only enough raw status to reject line noise,
+  acknowledges no bits, and interprets no command state. A meow is an
+  **unordered hint**, never a fact and never a counter.
+- A single **worker thread** is the cat's owner. It is the sole semantic and
+  mutating accessor of the hardware. When it is nudged (or a lazy timer fires),
+  it gets up and *looks* — it snapshots and acknowledges the registers, retains
+  evidence in software, and lets a pure policy decide what is real.
 - Serialization comes from **stateful convergence in the worker**, not from
   counting transactions or trusting interrupt ordering. The hardware is far too
   unreliable to count on.
@@ -49,14 +56,14 @@ card cage).
 
 ```mermaid
 flowchart TD
-    Matcher["Matcher\n(explicit ACPI/HID allow-list → score)"]
+    BytAcpi["BYT ACPI loader\n(generic ACPI preconditions → HID profile)"]
     Controller["SdhciController\n(maps MMIO+IRQ, boot discipline)"]
     Engine["SdhciEngine\n(the mechanism: registers + worker)"]
     Personality["HostPersonality\n(per-silicon quirks)"]
     Card["Card (SdCard / MmcCard)\n(identification, CSD/CID)"]
     Disk["Disk (Adma2 / Sdma / Pio)\n(block I/O strategy)"]
 
-    Matcher --> Controller
+    BytAcpi --> Controller
     Controller --> Engine
     Controller --> Personality
     Controller --> Card
@@ -66,10 +73,10 @@ flowchart TD
     Disk -. transfers via .-> Engine
 ```
 
-- **Matcher** — an *explicit* allow-list of ACPI HIDs/UIDs mapped to a score and
-  a personality. Nothing is bound implicitly; the layering foolery around ACPI
-  is confined to this one table (see the driver-authoring skill for why ACPI
-  enumeration is quarantined here).
+- **BYT ACPI loader** — mirrors Haiku's generic ACPI SDHCI preconditions, then
+  maps a Bay Trail controller HID to a personality. `_UID` identifies an ACPI
+  instance rather than a card role, so it cannot prevent a known eMMC host from
+  loading. The composed Winky image makes this the sole SDHCI owner.
 - **SdhciController** — acquires MMIO + IRQ, owns the `SdhciEngine`, selects the
   `HostPersonality`, and holds the single `Card` and single `Disk`. It runs the
   boot sequence and publishes the disk node.
@@ -92,7 +99,7 @@ from register-poking** and lives in pure, header-only, host-tested code:
 | `Convergence.h` | *What does one polled status word mean? Retry or stop?* (`IsSpuriousMeow`, `InterpretInterruptStatus`, `ClassifyPoll`, `DecideRetry`) | `test_convergence.cpp` |
 | `Contract.h` | *The written-down assumptions about the silicon* — one home, two enforcement venues (host mock obeys them, on-target trace can shout) | `test_contract.cpp` |
 | `Transaction.h` | Ref-counted ticket, lock-free mailbox, virtual-controller state | `test_transaction.cpp`, `test_concurrency.cpp` |
-| `Matcher.h`, `Personality.h`, `Csd.h`, `Command.h` | Binding policy, quirks, CSD/CID decode, opcode traits | `test_matcher.cpp`, `test_personality.cpp`, `test_csd.cpp`, `test_command.cpp` |
+| `Matcher.h`, `Personality.h`, `Csd.h`, `Command.h` | BYT HID profile, quirks, CSD/CID decode, opcode traits | `test_matcher.cpp`, `test_personality.cpp`, `test_csd.cpp`, `test_command.cpp` |
 
 `SdhciEngine.cpp` is deliberately *thin*: it is only the hands. Every "should we
 believe this / should we retry" decision is a call into the pure core, so the
@@ -137,22 +144,29 @@ primitives**:
 > the **meow only**. The completion path is a real 1:1 delivery and stays a
 > semaphore.
 
-### 2.4 The ISR does no work
+### 2.4 The ISR filters, but does not decide
 
 ```mermaid
 flowchart LR
-    ISR["HandleInterruptMeow"] --> Notify["fMeowCV.NotifyAll()"]
-    Notify --> Return["(worker will LOOK)"]
+    ISR["HandleInterruptMeow"] --> Read["read raw interrupt status"]
+    Read --> Plausible{"managed source?"}
+    Plausible -->|"no: 0 / all-ones /\nunmanaged bits"| Disown["return unhandled"]
+    Plausible -->|yes| Notify["fMeowCV.NotifyAll()"]
+    Notify --> Return["return handled / invoke scheduler\n(worker will LOOK)"]
 ```
 
-`HandleInterruptMeow()` is one line: `fMeowCV.NotifyAll()`. No register reads, no
-bit-acknowledgement, no card-presence handling, no locks, no driver-state
-touches. Because the meow is only a hint, an **early, late, doubled, spurious,
-or wrong-command** meow is harmless — the worker's poll plus stateful
-convergence decide what actually happened. A meow that arrives with no one
-waiting is simply lost, which turns into a timed recheck on the next loop. There
-is no lost-wakeup hazard to defend against with heroics; the design *embraces*
-lost wakeups and lets them decay to polling.
+`HandleInterruptMeow()` performs one deliberately non-semantic read: raw
+interrupt status. It rejects zero, all-ones, and words with no source in the
+driver's signal mask. It never acknowledges a bit, reads a response, interprets
+a command phase, handles card presence, or mutates driver state. A plausible
+source remains only a content-free hint.
+
+Because the meow is only a hint, an **early, late, doubled, spurious, or
+wrong-command** meow is harmless — the worker's accumulated poll evidence plus
+stateful convergence decide what actually happened. A meow that arrives with no
+one waiting is simply lost, which turns into a timed recheck on the next loop.
+When a waiter is released, the ISR asks Haiku to schedule promptly so the worker
+can lower the level-triggered source before it retriggers.
 
 ## 3. The Convergence Loop — the heart of the meow bus
 
@@ -163,8 +177,9 @@ Both the idle dispatch wait and the in-command wait share one shape:
 ```mermaid
 flowchart TD
     Start(["attempt: issue command"]) --> Arm["arm entry:\nfMeowCV.Add(&entry)"]
-    Arm --> Poll["read-only poll:\n_ReadAndClearInterrupts()"]
-    Poll --> Classify["ClassifyPoll(status, dataPresent)"]
+    Arm --> Poll["snapshot + W1C ack:\n_ReadAndClearInterrupts()"]
+    Poll --> Accumulate["accumulated |= managed snapshot bits"]
+    Accumulate --> Classify["ClassifyPoll(accumulated, dataPresent)"]
     Classify --> Term{"terminal\nverdict?"}
     Term -->|yes| Handle["read response / set AttemptResult\nbreak → DecideRetry"]
     Term -->|"no (KeepPolling)"| Dead{"past\ndeadline?"}
@@ -180,16 +195,19 @@ The steps, and *why each one is exactly where it is*:
    it marks our already-armed entry, so the `Wait()` below returns immediately
    instead of losing the pulse. This closes the classic lost-wakeup window
    without a lock.
-2. **Poll read-only.** `_ReadAndClearInterrupts()` reads the status word and
-   clears the latched bits (write-1-to-clear). This is a *look*, not a command
-   action. A meow never interrupts, aborts, or re-issues a command — it only
-   makes the worker look. `ClassifyPoll` is the **sole** arbiter of "are we
-   converged?"
+2. **Snapshot, acknowledge, accumulate.** `_ReadAndClearInterrupts()` reads one
+   status snapshot and immediately write-1-clears the managed bits so a
+   level-triggered source cannot stay asserted. The worker ORs that evidence
+   into an attempt-local accumulator before classification. Thus an early
+   `CommandComplete` is retained after acknowledgement until a later
+   `TransferComplete` arrives, and a later error still outranks partial
+   completion. A meow never aborts or re-issues a command; `ClassifyPoll` remains
+   the sole arbiter of "are we converged?"
 3. **Terminal → handle.** On a terminal verdict, read the response, set the
    attempt result (including the OCR sanity check), and leave the loop to the
    retry decision.
 4. **Deadline → timeout.** A wall-clock deadline per attempt (the command's own
-   `timeoutMs` when it set one, else ~200 ms) bounds the wait. Blowing the
+   `timeoutMs` when it set one, else ~2 s) bounds the wait. Blowing the
    deadline is the graceful "the bus went silent" fallback — it becomes a
    `CommandTimeout` the retry policy can act on.
 5. **CV wait, then re-poll.** `entry.Wait(B_RELATIVE_TIMEOUT, recheck)` sleeps
@@ -203,10 +221,17 @@ flight, so we arm and wait; the completion interrupt meows almost immediately;
 see one wait that gets pulsed — repolls and retries only show up when the bus is
 genuinely screwed.** That is the design working, not failing.
 
+Before issue, the engine treats `R1b` as a data-line command even without a
+payload: both Command Inhibit and Data Inhibit must clear. This mirrors Linux's
+`sdhci_data_line_cmd()` rule. Card selection itself uses plain R1, also matching
+Linux's MMC core; R1b remains for commands that actually require busy signaling,
+such as eMMC CMD6 and the Bay Trail CMD12 override.
+
 ### 3.1 Stateful convergence is the serializer
 
 There is no transaction counter and no reliance on interrupt ordering. Each
-attempt runs to a terminal `PollVerdict`; then the worker updates its
+attempt accumulates acknowledged status evidence until it reaches a terminal
+`PollVerdict`; then the worker updates its
 `VirtualControllerState` from present-state registers and asks the pure
 `DecideRetry()` what to do next: **succeed**, **fail**, or **retry (optionally
 with a bus reset first)**. Convergence is entirely worker-local — callers see
@@ -220,9 +245,12 @@ Bay Trail latches and **accumulates** CMD_CMP/TRANS_CMP bits from earlier
 commands. If those stale bits are not cleared before `SendCommand`, the very
 first poll of the next attempt would read them and `ClassifyPoll` would call the
 command already complete — an instant *false success*. So `_IssueToHardware`
-drains stale interrupt bits (write-1-to-clear, skipping the spurious
-all-ones/all-zeros word) immediately before issuing. This is a documented
-hardware necessity, not hygiene.
+drains stale interrupt bits immediately before issuing. Each write-1-to-clear is
+followed by a volatile readback and the drain repeats until the managed bits are
+stable-clear (skipping the spurious all-ones/all-zeros word). If managed
+completion remains after the bounded drain, the engine refuses to issue and
+lets convergence recover the lines rather than accepting the previous
+command's response. This is a documented hardware necessity, not hygiene.
 
 ## 4. Concurrency layers
 
@@ -287,9 +315,10 @@ Why this shape:
 > the engine is a single integrated layer, that specific motivation is gone —
 > but the *invariant it enforced* is exactly what the IORequest path still
 > needs: **a caller can vanish without exploding the bus.** The ticket/refcount
-> model is retained deliberately as that safety net. When `DoIO` is wired to an
-> IOScheduler, each per-operation `Transfer → Execute` is a synchronous,
-> bus-locked, ticketed sub-operation, so a cancelled IORequest still resolves
+> model is retained deliberately as that safety net. The eMMC/ADMA2 path uses
+> synchronous, bus-locked, ticketed IOScheduler operations. The removable-SD
+> recovery path uses one serialized overlay-owned request worker and copies
+> through a contiguous staging buffer; each staged media command still resolves
 > through the same timeout-and-reclaim path. Any future simplification of the
 > mailbox must preserve this property.
 
@@ -316,10 +345,11 @@ incidental detail.
 ## 7. VirtualControllerState
 
 The worker keeps a small `VirtualControllerState` cache — command/data inhibit,
-card-inserted, regulator-stable — updated from present-state registers at
-attempt boundaries. `DecideRetry` consults it (e.g. do not keep retrying a
-command when the card was genuinely removed). It is a worker-local model, never
-shared with callers.
+card-inserted, and regulator readiness — updated at attempt boundaries.
+Regulator readiness is read from the SDHCI 4.10+ indication when that register
+contract exists and treated as satisfied on older hosts after their profile
+settle sequence. `DecideRetry` consults the cache (e.g. do not keep retrying a
+command when the card was genuinely removed). It is a worker-local model.
 
 ## 8. HostPersonality (Bay Trail quirks)
 
@@ -333,12 +363,12 @@ The personality is the per-silicon quirk seam, kept out of the mechanism:
   preset-value mode via the one register hook, `DisablePresetValueMode`).
 
 The Generic personality is permissive and is the default; Bay Trail is selected
-by the Matcher.
+by the BYT ACPI loader.
 
 ## 9. Boot discipline
 
 `SdhciController::Boot()` runs synchronously on the device_manager thread — this
-is the single **active init**: select the personality from the ACPI HID/UID
+is the single **active init**: select the personality from the ACPI HID profile
 (`_SelectPersonality`), map MMIO + IRQ from `_CRS` (`_MapResources`), clear the
 Bay Trail OCP timeout over the IOSF-MBI sideband *before any SDHCI register
 access* (`_ApplyOcpFixup`, quirk-gated and a soft dependency), bring the engine
@@ -348,6 +378,11 @@ worker's condition variable exists), identify the card, and publish the `Disk`
 node to devfs — that last step is what lets boot-from-SD win the race against the
 RAMDisk. Identification uses the *same* `Execute()` path as runtime traffic: if
 it works at init, it works at runtime, and vice versa.
+
+Because this controller can host boot media, the Winky BSP composes
+`sdhci_embedded`, its `iosf_mbi` dependency, and both `kernel/boot` links into
+`haiku.hpkg`. Haiku's stage-two loader exposes that package before ordinary
+device-manager discovery; loose non-packaged add-ons are not visible yet.
 
 Boot never touches hot-plug: either the card is present now and we bind it, or
 it is not. Only *after* publish do we conditionally start the watcher, and it
@@ -362,45 +397,40 @@ controller:
 | Thread / context | Priority | Lifetime | Present when | Role |
 |---|---|---|---|---|
 | **device_manager init** | caller's | transient (returns after `Boot()`) | always | The one active init: map, reset, identify, publish. Runs `Boot()` synchronously, then leaves. |
-| **Engine worker** (`sdhci_emb worker`) | `B_REAL_TIME_PRIORITY` | whole controller lifetime | always | The meow bus's sole hardware accessor: drives transactions, drains + idle-drains interrupts. Exactly one. |
+| **Engine worker** (`sdhci_emb worker`) | `B_NORMAL_PRIORITY` | whole controller lifetime | always | The meow bus's sole semantic/mutating hardware owner: drives transactions, acknowledges snapshots, and idle-drains late sources. Exactly one. |
+| **SDMA request worker** (`sdhci_embedded SDMA I/O`) | `B_NORMAL_PRIORITY + 2` | whole disk lifetime | **removable SD profile only** | Serializes `IORequest`s, stages whole-sector windows, and notifies each request exactly once. It never uses `IOSchedulerSimple`. |
 | **Hot-plug watcher** (`sdhci_emb watcher`) | `B_LOW_PRIORITY` | whole controller lifetime | **removable slot only** | Polls `CardPresent()` every 500 ms for FUTURE insert/remove. **Never spawned for soldered eMMC.** |
-| **ISR** (interrupt context) | — | per interrupt | always (after `_InstallInterrupt`) | A bare meow: one `NotifyAll`, reads no registers, returns `B_HANDLED_INTERRUPT`. |
-| **Caller / IORequest threads** | external | external | on traffic | mmc_disk / IO-scheduler threads posting transactions and waiting on the completion sem. Not ours; may vanish (see §5) without harming the bus. |
+| **ISR** (interrupt context) | — | per interrupt | always (after `_InstallInterrupt`) | Reads raw status only to reject empty/floating/unmanaged sources, then emits one content-free `NotifyAll`; never acknowledges or interprets command state. |
+| **Caller / IORequest threads** | external | external | on traffic | Post asynchronous requests to the selected disk path. They may vanish (see §5) without harming the bus. |
 
-So a **removable SD** controller runs two long-lived threads of its own (worker
-+ watcher); a **soldered eMMC** controller runs exactly one (worker). The gate
-is `MatchProfile::removable`, resolved at `_SelectPersonality` and checked in
-`_StartWatcher` — no probing, no card-detect capability sniffing at boot.
+So a **removable SD** controller runs three long-lived threads of its own
+(engine worker + SDMA request worker + watcher). A **soldered eMMC** controller
+runs the engine worker plus the captive scheduler threads used by its ADMA2
+path. The hot-plug gate is `MatchProfile::removable`, resolved at
+`_SelectPersonality` and checked in `_StartWatcher` — no probing, no card-detect
+capability sniffing at boot.
 
 ## 10. Host test surface
 
 Because the dangerous reasoning is pure, it is proven off-target. The suite
-(`tests/`) currently runs green at **65 tests / 263 checks**, covering:
+(`tests/`) currently runs green at **86 tests / 399 checks**, covering:
 
 - `convergence` / `contract` — status-word interpretation, spurious filtering,
-  storm-safe idle-drain, the data-command completion invariant (a data command
-  is done only on TransferComplete, never on the earlier CommandComplete), retry
-  decisions.
+  ISR source filtering, snapshot acknowledgement, software accumulation of
+  split completion, late-error precedence, storm-safe idle drain, the
+  data-command completion invariant, and retry decisions.
 - `transaction` / `concurrency` / `mailbox` / `vcstate` — ticket refcount
   lifecycle, mailbox CAS protocol, reclaim-on-timeout, virtual-controller
   readiness gates, and a threaded caller↔worker stress rail that asserts *no
   false success* and *no use-after-free* (under ASan) when callers time out and
   abandon work.
-- `matcher` / `personality` / `csd` / `command` — binding scores, the
+- `matcher` / `personality` / `csd` / `command` — BYT HID profiles, the
   `removable` slot flag (gates the hot-plug watcher), quirks, CSD/EXT_CSD decode
   (including the zero-SEC_COUNT reject), opcode traits.
+- `staged_request` — aligned and unaligned whole-sector staging-window planning,
+  including the 512 KiB boundary.
 - `iosf_mbi` — the sideband MCR/MDR wire encoding (`FormMcr` / `McrxFor`),
   cross-checked against Linux, so the BayTrail OCP fixup pokes the right bits.
-
-- `convergence` / `contract` — status-word interpretation, spurious filtering,
-  the data-command completion invariant (a data command is done only on
-  TransferComplete, never on the earlier CommandComplete), retry decisions.
-- `transaction` / `concurrency` — ticket refcount lifecycle, mailbox CAS
-  protocol, reclaim-on-timeout, and a threaded caller↔worker stress rail that
-  asserts *no false success* and *no use-after-free* (under ASan) when callers
-  time out and abandon work.
-- `matcher` / `personality` / `csd` / `command` — binding scores, quirks, CSD/CID
-  decode, opcode traits.
 
 The engine's register-poking (`SdhciEngine.cpp`) is intentionally **not**
 host-compiled — it needs real MMIO and kernel primitives. Its correctness rests
@@ -411,13 +441,16 @@ the host.
 
 ## 11. Design principles summary
 
-1. **The ISR does no work.** One `NotifyAll`. No reads, no acks, no state.
+1. **The ISR filters but does not decide.** One raw status read, no
+   acknowledgement or command interpretation; only managed sources may meow.
 2. **The meow is a lossy hint, not a counter.** CV pulse; a lost/early/late/
    doubled/wrong-command meow is harmless and decays to polling.
-3. **The worker is the sole hardware accessor.** All register access, response
-   reading, and state updates happen there.
-4. **Pre-armed poll → CV wait → re-poll.** Arm before looking; the poll (not the
-   pulse) decides convergence; the deadline is the graceful polling fallback.
+3. **The worker is the sole semantic and mutating hardware owner.** All
+   acknowledgement, response reading, command interpretation, and state updates
+   happen there.
+4. **Pre-arm → snapshot/ack/accumulate → CV wait → repeat.** The accumulated
+   hardware evidence (not the pulse) decides convergence; the deadline is the
+   graceful polling fallback.
 5. **As fast as interrupts, as slow as polling.** Never a busy-spin; a lazy
    recheck, because hammering this bus wedges it.
 6. **Serialization is stateful convergence, not transaction counting.** The
@@ -430,7 +463,8 @@ the host.
    caller cannot explode the bus.
 10. **Command constraints are load-bearing and travel on the ticket.** Per-opcode
     retry/timeout/reset policy is hard-won, not cosmetic.
-11. **Drain stale interrupt bits before issuing.** Bay Trail accumulates them;
-    an undrained bit is a false success.
+11. **Acknowledge every observed snapshot and drain before issuing.** Software
+    retains split evidence; hardware must not retain a level-triggered source or
+    stale completion.
 12. **Judgement is pure and host-tested; the engine is thin hands.** Prove the
     reasoning against garbage-hardware mocks before trusting metal.

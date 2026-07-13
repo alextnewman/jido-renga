@@ -26,4 +26,8 @@
 
 JIDO_RENGA_TOP = @JIDO_RENGA_TOP@ ;
 
+# The default BSP composes a Winky-owned image. Set this to `none` before the
+# overlay walk to build the add-ons without applying a BSP image policy.
+JIDO_RENGA_BSP ?= winky ;
+
 DeferredSubInclude JIDO_RENGA_TOP overlay ;

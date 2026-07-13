@@ -9,57 +9,47 @@
 #include "Command.h"
 #include "SdhciEngine.h"
 
-// Card base + dialect factory. Probe() runs the dialect-neutral opening moves
-// (CMD0, CMD8) then instantiates the concrete Card that speaks the right
-// language. The identify sequences themselves live in SdCard.cpp / MmcCard.cpp.
+// Card base + BSP-directed dialect factory.
 
 namespace jr::sdhci {
 
 
 Card*
-Card::Probe(SdhciEngine& engine)
+Card::Create(SdhciEngine& engine, CardDialect dialect)
 {
-	CommandOutcome outcome;
+	engine.SetDialect(dialect);
+	for (int attempt = 0; attempt < 2; attempt++) {
+		if (dialect == CardDialect::Mmc)
+			engine.EmmcHardwareReset();
 
-	// eMMC vendor hardware reset (no-op without the quirk): force a clean card
-	// state before the very first command.
-	engine.EmmcHardwareReset();
+		CommandOutcome outcome;
+		if (engine.Execute(Cmd::GoIdleState, 0, ReplyType::None, outcome) != B_OK)
+			return nullptr;
+		snooze(30000);
 
-	// CMD0: reset every card on the bus to the idle state. A timeout here means
-	// the slot is empty (removable) -- there is nothing to identify.
-	if (engine.Execute(Cmd::GoIdleState, 0, ReplyType::None, outcome) != B_OK)
-		return nullptr;
+		bool version2 = false;
+		if (dialect == CardDialect::Sd) {
+			version2 = engine.Execute(Cmd::SendIfCond, 0x1aa, ReplyType::R7,
+				outcome) == B_OK && (outcome.response[0] & 0xfff) == 0x1aa;
+		}
 
-	// Spec requires >= 8 clocks after CMD0; Bay Trail needs far longer (~20ms)
-	// or the next command times out.
-	snooze(30000);
+		Card* card = dialect == CardDialect::Sd
+			? static_cast<Card*>(new(std::nothrow) SdCard(version2))
+			: static_cast<Card*>(new(std::nothrow) MmcCard);
+		if (card == nullptr)
+			return nullptr;
 
-	// CMD8 (SEND_IF_COND): SD 2.0+ echoes the check pattern; eMMC (which reads
-	// CMD8 as the 512-byte EXT_CSD data command) and SD v1 do not answer.
-	// 0x1AA = 2.7-3.6V, check pattern 0xAA.
-	const bool isSd = engine.Execute(Cmd::SendIfCond, 0x1aa, ReplyType::R7,
-		outcome) == B_OK && (outcome.response[0] & 0xff) == 0xaa;
-
-	Card* card = nullptr;
-	if (isSd) {
-		card = new(std::nothrow) SdCard;
-		engine.SetDialect(CardDialect::Sd);
-	} else {
-		// CMD8 with no data phase can leave an eMMC in an error state; reset the
-		// bus to clear it before attempting the MMC (CMD1) identification.
-		engine.RecoverBus();
-		card = new(std::nothrow) MmcCard;
-		engine.SetDialect(CardDialect::Mmc);
-	}
-
-	if (card == nullptr)
-		return nullptr;
-
-	if (card->Identify(engine) != B_OK) {
+		const status_t status = card->Identify(engine);
+		if (status == B_OK)
+			return card;
+		JR_WARN(engine.Label(), "%s identification attempt %d failed: %s\n",
+			DialectLabel(dialect), attempt + 1, strerror(status));
 		delete card;
-		return nullptr;
+
+		if (attempt == 0)
+			engine.RecoverBus();
 	}
-	return card;
+	return nullptr;
 }
 
 

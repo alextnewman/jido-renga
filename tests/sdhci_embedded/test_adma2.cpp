@@ -6,6 +6,8 @@
 
 #include "Adma2.h"
 
+#include <stddef.h>
+
 using namespace jr::sdhci;
 
 
@@ -17,10 +19,14 @@ JR_TEST(adma2, single_segment_finalizes_with_end)
 	JR_CHECK(b.Finalize());
 
 	JR_CHECK_EQ(b.Count(), 1u);
-	JR_CHECK_EQ(table[0].length, 512);
-	JR_CHECK_EQ(table[0].address, 0x1000u);
-	JR_CHECK_EQ(table[0].attributes, static_cast<uint8_t>(Adma2Attr::End));
-	JR_CHECK_EQ(table[0].reserved, 0);
+	JR_CHECK_EQ(AdmaLittle16(table[0].attributes),
+		static_cast<uint16_t>(Adma2Attr::TransferEnd));
+	JR_CHECK_EQ(AdmaLittle16(table[0].length), 512);
+	JR_CHECK_EQ(AdmaLittle32(table[0].address), 0x1000u);
+	JR_CHECK_EQ(sizeof(Adma2Descriptor), 8u);
+	JR_CHECK_EQ(offsetof(Adma2Descriptor, attributes), 0u);
+	JR_CHECK_EQ(offsetof(Adma2Descriptor, length), 2u);
+	JR_CHECK_EQ(offsetof(Adma2Descriptor, address), 4u);
 }
 
 
@@ -44,12 +50,14 @@ JR_TEST(adma2, oversized_segment_splits)
 	JR_CHECK(b.Finalize());
 
 	JR_CHECK_EQ(b.Count(), 2u);
-	JR_CHECK_EQ(table[0].length, 0);				// 65536 wraps to 0
-	JR_CHECK_EQ(table[0].address, 0x2000u);
-	JR_CHECK_EQ(table[0].attributes, static_cast<uint8_t>(Adma2Attr::Valid));
-	JR_CHECK_EQ(table[1].length, 34464);
-	JR_CHECK_EQ(table[1].address, 0x2000u + 65536u);
-	JR_CHECK_EQ(table[1].attributes, static_cast<uint8_t>(Adma2Attr::End));
+	JR_CHECK_EQ(AdmaLittle16(table[0].length), 0);	// 65536 encodes as 0
+	JR_CHECK_EQ(AdmaLittle32(table[0].address), 0x2000u);
+	JR_CHECK_EQ(AdmaLittle16(table[0].attributes),
+		static_cast<uint16_t>(Adma2Attr::Transfer));
+	JR_CHECK_EQ(AdmaLittle16(table[1].length), 34464);
+	JR_CHECK_EQ(AdmaLittle32(table[1].address), 0x2000u + 65536u);
+	JR_CHECK_EQ(AdmaLittle16(table[1].attributes),
+		static_cast<uint16_t>(Adma2Attr::TransferEnd));
 }
 
 
@@ -59,7 +67,7 @@ JR_TEST(adma2, exact_max_segment_encodes_zero_length)
 	Adma2Builder b(table, 2);
 	JR_CHECK(b.AddSegment(0x4000, kAdma2MaxSegmentBytes));
 	JR_CHECK_EQ(b.Count(), 1u);
-	JR_CHECK_EQ(table[0].length, 0);
+	JR_CHECK_EQ(AdmaLittle16(table[0].length), 0);
 }
 
 
@@ -72,10 +80,12 @@ JR_TEST(adma2, multi_segment_only_last_is_end)
 	JR_CHECK(b.Finalize());
 
 	JR_CHECK_EQ(b.Count(), 2u);
-	JR_CHECK_EQ(table[0].attributes, static_cast<uint8_t>(Adma2Attr::Valid));
-	JR_CHECK_EQ(table[1].attributes, static_cast<uint8_t>(Adma2Attr::End));
-	JR_CHECK_EQ(table[0].address, 0x1000u);
-	JR_CHECK_EQ(table[1].address, 0x8000u);
+	JR_CHECK_EQ(AdmaLittle16(table[0].attributes),
+		static_cast<uint16_t>(Adma2Attr::Transfer));
+	JR_CHECK_EQ(AdmaLittle16(table[1].attributes),
+		static_cast<uint16_t>(Adma2Attr::TransferEnd));
+	JR_CHECK_EQ(AdmaLittle32(table[0].address), 0x1000u);
+	JR_CHECK_EQ(AdmaLittle32(table[1].address), 0x8000u);
 }
 
 
@@ -87,4 +97,17 @@ JR_TEST(adma2, overflow_is_reported_not_written)
 	JR_CHECK(!b.AddSegment(0x2000, 512));		// no room
 	JR_CHECK(b.Overflowed());
 	JR_CHECK(!b.Finalize());					// refuses to finalize a bad table
+}
+
+
+JR_TEST(adma2, rejects_unaligned_or_wrapping_addresses)
+{
+	Adma2Descriptor table[2];
+	Adma2Builder unaligned(table, 2);
+	JR_CHECK(!unaligned.AddSegment(0x1001, 512));
+	JR_CHECK(unaligned.Overflowed());
+
+	Adma2Builder wrapping(table, 2);
+	JR_CHECK(!wrapping.AddSegment(0xfffffff0u, 512));
+	JR_CHECK(wrapping.Overflowed());
 }

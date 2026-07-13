@@ -17,6 +17,7 @@ PioDisk::Restrictions() const
 {
 	DmaRestrictions r;
 	r.alignment = 4;
+	r.maxTransferSize = 512 * 1024;
 	r.maxSegmentSize = 512 * 1024;
 	r.maxSegmentCount = 1;
 	return r;

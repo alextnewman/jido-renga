@@ -90,13 +90,13 @@ candidate for later discussion.
   so the ACPI device *is* our immediate parent: `_MapResources` and
   `_SelectPersonality` both walk up exactly **once**. Confirmed by reading the
   glue's node registration; resource mapping targets the right node.
-- **Block-IO scheduler wiring is kcheck-only.** `Disk::DoIO` now builds a real
-  `DMAResource` + `IOSchedulerSimple` from each strategy's `Restrictions()` and
-  runs each decomposed operation through `Transfer()` (matching the fork's
-  `mmc_disk` scheduler path). This compiles against the real kernel headers but
-  cannot be host-tested — it exercises only on hardware. Verify on-target that
-  operation decomposition, physical vecs, and `OperationCompleted` accounting
-  behave (especially the SDMA single-segment bounce-buffer case).
+- **Block-I/O split is deliberate.** eMMC/ADMA2 keeps Haiku's
+  `DMAResource` + `IOSchedulerSimple`. Removable SDMA uses an overlay-owned
+  serialized request worker and a contiguous 512 KiB staging buffer. This is not
+  a stylistic scheduler replacement: KDL proved that a partial-operation error
+  can leave `IOSchedulerSimple::_Scheduler()` holding a freed `RequestOwner`
+  (`R15 = 0xdeadbeefdeadbeef`). The SDMA path therefore never creates
+  `IOOperation`s, and its pure staging-window planner is host-tested.
 - **Interrupt path is kcheck-only.** `_MapResources` → `_InstallInterrupt` now
   installs a real ISR that forwards to the engine's `HandleInterruptMeow`, and
   the worker's idle path drains storm-prone latched bits (see §7). Neither the
@@ -205,42 +205,28 @@ resource. Notes for a later hardware-informed pass:
   happens to an open `Disk` when the card leaves) is the thing to be critical
   about here.
 
-## 9. IOSF-MBI rebuild — decisions and the behavior change vs the fork
+## 9. IOSF-MBI rebuild — current mandatory BSP contract
 
-The `iosf_mbi` bus manager was rebuilt clean-room against Linux
-(`arch/x86/platform/intel/iosf_mbi.c`), not ported from the fork. Two fork bugs
-are fixed, and one behavior genuinely changes — flag it for discussion.
+The current implementation supersedes the earlier soft-dependency experiment.
+The normative values and validation status now live in
+`docs/hardware/winky-bay-trail-sdhci.md`.
 
-- **The fork's OCP fixup never actually ran (dead init).** The fork initialized
-  its singleton from free `init_module()` / `uninit_module()` functions — a
-  Linux idiom Haiku never calls. Its real std_ops `B_MODULE_INIT` therefore saw
-  a null singleton and returned `B_ERROR`, so `get_module()` failed and
-  `sdhci_byt_iosf_mbi_ocp_fixup()` silently no-op'd. **This means the reference's
-  "working" SD + SDMA path worked WITHOUT the OCP fixup.** Our rewrite moves
-  discovery into `B_MODULE_INIT`, so on real Bay Trail the fixup will now run for
-  the first time. That is the intended fix, but it is a behavior change from the
-  binary that was proven on hardware — if the SD path ever regresses, this is the
-  first suspect. Kept as a **soft dependency** (missing module => log + continue)
-  precisely so it cannot fail a boot that used to work.
-- **The fork bound the wrong PCI function.** Its device list put the PMC
-  (8086:0F1C) first and even included the SDHCI controllers (0F14/15/16). The
-  message-bus registers (MCR/MDR/MCRX at 0xD0..0xD8) live ONLY in the SoC
-  transaction-router / host-bridge config space (0:0:0). Writing 0xD0 on the PMC
-  or an SDHCI function is not a sideband access — at best inert, at worst poking
-  a real register. We bind strictly to the host bridge (BYT 8086:0F00,
-  CHT 8086:2280), matching Linux's `iosf_mbi_pci_ids`.
-- **The MCR/MDR encoding was the one correct part and is preserved** — now in a
-  pure, host-tested header (`IosfMbiProtocol.h`: `FormMcr`, `McrxFor`), verified
-  against Linux's `mbi_form_mcr` + `MBI_MASK_HI/LO` split.
-- **Things to be critical about later:** (1) the SCCEP OCP magic (unit 0x63,
-  reg 0x1078, mask [10:8]) is inherited BYT-specific lore — confirm on metal that
-  clearing it is what unblocks long/eMMC/high-speed commands, and whether the
-  working SD path is truly indifferent to it. (2) The fixup runs once at boot and
-  releases the module immediately; if other consumers (audio/thermal/PUnit) ever
-  need it, promote it to a longer-lived hold. (3) No locking around the MCR/MDR
-  handshake yet — fine for a single boot-time caller, but the real Linux driver
-  serializes because the sideband is shared; add a lock before a second consumer
-  lands.
+- **Formal dependency chain.** `sdhci_embedded` depends on `iosf_mbi`;
+  `iosf_mbi` depends on Haiku's device manager, PCI bus manager, and x86 PCI
+  controller driver. No leaf calls `get_module()` opportunistically.
+- **Early PCI ordering is handled through device_manager.** Haiku scans ACPI
+  bus managers before `busses/pci`, so IOSF may be requested before the PCI
+  domain exists. The module invokes the dependency-provided x86 driver's normal
+  `register_device()` hook, then uses only Haiku's PCI API. There is no raw
+  CF8/CFC fallback and no captive Haiku patch.
+- **Only the transaction router is valid.** MCR/MDR/MCRX at `0xd0..0xd8` are
+  accessed at PCI `0:0.0`, accepting Bay Trail `8086:0f00` and Cherry Trail
+  `8086:2280`. PMC and SDHCI functions are never candidates.
+- **OCP is mandatory and verified.** SCCEP unit `0x63`, register `0x1078`, bits
+  `[10:8]` must clear before any SDHCI MMIO access. Read, write, or readback
+  failure aborts controller initialization.
+- **The mailbox is serialized.** A mutex covers each complete MCR/MDR/MCRX
+  handshake so future consumers cannot interleave sideband transactions.
 
 ## 10. First real cross-build — findings the syntax-only kcheck could not surface
 
@@ -367,3 +353,25 @@ are deferred for discussion.
   state machine into its own pure translation unit (mirroring sdhci's
   Matcher/Personality split) so it can be unit-tested against captured EC byte
   streams; until then it stays covered by build + hygiene + registration checks.
+
+## 12. Winky becomes an installable Haiku machine
+
+The July 2026 live validation closed the original BSP loop:
+
+- removable SD boots reliably through the overlay-owned serialized SDMA worker;
+- eMMC completes identification with CMD7 encoded as Linux's plain R1;
+- Haiku was installed onto the eMMC through the ADMA2 path, with high sustained
+  performance and no storage failure;
+- the guarded I2C composition, Atmel touchpad, stock Elan support, and ChromeOS
+  EC keyboard coexist in the same image and the machine's input devices work.
+
+This matters beyond a successful boot. The tested image exercised the entire
+stack in one session: image-time driver ownership, stage-two boot links,
+ACPI/PCI/IOSF prerequisites, hostile SDHCI interrupt convergence, removable-SD
+staging, eMMC mode negotiation, ADMA2 block writes, partitioning, filesystem
+installation, and post-module input discovery. Winky is now a usable target for
+Haiku development rather than a driver bring-up fixture.
+
+The validated anyboot is
+`generated.x86_64/haiku-nightly-anyboot.iso`, SHA-256
+`556e56770597630955a08884930d53e8edc1b2609de26916f8ba24fb8a2744fb`.

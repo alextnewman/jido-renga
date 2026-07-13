@@ -11,13 +11,12 @@
 // for a single command. It does not virtualize a kernel -- it just codifies our
 // timing assumptions so the real poll classifier can be driven against them:
 //
-//   * a command latches CommandComplete after `cmdCompleteAtPoll` polls;
-//   * a data command latches TransferComplete later, at `xferCompleteAtPoll`;
-//   * bits accumulate (write-1-to-clear is the engine's job, not modeled here).
+//   * a command presents CommandComplete at `cmdCompleteAtPoll`;
+//   * a data command presents TransferComplete later, at `xferCompleteAtPoll`;
+//   * each word is a one-poll snapshot, as if the worker acknowledged it.
 //
-// The engine's poll loop is expected to converge on the *justified* terminal
-// event, not the first bit it happens to see. Point `xferCompleteAtPoll` after
-// `cmdCompleteAtPoll` and you have reproduced exactly the trap bug #4 fell into.
+// The engine's software accumulator must retain the first snapshot while
+// acknowledging hardware, then converge on the *justified* terminal event.
 
 namespace jr::test {
 
@@ -29,16 +28,16 @@ struct FakeController {
 	uint32_t	errorAtPoll = 0xffffffffu;	// no error by default
 	uint32_t	errorBits = 0;
 
-	// The status a real (assumed) controller would present at poll `n`.
+	// The newly latched status a controller would present at poll `n`.
 	uint32_t
 	StatusAtPoll(uint32_t n) const
 	{
 		uint32_t s = 0;
-		if (n >= cmdCompleteAtPoll)
+		if (n == cmdCompleteAtPoll)
 			s |= jr::sdhci::irq::kCommandComplete;
-		if (dataPresent && n >= xferCompleteAtPoll)
+		if (dataPresent && n == xferCompleteAtPoll)
 			s |= jr::sdhci::irq::kTransferComplete;
-		if (n >= errorAtPoll)
+		if (n == errorAtPoll)
 			s |= errorBits;
 		return s;
 	}

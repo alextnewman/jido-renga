@@ -12,16 +12,18 @@
 //
 // The Bay Trail controller's interrupts are spurious, late, and sometimes
 // missing. We model the interrupt line as a cat: an ISR only *meows*
-// ("something happened, maybe") -- it never reads state. The worker thread is
-// the owner who gets up to see what the device actually wants, by polling.
+// ("something happened, maybe"). It reads the raw status only to reject an
+// empty/floating/unmanaged source; the worker remains the sole owner that
+// acknowledges and interprets controller state.
 //
 // This header holds the *policy* half of that model, split out from the
 // *mechanism* (the register poking in SdhciEngine) so the decisions are pure
 // and can be proven off-target:
 //
-//   InterpretInterruptStatus() -- what does one polled status word mean?
-//   IsSpuriousMeow()           -- is this word just line noise?
-//   DecideRetry()              -- given one attempt's outcome, what next?
+//   InterpretInterruptStatus()  -- what does accumulated evidence mean?
+//   IsActionableMeow()          -- should this IRQ wake the worker?
+//   AccumulateInterruptStatus() -- retain split completion/error evidence?
+//   DecideRetry()               -- given one attempt's outcome, what next?
 //
 // The engine's worker loop is then a thin driver over these decisions.
 // ===========================================================================
@@ -35,12 +37,22 @@ namespace jr::sdhci {
 namespace irq {
 	constexpr uint32_t kCommandComplete		= 1u << 0;
 	constexpr uint32_t kTransferComplete	= 1u << 1;
+	constexpr uint32_t kBufferReadReady		= 1u << 5;
 	constexpr uint32_t kCardInsertion		= 1u << 6;
 	constexpr uint32_t kCardRemoval			= 1u << 7;
 	constexpr uint32_t kErrorBit			= 1u << 15;
 	constexpr uint32_t kCommandTimeout		= 1u << 16;
+	constexpr uint32_t kCommandCrc			= 1u << 17;
+	constexpr uint32_t kCommandEndBit		= 1u << 18;
+	constexpr uint32_t kCommandIndex		= 1u << 19;
 	constexpr uint32_t kDataTimeout			= 1u << 20;
 	constexpr uint32_t kDataCrc				= 1u << 21;
+	constexpr uint32_t kDataEndBit			= 1u << 22;
+	constexpr uint32_t kCurrentLimit		= 1u << 23;
+	constexpr uint32_t kAutoCommand			= 1u << 24;
+	constexpr uint32_t kAdma				= 1u << 25;
+	constexpr uint32_t kTuning				= 1u << 26;
+	constexpr uint32_t kAllUnderlyingErrors	= 0x07ff0000u;
 } // namespace irq
 
 
@@ -48,18 +60,18 @@ namespace irq {
 // the "which bits matter" policy lives in one host-testable place instead of
 // buried in the engine's translation unit.
 //
-//   kDrainMask  -- the completion/timeout/error bits a command's poll loop
-//                  latches; write-1-to-cleared once before an issue and once at
-//                  the terminal verdict so each attempt starts from a clean slate.
-//   kSignalMask -- the sources we keep signal-enabled so they may pulse the ISR
-//                  "meow". A superset of the command bits that also includes the
-//                  card insert/remove events, so the idle worker (see
-//                  StormSafeIdleClear) is responsible for clearing them.
+//   kDrainMask        -- completion/timeout/error evidence retained by the
+//                        worker and acknowledged snapshot-by-snapshot.
+//   kStatusEnableMask -- only bits the worker understands are allowed to latch.
+//   kSignalMask       -- the same command sources may pulse the ISR "meow".
+//
+// Card insertion/removal are intentionally absent. The Controller's slow
+// present-state watcher owns hot-plug detection, and signal-enabling card events
+// would let an otherwise irrelevant level-triggered bit storm the command path.
 constexpr uint32_t kDrainMask = irq::kCommandComplete | irq::kTransferComplete
-	| irq::kCommandTimeout | irq::kDataTimeout | irq::kDataCrc | irq::kErrorBit;
-constexpr uint32_t kSignalMask = irq::kCommandComplete | irq::kTransferComplete
-	| irq::kCardInsertion | irq::kCardRemoval | irq::kCommandTimeout
-	| irq::kDataTimeout;
+	| irq::kBufferReadReady | irq::kAllUnderlyingErrors | irq::kErrorBit;
+constexpr uint32_t kStatusEnableMask = kDrainMask;
+constexpr uint32_t kSignalMask = kDrainMask;
 
 
 // A spurious "meow": the status word is all-zeros (nothing latched) or all-ones
@@ -71,14 +83,41 @@ IsSpuriousMeow(uint32_t intStatus) noexcept
 }
 
 
+// The ISR's whole filter: reject empty/floating words and status sources that
+// this driver did not signal-enable. It deliberately does not classify command
+// meaning; a plausible source remains only a content-free wake hint.
+constexpr bool
+IsActionableMeow(uint32_t intStatus) noexcept
+{
+	return !IsSpuriousMeow(intStatus) && (intStatus & kSignalMask) != 0;
+}
+
+
+// Acknowledge exactly the evidence the convergence policy knows how to retain.
+// Never write a spurious all-ones word back to the MMIO register.
+constexpr uint32_t
+InterruptBitsToAcknowledge(uint32_t intStatus) noexcept
+{
+	return IsSpuriousMeow(intStatus) ? 0u : (intStatus & kDrainMask);
+}
+
+
+// SDHCI often reports CommandComplete before TransferComplete. The worker must
+// clear each observed hardware snapshot to lower the level-triggered IRQ line,
+// then retain those bits in software until the command reaches a terminal
+// verdict. Later errors therefore still outrank earlier partial completion.
+constexpr uint32_t
+AccumulateInterruptStatus(uint32_t accumulated, uint32_t snapshot) noexcept
+{
+	return accumulated | InterruptBitsToAcknowledge(snapshot);
+}
+
+
 // What the worker must write-1-to-clear when it wakes with NO pending
 // transaction. The SDHCI interrupt line is level-triggered, so a signal-enabled
-// bit that stays latched (classically a card insert/remove, which no command
-// drain clears) would re-fire the ISR forever -- the "meow" never stops and the
-// real-time worker spins. There is no command result to preserve on the idle
-// path, so we clear every signal-enabled bit; a spurious all-zero/all-ones word
-// is left untouched so we never write garbage back onto a floating line. This is
-// the pure twin of the reference driver's idle-path interrupt_status clear.
+// late completion/error bit would otherwise re-fire the ISR forever. There is
+// no command result to preserve on the idle path, so every signal-enabled bit is
+// cleared. A spurious all-zero/all-ones word is left untouched.
 constexpr uint32_t
 StormSafeIdleClear(uint32_t intStatus) noexcept
 {
@@ -92,43 +131,46 @@ enum class PollVerdict : uint8_t {
 	KeepPolling,
 	CommandComplete,
 	TransferComplete,
+	BufferReadReady,
 	CommandTimeout,
 	DataTimeout,
 	DataCrc,
+	AdmaError,
 	Error,
 };
 
 
-// Interpret one polled status word. Precedence matters: completion bits are
-// checked before generic error so an ordinary finish isn't misread, and the
-// specific data faults are surfaced distinctly so convergence can recover them.
+// Interpret one polled status word. Any underlying error outranks completion:
+// controllers may latch TRANSFER_COMPLETE and an ADMA/CRC fault together.
 constexpr PollVerdict
 InterpretInterruptStatus(uint32_t intStatus) noexcept
 {
 	if (IsSpuriousMeow(intStatus))
 		return PollVerdict::KeepPolling;
-	if ((intStatus & irq::kCommandComplete) != 0)
-		return PollVerdict::CommandComplete;
-	if ((intStatus & irq::kTransferComplete) != 0)
-		return PollVerdict::TransferComplete;
+	if ((intStatus & irq::kCommandTimeout) != 0)
+		return PollVerdict::CommandTimeout;
 	if ((intStatus & irq::kDataTimeout) != 0)
 		return PollVerdict::DataTimeout;
 	if ((intStatus & irq::kDataCrc) != 0)
 		return PollVerdict::DataCrc;
-	if ((intStatus & irq::kCommandTimeout) != 0)
-		return PollVerdict::CommandTimeout;
-	if ((intStatus & irq::kErrorBit) != 0)
+	if ((intStatus & irq::kAdma) != 0)
+		return PollVerdict::AdmaError;
+	if ((intStatus & (irq::kAllUnderlyingErrors | irq::kErrorBit)) != 0)
 		return PollVerdict::Error;
+	if ((intStatus & irq::kTransferComplete) != 0)
+		return PollVerdict::TransferComplete;
+	if ((intStatus & irq::kBufferReadReady) != 0)
+		return PollVerdict::BufferReadReady;
+	if ((intStatus & irq::kCommandComplete) != 0)
+		return PollVerdict::CommandComplete;
 	return PollVerdict::KeepPolling;
 }
 
 
-// Data-aware poll classification. Identical to InterpretInterruptStatus for a
-// non-data command, but for a data command it refuses to treat CommandComplete
-// as terminal: the transfer phase must finish first (the controller raises
-// command-complete before transfer-complete). This is the single, host-proven
-// home of that rule -- the engine calls it instead of inlining the mask, so the
-// "cmd-complete precedes xfer-complete" assumption lives in the tested core.
+// Ordinary (non-tuning) poll classification. BufferReadReady is only terminal
+// for tuning; treating it as success for a DMA read could release live DMA
+// memory before TransferComplete. Data commands also refuse CommandComplete as
+// terminal because the transfer phase must finish first.
 constexpr PollVerdict
 ClassifyPoll(uint32_t intStatus, bool dataPresent) noexcept
 {
@@ -136,9 +178,31 @@ ClassifyPoll(uint32_t intStatus, bool dataPresent) noexcept
 	// floating all-ones line must not disguise it as a real terminal event.
 	if (IsSpuriousMeow(intStatus))
 		return PollVerdict::KeepPolling;
-	const uint32_t effective = dataPresent
-		? (intStatus & ~irq::kCommandComplete) : intStatus;
+	uint32_t effective = intStatus & ~irq::kBufferReadReady;
+	if (dataPresent)
+		effective &= ~irq::kCommandComplete;
 	return InterpretInterruptStatus(effective);
+}
+
+
+constexpr PollVerdict
+ClassifyPoll(uint32_t intStatus, bool dataPresent, bool tuning) noexcept
+{
+	if (!tuning)
+		return ClassifyPoll(intStatus, dataPresent);
+	if (IsSpuriousMeow(intStatus))
+		return PollVerdict::KeepPolling;
+
+	const PollVerdict verdict = InterpretInterruptStatus(intStatus);
+	if (verdict == PollVerdict::BufferReadReady
+		|| verdict == PollVerdict::CommandTimeout
+		|| verdict == PollVerdict::DataTimeout
+		|| verdict == PollVerdict::DataCrc
+		|| verdict == PollVerdict::AdmaError
+		|| verdict == PollVerdict::Error) {
+		return verdict;
+	}
+	return PollVerdict::KeepPolling;
 }
 
 
@@ -152,6 +216,7 @@ enum class AttemptResult : uint8_t {
 	CommandTimeout,
 	DataTimeout,
 	DataCrc,
+	AdmaError,
 	Error,			// hard controller error
 };
 
@@ -165,7 +230,7 @@ enum class RetryAction : uint8_t {
 	Succeed,			// converged; return success to the caller
 	Retry,				// re-issue as-is, no reset (spurious OCR only)
 	RetryResetLines,	// reset the command+data lines, then re-issue
-	RetryWithBusReset,	// terminate + restore the whole bus, then re-issue
+	ResetAndReidentify,	// card state was lost; caller must identify again
 	Fail,				// give up; propagate the failure
 };
 
@@ -202,21 +267,21 @@ DecideRetry(AttemptResult outcome, uint32_t attempt, uint32_t maxAttempts,
 			return haveBudget ? RetryAction::Retry : RetryAction::Fail;
 
 		case AttemptResult::Busy:
-			// The controller was still inhibited when we tried to issue. The
-			// reference worker unconditionally terminates and restores the bus
-			// to clear a wedged inhibit before retrying.
-			return haveBudget ? RetryAction::RetryWithBusReset : RetryAction::Fail;
+			// No command was issued, so retrying after a host line reset cannot
+			// duplicate a write.
+			return haveBudget ? RetryAction::RetryResetLines : RetryAction::Fail;
 
 		case AttemptResult::CommandTimeout:
 		case AttemptResult::DataTimeout:
 		case AttemptResult::DataCrc:
+		case AttemptResult::AdmaError:
 			// A late ISR may have refreshed presence between attempts; a card
 			// that physically left never recovers, and an exhausted budget is
 			// terminal. Otherwise recover per the command's reset policy.
-			if (!cardPresent || !haveBudget)
+			if (!cardPresent || !haveBudget || !constraints.replaySafe)
 				return RetryAction::Fail;
 			return constraints.needsBusResetOnError
-				? RetryAction::RetryWithBusReset : RetryAction::RetryResetLines;
+				? RetryAction::ResetAndReidentify : RetryAction::RetryResetLines;
 
 		case AttemptResult::Error:
 		default:

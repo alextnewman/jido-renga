@@ -124,8 +124,8 @@ public:
 		target.DisablePresetValueMode();
 	}
 
-	uint32_t TimeoutClockKHz() const noexcept override { return 1000; }
-	bool TimeoutClockUsesSdClock() const noexcept override { return true; }
+	uint32_t TimeoutClockKHz() const noexcept override { return 0; }
+	bool TimeoutClockUsesSdClock() const noexcept override { return false; }
 };
 
 

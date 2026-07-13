@@ -34,5 +34,10 @@ struct AcpiCrsResources {
 // usable MMIO window was found; the caller maps it and installs the IRQ.
 status_t AcpiReadCrs(device_node* acpiNode, AcpiCrsResources& out);
 
+// Evaluate Intel's Bay Trail SDHCI _DSM and decode an integer or up-to-32-bit
+// buffer result. The caller enforces the function bitmap returned by function 0.
+status_t AcpiEvaluateBytDsm(device_node* acpiNode, uint32 function,
+	uint32& result);
+
 
 } // namespace jr::sdhci

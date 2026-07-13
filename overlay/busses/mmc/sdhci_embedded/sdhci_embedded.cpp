@@ -10,10 +10,9 @@
 //   node #1  controller  (this driver_module)   <- binds the ACPI device
 //   node #2  disk        (the device_module)    -> published to /dev/disk/mmc
 //
-// Winning the match: supports_device() consults the pure ExplicitMatcher, which
-// returns 0.9 for known Bay Trail silicon -- strictly greater than upstream
-// sdhci's generic 0.8 -- so device_manager binds us exclusively and the generic
-// mmc_bus chain never loads. On anything else we return 0.0 and stay invisible.
+// BytAcpi mirrors Haiku's ACPI SDHCI preconditions and identifies Bay Trail
+// controller roles by HID. The Winky BSP removes the competing generic sdhci
+// add-on at image composition time, so a positive claim has one hardware owner.
 
 #include <new>
 #include <stdio.h>
@@ -21,18 +20,24 @@
 #include <string.h>
 
 #include <ACPI.h>
+#include <common/iosf_mbi.h>
 #include <device_manager.h>
 #include <Drivers.h>
 #include <KernelExport.h>
+#include <fs/devfs.h>
+#include "IORequest.h"
 
+#include "BytAcpi.h"
+#include "Card.h"
 #include "Disk.h"
-#include "Matcher.h"
 #include "SdhciController.h"
+#include "Trace.h"
 
 using namespace jr::sdhci;
 
 
 device_manager_info* gDeviceManager = nullptr;
+iosf_mbi_module_info* gIosfMbi = nullptr;
 
 
 static const char* const kControllerModuleName
@@ -40,6 +45,7 @@ static const char* const kControllerModuleName
 static const char* const kDiskModuleName
 	= "busses/mmc/sdhci_embedded/disk/device_v1";
 static const char* const kDiskIdGenerator = "sdhci_embedded/disk";
+static const TraceLabel kModuleTrace = { "sdhci_emb" };
 
 
 // ---------------------------------------------------------------------------
@@ -49,62 +55,53 @@ static const char* const kDiskIdGenerator = "sdhci_embedded/disk";
 static float
 sdhci_embedded_supports_device(device_node* node)
 {
-	const char* bus;
-	if (gDeviceManager->get_attr_string(node, B_DEVICE_BUS, &bus, true) != B_OK)
-		return kNoMatchScore;
-	if (strcmp(bus, "acpi") != 0)
-		return kNoMatchScore;
+	static bool sReportedProbePath;
+	if (!sReportedProbePath) {
+		sReportedProbePath = true;
+		JR_TRACE_ALWAYS(kModuleTrace, "device-manager probe path active\n");
+	}
 
-	// A real SDHCI host advertises the PNP0D40 compatible id; bail early if not.
-	const char* cid;
+	const MatchProfile* profile = ProfileForBytAcpiNode(node);
+
+	// Haiku's ACPI enumerator asks every busses/mmc driver about every ACPI
+	// device. Report the route once above, then keep the broad scan quiet while
+	// making SDHCI-class candidates visible before the BYT HID filter decides
+	// whether we own one.
+	const char* cid = nullptr;
 	if (gDeviceManager->get_attr_string(node, ACPI_DEVICE_CID_ITEM, &cid, false)
 			== B_OK
-		&& strcmp(cid, "PNP0D40") != 0) {
-		return kNoMatchScore;
+		&& strcmp(cid, "PNP0D40") == 0) {
+		const char* hid = nullptr;
+		const char* uid = nullptr;
+		gDeviceManager->get_attr_string(node, ACPI_DEVICE_HID_ITEM, &hid, false);
+		gDeviceManager->get_attr_string(node, ACPI_DEVICE_UID_ITEM, &uid, false);
+		JR_TRACE_ALWAYS(kModuleTrace, "probing ACPI %s:%s (%s)\n",
+			hid != nullptr ? hid : "<unknown>", uid != nullptr ? uid : "<none>",
+			profile != nullptr ? "Bay Trail profile" : "not a supported BYT host");
 	}
 
-	const char* hid;
-	if (gDeviceManager->get_attr_string(node, ACPI_DEVICE_HID_ITEM, &hid, false)
-			!= B_OK) {
-		return kNoMatchScore;
-	}
-
-	const char* uidString;
-	uint32_t uid = kAnyUid;
-	if (gDeviceManager->get_attr_string(node, ACPI_DEVICE_UID_ITEM, &uidString,
-			false) == B_OK) {
-		char* end = nullptr;
-		unsigned long parsed = strtoul(uidString, &end, 10);
-		if (end != uidString)
-			uid = static_cast<uint32_t>(parsed);
-	}
-
-	// Pure decision: 0.9 on a hit (we win), 0.0 otherwise (upstream untouched).
-	return ScoreFor(hid, uid);
+	return profile != nullptr ? 1.0f : 0.0f;
 }
 
 
 static status_t
 sdhci_embedded_register_device(device_node* node)
 {
-	const char* hid = nullptr;
-	const char* uidString = nullptr;
-	uint32_t uid = kAnyUid;
-	gDeviceManager->get_attr_string(node, ACPI_DEVICE_HID_ITEM, &hid, false);
-	if (gDeviceManager->get_attr_string(node, ACPI_DEVICE_UID_ITEM, &uidString,
-			false) == B_OK) {
-		char* end = nullptr;
-		unsigned long parsed = strtoul(uidString, &end, 10);
-		if (end != uidString)
-			uid = static_cast<uint32_t>(parsed);
-	}
+	const MatchProfile* profile = ProfileForBytAcpiNode(node);
+	if (profile == nullptr)
+		return B_BAD_VALUE;
 
-	const MatchProfile* profile = MatchProfileFor(hid, uid);
-	const char* prettyName = profile != nullptr && profile->prettyName != nullptr
-		? profile->prettyName : "Embedded SDHCI Controller";
+	const char* hid = nullptr;
+	const char* uid = nullptr;
+	gDeviceManager->get_attr_string(node, ACPI_DEVICE_HID_ITEM, &hid, false);
+	gDeviceManager->get_attr_string(node, ACPI_DEVICE_UID_ITEM, &uid, false);
+	JR_TRACE_ALWAYS(kModuleTrace, "claiming ACPI %s:%s as %s\n",
+		hid != nullptr ? hid : "<unknown>", uid != nullptr ? uid : "<none>",
+		profile->prettyName);
 
 	device_attr attrs[] = {
-		{ B_DEVICE_PRETTY_NAME, B_STRING_TYPE, { .string = prettyName } },
+		{ B_DEVICE_PRETTY_NAME, B_STRING_TYPE, { .string = profile->prettyName } },
+		{ B_DEVICE_FLAGS, B_UINT32_TYPE, { .ui32 = B_KEEP_DRIVER_LOADED } },
 		{ nullptr }
 	};
 
@@ -124,6 +121,7 @@ sdhci_embedded_init_driver(device_node* node, void** cookie)
 	// return, so boot-from-SD wins the RAMDisk race.
 	status_t status = controller->Boot();
 	if (status != B_OK) {
+		JR_ERROR(kModuleTrace, "controller boot failed: %" B_PRId32 "\n", status);
 		delete controller;
 		return status;
 	}
@@ -180,7 +178,11 @@ static driver_module_info sControllerModule = {
 
 struct DiskCookie {
 	SdhciController*	controller;
-	Disk*				disk;
+};
+
+
+struct DiskHandle {
+	DiskCookie* device;
 };
 
 
@@ -195,7 +197,10 @@ sdhci_embedded_disk_init_device(void* driverCookie, void** deviceCookie)
 		return B_NO_MEMORY;
 
 	cookie->controller = controller;
-	cookie->disk = controller->ActiveDisk();
+	if (controller->ActiveDisk() == nullptr) {
+		delete cookie;
+		return B_NO_INIT;
+	}
 	*deviceCookie = cookie;
 	return B_OK;
 }
@@ -212,7 +217,11 @@ static status_t
 sdhci_embedded_disk_open(void* deviceCookie, const char* /*path*/,
 	int /*openMode*/, void** _cookie)
 {
-	*_cookie = deviceCookie;
+	DiskHandle* handle = new(std::nothrow) DiskHandle;
+	if (handle == nullptr)
+		return B_NO_MEMORY;
+	handle->device = static_cast<DiskCookie*>(deviceCookie);
+	*_cookie = handle;
 	return B_OK;
 }
 
@@ -225,19 +234,90 @@ sdhci_embedded_disk_close(void* /*cookie*/)
 
 
 static status_t
-sdhci_embedded_disk_free(void* /*cookie*/)
+sdhci_embedded_disk_free(void* cookie)
 {
+	delete static_cast<DiskHandle*>(cookie);
 	return B_OK;
+}
+
+
+static Disk*
+active_disk(DiskHandle* handle)
+{
+	return handle != nullptr && handle->device != nullptr
+		? handle->device->controller->ActiveDisk() : nullptr;
+}
+
+
+static status_t
+sdhci_embedded_disk_read(void* cookie, off_t position, void* buffer,
+	size_t* _length)
+{
+	Disk* disk = active_disk(static_cast<DiskHandle*>(cookie));
+	if (disk == nullptr || buffer == nullptr || _length == nullptr)
+		return B_NO_INIT;
+	if (position < 0)
+		return B_BAD_VALUE;
+
+	const uint64_t size = disk->Capacity() * disk->BlockSize();
+	if (static_cast<uint64_t>(position) >= size)
+		return ERANGE;
+	size_t length = *_length;
+	if (length > size - static_cast<uint64_t>(position))
+		length = static_cast<size_t>(size - static_cast<uint64_t>(position));
+
+	IORequest request;
+	status_t status = request.Init(position, reinterpret_cast<addr_t>(buffer),
+		length, false, 0);
+	if (status != B_OK)
+		return status;
+	status = disk->DoIO(&request);
+	if (status != B_OK)
+		return status;
+	status = request.Wait(0, 0);
+	*_length = request.TransferredBytes();
+	return status;
+}
+
+
+static status_t
+sdhci_embedded_disk_write(void* cookie, off_t position, const void* buffer,
+	size_t* _length)
+{
+	Disk* disk = active_disk(static_cast<DiskHandle*>(cookie));
+	if (disk == nullptr || buffer == nullptr || _length == nullptr)
+		return B_NO_INIT;
+	if (position < 0)
+		return B_BAD_VALUE;
+
+	const uint64_t size = disk->Capacity() * disk->BlockSize();
+	if (static_cast<uint64_t>(position) >= size)
+		return ERANGE;
+	size_t length = *_length;
+	if (length > size - static_cast<uint64_t>(position))
+		length = static_cast<size_t>(size - static_cast<uint64_t>(position));
+
+	IORequest request;
+	status_t status = request.Init(position, reinterpret_cast<addr_t>(buffer),
+		length, true, 0);
+	if (status != B_OK)
+		return status;
+	status = disk->DoIO(&request);
+	if (status != B_OK)
+		return status;
+	status = request.Wait(0, 0);
+	*_length = request.TransferredBytes();
+	return status;
 }
 
 
 static status_t
 sdhci_embedded_disk_io(void* cookie, io_request* request)
 {
-	DiskCookie* dc = static_cast<DiskCookie*>(cookie);
-	if (dc->disk == nullptr)
+	Disk* disk = active_disk(static_cast<DiskHandle*>(cookie));
+	if (disk == nullptr)
 		return B_NO_INIT;
-	return dc->disk->DoIO(request);
+	return disk->DoIO(request);
 }
 
 
@@ -246,17 +326,22 @@ sdhci_embedded_disk_control(void* cookie, uint32 op, void* buffer, size_t length
 
 
 static status_t
-sdhci_embedded_disk_control_impl(DiskCookie* dc, uint32 op, void* buffer,
+sdhci_embedded_disk_control_impl(DiskHandle* handle, uint32 op, void* buffer,
 	size_t length)
 {
-	Disk* disk = dc->disk;
+	Disk* disk = active_disk(handle);
 	if (disk == nullptr)
 		return B_NO_INIT;
+	SdhciController* controller = handle->device->controller;
 
 	switch (op) {
 		case B_GET_DEVICE_SIZE:
 		{
 			uint64_t bytes = disk->Capacity() * disk->BlockSize();
+			if (buffer == nullptr || length < sizeof(size_t))
+				return B_BAD_VALUE;
+			if (bytes > SIZE_MAX)
+				return B_NOT_SUPPORTED;
 			size_t value = static_cast<size_t>(bytes);
 			return user_memcpy(buffer, &value, sizeof(value));
 		}
@@ -268,25 +353,26 @@ sdhci_embedded_disk_control_impl(DiskCookie* dc, uint32 op, void* buffer,
 
 			device_geometry geometry;
 			memset(&geometry, 0, sizeof(geometry));
-			geometry.bytes_per_sector = disk->BlockSize();
-			geometry.sectors_per_track = disk->Capacity();
-			geometry.cylinder_count = 1;
-			geometry.head_count = 1;
+			devfs_compute_geometry_size(&geometry, disk->Capacity(),
+				disk->BlockSize());
 			geometry.device_type = B_DISK;
-			geometry.removable = false;
+			geometry.removable = controller->IsRemovable();
 			geometry.read_only = false;
 			geometry.write_once = false;
+			geometry.bytes_per_physical_sector = disk->BlockSize();
 			return user_memcpy(buffer, &geometry, sizeof(geometry));
 		}
 
 		case B_GET_MEDIA_STATUS:
 		{
-			status_t status = B_OK;
+			if (buffer == nullptr || length < sizeof(status_t))
+				return B_BAD_VALUE;
+			status_t status = controller->MediaPresent() ? B_OK : B_DEV_NO_MEDIA;
 			return user_memcpy(buffer, &status, sizeof(status));
 		}
 
 		case B_FLUSH_DRIVE_CACHE:
-			return B_OK;
+			return controller->ActiveCard()->Flush(controller->Engine());
 	}
 
 	return B_DEV_INVALID_IOCTL;
@@ -296,7 +382,7 @@ sdhci_embedded_disk_control_impl(DiskCookie* dc, uint32 op, void* buffer,
 static status_t
 sdhci_embedded_disk_control(void* cookie, uint32 op, void* buffer, size_t length)
 {
-	return sdhci_embedded_disk_control_impl(static_cast<DiskCookie*>(cookie), op,
+	return sdhci_embedded_disk_control_impl(static_cast<DiskHandle*>(cookie), op,
 		buffer, length);
 }
 
@@ -313,8 +399,8 @@ static device_module_info sDiskModule = {
 	sdhci_embedded_disk_open,
 	sdhci_embedded_disk_close,
 	sdhci_embedded_disk_free,
-	nullptr,	// read (block devices go through io)
-	nullptr,	// write
+	sdhci_embedded_disk_read,
+	sdhci_embedded_disk_write,
 	sdhci_embedded_disk_io,
 	sdhci_embedded_disk_control,
 	nullptr,	// select
@@ -328,6 +414,7 @@ static device_module_info sDiskModule = {
 
 module_dependency module_dependencies[] = {
 	{ B_DEVICE_MANAGER_MODULE_NAME, (module_info**)&gDeviceManager },
+	{ B_IOSF_MBI_MODULE_NAME, (module_info**)&gIosfMbi },
 	{}
 };
 

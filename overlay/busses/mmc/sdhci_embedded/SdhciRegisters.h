@@ -25,6 +25,7 @@ public:
 	{
 		fBits = static_cast<uint16_t>(transferBlockSize | (dmaBoundary << 12));
 	}
+	uint16_t Get() const volatile { return fBits; }
 
 	static constexpr uint16_t kBoundary4K = 0;
 	static constexpr uint16_t kBoundary512K = 7;
@@ -53,6 +54,7 @@ public:
 	{
 		fBits = static_cast<uint16_t>((index << 8) | flags);
 	}
+	uint16_t Get() const volatile { return fBits; }
 
 	// Command flags (bits 5:0).
 	static constexpr uint8_t kDataPresent		= 0x20;
@@ -73,7 +75,13 @@ public:
 	bool CommandInhibit() const volatile { return (fBits & (1u << 0)) != 0; }
 	bool DataInhibit() const volatile { return (fBits & (1u << 1)) != 0; }
 	bool CardInserted() const volatile { return (fBits & (1u << 16)) != 0; }
-	bool RegulatorStable() const volatile { return (fBits & (1u << 26)) != 0; }
+	uint32_t Raw() const volatile { return fBits; }
+	// Host Regulator Voltage Stable is defined for SDHCI 4.10+ at bit 25.
+	bool RegulatorStable() const volatile { return (fBits & (1u << 25)) != 0; }
+	uint8_t DataLineLevels() const volatile
+	{
+		return static_cast<uint8_t>((fBits >> 20) & 0xf);
+	}
 
 private:
 	volatile uint32_t fBits;
@@ -95,6 +103,7 @@ public:
 	{
 		fBits = static_cast<uint8_t>(on ? (fBits | (1u << 2)) : (fBits & ~(1u << 2)));
 	}
+	uint8_t Get() const volatile { return fBits; }
 
 	static constexpr uint8_t kDmaMask	= 3u << 3;
 	static constexpr uint8_t kSdma		= 0u << 3;
@@ -118,6 +127,7 @@ public:
 		fBits = static_cast<uint8_t>(voltage | kBusPower);
 	}
 	void PowerOff() volatile { fBits = static_cast<uint8_t>(fBits & ~kBusPower); }
+	uint8_t Get() const volatile { return fBits; }
 
 	void AssertEmmcReset() volatile { fBits = static_cast<uint8_t>(fBits | kEmmcReset); }
 	void DeassertEmmcReset() volatile { fBits = static_cast<uint8_t>(fBits & ~kEmmcReset); }
@@ -143,7 +153,8 @@ public:
 	{
 		uint16_t encoded = (divider <= 1) ? 0 : static_cast<uint16_t>(divider / 2);
 		uint16_t bits = static_cast<uint16_t>(fBits & ~0xffc0);
-		bits = static_cast<uint16_t>(bits | (encoded << 8) | ((encoded >> 8) & 0xc0));
+		bits = static_cast<uint16_t>(bits | ((encoded & 0xff) << 8)
+			| ((encoded & 0x300) >> 2));
 		fBits = bits;
 		return encoded == 0 ? 1 : static_cast<uint16_t>(encoded * 2);
 	}
@@ -157,6 +168,7 @@ public:
 	// then gates SDCLK on -- skipping the PLL step leaves the card at an
 	// unstable clock on this silicon.
 	void EnablePll() volatile { fBits = static_cast<uint16_t>(fBits | (1u << 3)); }
+	uint16_t Get() const volatile { return fBits; }
 
 private:
 	volatile uint16_t fBits;
@@ -178,6 +190,7 @@ public:
 		fBits = static_cast<uint8_t>(i - 13);
 	}
 	void SetRaw(uint8_t divider) volatile { fBits = divider; }
+	uint8_t Get() const volatile { return fBits; }
 
 private:
 	volatile uint8_t fBits;
@@ -198,18 +211,86 @@ public:
 		}
 		return false;
 	}
-	void ResetCommandLine() volatile { fBits = static_cast<uint8_t>(fBits | (1u << 1)); }
-	void ResetDataLine() volatile { fBits = static_cast<uint8_t>(fBits | (1u << 2)); }
+	bool ResetCommandLine() volatile { return _ResetAndWait(1u << 1); }
+	bool ResetDataLine() volatile { return _ResetAndWait(1u << 2); }
+	bool ResetCommandAndDataLines() volatile
+	{
+		return _ResetAndWait((1u << 1) | (1u << 2));
+	}
 
 private:
+	bool _ResetAndWait(uint8_t bit) volatile
+	{
+		fBits = static_cast<uint8_t>(fBits | bit);
+		for (int i = 0; i < 10; i++) {
+			if ((fBits & bit) == 0)
+				return true;
+			BusyWait10ms();
+		}
+		return false;
+	}
+
 	static void BusyWait10ms();		// defined in the engine TU (uses snooze)
 	volatile uint8_t fBits;
+} __attribute__((packed));
+
+
+// ---- 0x3E Host Control 2 --------------------------------------------------
+class HostControl2Reg {
+public:
+	uint16_t Get() const volatile { return fBits; }
+	void Set(uint16_t bits) volatile { fBits = bits; }
+
+	void SetUhsMode(uint16_t mode) volatile
+	{
+		fBits = static_cast<uint16_t>((fBits & ~kUhsMask) | (mode & kUhsMask));
+	}
+	void SetSignal1v8(bool enabled) volatile
+	{
+		fBits = static_cast<uint16_t>(enabled
+			? (fBits | kSignal1v8) : (fBits & ~kSignal1v8));
+	}
+	void SetExecuteTuning(bool enabled) volatile
+	{
+		fBits = static_cast<uint16_t>(enabled
+			? (fBits | kExecuteTuning) : (fBits & ~kExecuteTuning));
+	}
+	void ClearTuning() volatile
+	{
+		fBits = static_cast<uint16_t>(fBits & ~(kExecuteTuning | kTunedClock));
+	}
+	bool ExecuteTuning() const volatile { return (fBits & kExecuteTuning) != 0; }
+	bool TunedClock() const volatile { return (fBits & kTunedClock) != 0; }
+	void DisablePresetValues() volatile
+	{
+		fBits = static_cast<uint16_t>(fBits & ~kPresetValues);
+	}
+	void ClearReservedV4Bit() volatile
+	{
+		fBits = static_cast<uint16_t>(fBits & ~(1u << 12));
+	}
+
+	static constexpr uint16_t kUhsMask = 0x0007;
+	static constexpr uint16_t kSdr12 = 0;
+	static constexpr uint16_t kSdr25 = 1;
+	static constexpr uint16_t kSdr50 = 2;
+	static constexpr uint16_t kSdr104 = 3;
+	static constexpr uint16_t kDdr50 = 4;
+
+private:
+	static constexpr uint16_t kSignal1v8 = 1u << 3;
+	static constexpr uint16_t kExecuteTuning = 1u << 6;
+	static constexpr uint16_t kTunedClock = 1u << 7;
+	static constexpr uint16_t kPresetValues = 1u << 15;
+	volatile uint16_t fBits;
 } __attribute__((packed));
 
 
 // ---- 0x40 Capabilities ----------------------------------------------------
 class CapabilitiesReg {
 public:
+	uint32_t Raw() const volatile { return fBits; }
+	uint32_t Raw1() const volatile { return fBits1; }
 	uint8_t BaseClockMHz() const volatile { return (fBits >> 8) & 0xff; }
 	bool SupportsAdma2() const volatile { return (fBits >> 19) & 1; }
 	bool SupportsHighSpeed() const volatile { return (fBits >> 21) & 1; }
@@ -226,7 +307,10 @@ public:
 	bool Supports1v8() const volatile { return (fBits >> 26) & 1; }
 
 private:
-	volatile uint64_t fBits;
+	// These are two independently specified 32-bit MMIO registers. Keeping them
+	// split prevents the compiler from issuing one 64-bit device access.
+	volatile uint32_t fBits;
+	volatile uint32_t fBits1;
 } __attribute__((packed));
 
 
@@ -254,14 +338,15 @@ struct RegisterBlock {
 	volatile uint32_t	interruptStatusEnable;	// 0x34
 	volatile uint32_t	interruptSignalEnable;	// 0x38
 	volatile uint16_t	autoCmd12ErrorStatus;	// 0x3C
-	volatile uint16_t	hostControl2;			// 0x3E
+	HostControl2Reg		hostControl2;			// 0x3E
 	CapabilitiesReg		capabilities;			// 0x40
 	volatile uint64_t	maxCurrentCapabilities;	// 0x48
 	volatile uint16_t	forceEventAcmdStatus;	// 0x50
 	volatile uint16_t	forceEventErrorStatus;	// 0x52
 	volatile uint8_t	admaErrorStatus;		// 0x54
 	volatile uint8_t	padding0[3];			// 0x55
-	volatile uint64_t	admaSystemAddress;		// 0x58
+	volatile uint32_t	admaSystemAddress;		// 0x58, 32-bit ADMA address
+	volatile uint32_t	admaSystemAddressHigh;	// 0x5C, only for 64-bit ADMA
 	volatile uint64_t	presetValue[2];			// 0x60
 	volatile uint8_t	padding1[0x9C - 0x70];	// 0x70..0x9B reserved/UHS-II
 	volatile uint8_t	padding2[0xFC - 0x9C];	// 0x9C..0xFB reserved/UHS-II
@@ -275,6 +360,8 @@ static_assert(offsetof(RegisterBlock, interruptStatus) == 0x30, "int status offs
 static_assert(offsetof(RegisterBlock, hostControl2) == 0x3E, "host control 2 offset");
 static_assert(offsetof(RegisterBlock, capabilities) == 0x40, "capabilities offset");
 static_assert(offsetof(RegisterBlock, admaSystemAddress) == 0x58, "adma addr offset");
+static_assert(offsetof(RegisterBlock, admaSystemAddressHigh) == 0x5C,
+	"adma high addr offset");
 static_assert(offsetof(RegisterBlock, slotInterruptStatus) == 0xFC, "slot int offset");
 static_assert(sizeof(RegisterBlock) == 0x100, "register block is 256 bytes");
 

@@ -43,6 +43,8 @@ TEST_SRC := \
 	sdhci_embedded/test_transaction.cpp \
 	sdhci_embedded/test_concurrency.cpp \
 	sdhci_embedded/test_csd.cpp \
+	sdhci_embedded/test_bus_mode.cpp \
+	sdhci_embedded/test_staged_request.cpp \
 	iosf_mbi/test_iosf_mbi_protocol.cpp \
 	i2c_atmel_mxt/test_object_table.cpp \
 	sdhci_embedded/test_main.cpp

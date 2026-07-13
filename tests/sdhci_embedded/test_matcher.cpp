@@ -11,9 +11,9 @@
 using namespace jr::sdhci;
 
 
-JR_TEST(matcher, baytrail_emmc_matches_hid_and_uid)
+JR_TEST(matcher, baytrail_emmc_matches_hid)
 {
-	const MatchProfile* p = MatchProfileFor("80860F14", 1);
+	const MatchProfile* p = MatchProfileFor("80860F14");
 	JR_CHECK(p != nullptr);
 	if (p != nullptr) {
 		JR_CHECK(p->dialect == CardDialect::Mmc);
@@ -22,49 +22,49 @@ JR_TEST(matcher, baytrail_emmc_matches_hid_and_uid)
 		JR_CHECK(p->personality == PersonalityKind::BayTrail);
 		JR_CHECK(Has(p->quirks, Quirk::EmmcHardwareReset));
 		JR_CHECK(Has(p->quirks, Quirk::NeedsIosfOcpFixup));
+		JR_CHECK(Has(p->quirks, Quirk::PowerOnDelay));
+		JR_CHECK(Has(p->quirks, Quirk::ClockPllSequence));
+		JR_CHECK(Has(p->quirks, Quirk::Fixed1MHzTimeoutClock));
+		JR_CHECK(!Has(p->quirks, Quirk::CardOnNeedsBusOn));
 		JR_CHECK(std::strstr(p->prettyName, "eMMC") != nullptr);
 	}
 }
 
 
-JR_TEST(matcher, baytrail_emmc_rejects_wrong_uid)
+JR_TEST(matcher, baytrail_controller_roles_come_from_hid)
 {
-	// The eMMC controller is UID 1 specifically; UID 0 must not match.
-	JR_CHECK(MatchProfileFor("80860F14", 0) == nullptr);
-	JR_CHECK(MatchProfileFor("80860F14", 2) == nullptr);
+	const MatchProfile* emmc = MatchProfileFor("80860F14");
+	const MatchProfile* sd = MatchProfileFor("80860F16");
+	JR_CHECK(emmc != nullptr);
+	JR_CHECK(sd != nullptr);
+	if (emmc != nullptr && sd != nullptr)
+		JR_CHECK(emmc->dialect != sd->dialect);
 }
 
 
-JR_TEST(matcher, baytrail_sd_matches_any_uid)
+JR_TEST(matcher, baytrail_sd_matches_hid)
 {
-	const MatchProfile* a = MatchProfileFor("80860F16", 0);
-	const MatchProfile* b = MatchProfileFor("80860F16", 7);
-	JR_CHECK(a != nullptr);
-	JR_CHECK(a == b);
-	if (a != nullptr) {
-		JR_CHECK(a->dialect == CardDialect::Sd);
-		JR_CHECK(a->removable);	// SD slot: hot-plug watcher runs
-		JR_CHECK(!Has(a->quirks, Quirk::EmmcHardwareReset));
-		JR_CHECK(std::strstr(a->prettyName, "SD") != nullptr);
+	const MatchProfile* profile = MatchProfileFor("80860F16");
+	JR_CHECK(profile != nullptr);
+	if (profile != nullptr) {
+		JR_CHECK(profile->dialect == CardDialect::Sd);
+		JR_CHECK(profile->removable);	// SD slot: hot-plug watcher runs
+		JR_CHECK(profile->dma == DmaStrategy::Sdma);
+		JR_CHECK(!Has(profile->quirks, Quirk::EmmcHardwareReset));
+		JR_CHECK(Has(profile->quirks, Quirk::PowerOnDelay));
+		JR_CHECK(Has(profile->quirks, Quirk::ClockPllSequence));
+		JR_CHECK(Has(profile->quirks, Quirk::CardOnNeedsBusOn));
+		JR_CHECK(!Has(profile->quirks, Quirk::Fixed1MHzTimeoutClock));
+		JR_CHECK(std::strstr(profile->prettyName, "SD") != nullptr);
 	}
 }
 
 
 JR_TEST(matcher, unknown_hid_and_null_do_not_match)
 {
-	JR_CHECK(MatchProfileFor("PNP0A03", 0) == nullptr);
-	JR_CHECK(MatchProfileFor("80860F15", 0) == nullptr);	// SDIO, unsupported
-	JR_CHECK(MatchProfileFor(nullptr, 0) == nullptr);
-}
-
-
-JR_TEST(matcher, score_beats_upstream_on_match_zero_otherwise)
-{
-	// The whole point: 0.9 > upstream's 0.8, 0.0 on a miss.
-	JR_CHECK_EQ(ScoreFor("80860F14", 1), 0.9f);
-	JR_CHECK_EQ(ScoreFor("80860F16", 3), 0.9f);
-	JR_CHECK_EQ(ScoreFor("PNP0A03", 0), 0.0f);
-	JR_CHECK(kMatchScore > 0.8f);
+	JR_CHECK(MatchProfileFor("PNP0A03") == nullptr);
+	JR_CHECK(MatchProfileFor("80860F15") == nullptr);	// SDIO, unsupported
+	JR_CHECK(MatchProfileFor(nullptr) == nullptr);
 }
 
 

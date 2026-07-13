@@ -10,23 +10,21 @@
 // of physical segments into a descriptor table. Hardware-defined layout; the
 // builder has no kernel dependencies so it is fully unit testable.
 //
-// SDHCI spec v3.00 Sec 4.4.1: 8 bytes per descriptor, table 64-byte aligned,
-// 16-bit length where 0 encodes the maximum (65536) bytes.
+// SDHCI spec v3.00 Sec 4.4.1: 8 bytes per 32-bit descriptor, table at least
+// 8-byte aligned, and a 16-bit length where 0 encodes 65536 bytes.
 
 namespace jr::sdhci {
 
 
-enum class Adma2Attr : uint8_t {
-	Nop		= 0x00,
-	Valid	= 0x06,	// valid data segment, continue
-	End		= 0x0C,	// valid data segment, last entry (raises transfer-complete)
+enum class Adma2Attr : uint16_t {
+	Transfer	= 0x0021,	// VALID | ACT_TRAN
+	TransferEnd	= 0x0023,	// VALID | END | ACT_TRAN
 };
 
 
 struct Adma2Descriptor {
-	uint16_t	length;		// bytes; 0 encodes 65536
-	uint8_t		attributes;	// Adma2Attr
-	uint8_t		reserved;	// must be zero
+	uint16_t	attributes;	// Adma2Attr, little-endian
+	uint16_t	length;		// bytes; 0 encodes 65536, little-endian
 	uint32_t	address;	// 32-bit physical, little-endian
 } __attribute__((packed));
 
@@ -36,9 +34,32 @@ static_assert(sizeof(Adma2Descriptor) == 8, "ADMA2 descriptor must be 8 bytes");
 // Largest byte count a single descriptor can express (16-bit field, 0 == max).
 constexpr uint32_t kAdma2MaxSegmentBytes = 65536;
 
-// Descriptor table capacity. 512 descriptors == one 4 KiB page (naturally
-// 64-byte aligned), bounding a single transfer's scatter/gather list.
-constexpr uint32_t kAdma2MaxDescriptors = 512;
+// Linux exposes at most 128 mapped segments and caps one request at 512 KiB.
+// DMAResource aligns each segment for us, so one descriptor per segment is
+// sufficient when max_segment_size is 65536.
+constexpr uint32_t kAdma2MaxDescriptors = 128;
+
+
+constexpr uint16_t
+AdmaLittle16(uint16_t value) noexcept
+{
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+	return value;
+#else
+	return __builtin_bswap16(value);
+#endif
+}
+
+
+constexpr uint32_t
+AdmaLittle32(uint32_t value) noexcept
+{
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+	return value;
+#else
+	return __builtin_bswap32(value);
+#endif
+}
 
 
 // Builds an ADMA2 descriptor table in caller-provided storage. Splits
@@ -62,6 +83,12 @@ public:
 	{
 		if (bytes == 0)
 			return true;
+		if ((physicalAddress & 3u) != 0
+			|| static_cast<uint64_t>(physicalAddress) + bytes
+				> 0x100000000ull) {
+			fOverflow = true;
+			return false;
+		}
 
 		uint32_t offset = 0;
 		while (bytes > 0) {
@@ -74,11 +101,10 @@ public:
 				= bytes > kAdma2MaxSegmentBytes ? kAdma2MaxSegmentBytes : bytes;
 
 			Adma2Descriptor& d = fTable[fCount++];
-			d.length = static_cast<uint16_t>(chunk & 0xffff);
+			d.attributes = AdmaLittle16(static_cast<uint16_t>(Adma2Attr::Transfer));
+			d.length = AdmaLittle16(static_cast<uint16_t>(chunk & 0xffff));
 				// chunk == 65536 wraps to 0, which the hardware reads as 65536.
-			d.attributes = static_cast<uint8_t>(Adma2Attr::Valid);
-			d.reserved = 0;
-			d.address = physicalAddress + offset;
+			d.address = AdmaLittle32(physicalAddress + offset);
 
 			offset += chunk;
 			bytes -= chunk;
@@ -94,7 +120,8 @@ public:
 	{
 		if (fOverflow || fCount == 0)
 			return false;
-		fTable[fCount - 1].attributes = static_cast<uint8_t>(Adma2Attr::End);
+		fTable[fCount - 1].attributes
+			= AdmaLittle16(static_cast<uint16_t>(Adma2Attr::TransferEnd));
 		return true;
 	}
 

@@ -11,12 +11,16 @@
 
 #include <ACPI.h>
 #include <common/iosf_mbi.h>
+#include <util/AutoLock.h>
 
 #include "AcpiCrs.h"
+#include "BytAcpi.h"
 #include "Card.h"
 #include "Disk.h"
 #include "Matcher.h"
 #include "Personality.h"
+
+extern iosf_mbi_module_info* gIosfMbi;
 
 // The controller collapses the whole upstream chain into node #1. Boot() runs
 // the serialized bring-up (map -> personality -> reset -> power -> identify ->
@@ -61,11 +65,40 @@ SdhciController::~SdhciController()
 		remove_io_interrupt_handler(fIrq, _InterruptHandler, this);
 		fInterruptInstalled = false;
 	}
-	fEngine.Uninit();
 	delete fDisk;
+	fDisk = nullptr;
 	delete fCard;
+	fCard = nullptr;
+	fEngine.Uninit();
 	if (fRegisterArea >= 0)
 		delete_area(fRegisterArea);
+}
+
+
+bool
+SdhciController::MediaPresent() const
+{
+	return fDisk != nullptr && fDisk->IsOnline();
+}
+
+
+status_t
+SdhciController::RecoverCard()
+{
+	MutexLocker locker(fRecoveryLock);
+	if (fCard == nullptr)
+		return B_NO_INIT;
+	if (fDisk != nullptr) {
+		fDisk->SetOnline(false);
+		fDisk->LockMediaIo();
+	}
+
+	status_t status = fCard->Reidentify(fEngine);
+	if (status == B_OK && fDisk != nullptr)
+		fDisk->SetOnline(true);
+	if (fDisk != nullptr)
+		fDisk->UnlockMediaIo();
+	return status;
 }
 
 
@@ -79,6 +112,7 @@ SdhciController::Boot()
 	status = _MapResources();
 	if (status != B_OK)
 		return status;
+	_InitPlatformControl();
 
 	// Bay Trail only: clear the SCC over-current-protection timeout via IOSF-MBI
 	// BEFORE we touch a single SDHCI register. If OCP is left armed, the reset
@@ -89,6 +123,7 @@ SdhciController::Boot()
 	if (status != B_OK)
 		return status;
 
+	fEngine.SetPlatformControl(this);
 	status = fEngine.Init(fRegs, fPersonality, fLabel);
 	if (status != B_OK)
 		return status;
@@ -122,8 +157,55 @@ SdhciController::Boot()
 }
 
 
-// Resolve the personality, quirks, and pretty label from the ExplicitMatcher,
-// keyed on the ACPI HID/UID of our parent node.
+void
+SdhciController::_InitPlatformControl()
+{
+	device_node* parent = gDeviceManager->get_parent_node(fNode);
+	if (parent == nullptr)
+		return;
+
+	uint32 functions = 0;
+	if (AcpiEvaluateBytDsm(parent, 0, functions) == B_OK) {
+		fDsmFunctions = functions;
+		if ((functions & (1u << 8)) != 0)
+			AcpiEvaluateBytDsm(parent, 8, fDsmUhsCapabilities);
+		JR_TRACE_ALWAYS(fLabel, "Intel DSM functions %#" B_PRIx32
+			", UHS mask %#" B_PRIx32 "\n", fDsmFunctions,
+			fDsmUhsCapabilities);
+	} else {
+		JR_TRACE_ALWAYS(fLabel, "Intel SDHCI DSM unavailable; UHS disabled\n");
+	}
+
+	gDeviceManager->put_node(parent);
+}
+
+
+status_t
+SdhciController::SwitchSignalVoltage(bool to1v8)
+{
+	const uint32 function = to1v8 ? 3 : 4;
+	if ((fDsmFunctions & (1u << function)) == 0) {
+		// The eMMC rail is fixed at 1.8 V on Winky and does not need a board
+		// mux operation. A removable SD slot must advertise the DSM switch.
+		return !fRemovable && to1v8 ? B_OK : B_NOT_SUPPORTED;
+	}
+
+	device_node* parent = gDeviceManager->get_parent_node(fNode);
+	if (parent == nullptr)
+		return B_ERROR;
+	uint32 result = 0;
+	status_t status = AcpiEvaluateBytDsm(parent, function, result);
+	gDeviceManager->put_node(parent);
+	if (status != B_OK) {
+		JR_ERROR(fLabel, "Intel DSM voltage switch fn %" B_PRIu32
+			" failed: %s\n", function, strerror(status));
+	}
+	return status;
+}
+
+
+// Resolve the personality, quirks, and pretty label through the same BYT ACPI
+// classifier that claimed the parent node.
 status_t
 SdhciController::_SelectPersonality()
 {
@@ -131,20 +213,9 @@ SdhciController::_SelectPersonality()
 	if (parent == nullptr)
 		return B_ERROR;
 
-	const char* hid = nullptr;
-	const char* uidString = nullptr;
-	uint32_t uid = kAnyUid;
-	gDeviceManager->get_attr_string(parent, ACPI_DEVICE_HID_ITEM, &hid, false);
-	if (gDeviceManager->get_attr_string(parent, ACPI_DEVICE_UID_ITEM, &uidString,
-			false) == B_OK) {
-		char* end = nullptr;
-		unsigned long parsed = strtoul(uidString, &end, 10);
-		if (end != uidString)
-			uid = static_cast<uint32_t>(parsed);
-	}
+	const MatchProfile* profile = ProfileForBytAcpiNode(parent);
 	gDeviceManager->put_node(parent);
 
-	const MatchProfile* profile = MatchProfileFor(hid, uid);
 	if (profile == nullptr)
 		return B_NAME_NOT_FOUND;
 
@@ -152,6 +223,8 @@ SdhciController::_SelectPersonality()
 	fEngine.SetQuirks(profile->quirks);
 	fQuirks = profile->quirks;
 	fRemovable = profile->removable;
+	fDialect = profile->dialect;
+	fDmaStrategy = profile->dma;
 
 	// Clean interim label from the dialect (e.g. sdhci_emb:eMMC); _IdentifyCard
 	// refines it to the concrete card once probed.
@@ -161,47 +234,61 @@ SdhciController::_SelectPersonality()
 }
 
 
-// Bay Trail OCP fixup (quirk-gated). A SOFT dependency: if the iosf_mbi bus
-// manager is absent (any non-BYT host), we log and continue -- the SD path the
-// reference proved does not itself require the fixup, so a missing module must
-// never fail boot. The module is only "available" once it has actually bound
-// the host bridge, so get_module succeeding means the sideband is usable.
+// Bay Trail OCP fixup (quirk-gated). This BSP owns the complete controller
+// contract, so IOSF access and a verified clear are prerequisites rather than
+// firmware assumptions.
 status_t
 SdhciController::_ApplyOcpFixup()
 {
 	if (!Has(fQuirks, Quirk::NeedsIosfOcpFixup))
 		return B_OK;
 
-	iosf_mbi_module_info* mbi = nullptr;
-	if (get_module(B_IOSF_MBI_MODULE_NAME, (module_info**)&mbi) != B_OK) {
-		JR_TRACE_ALWAYS(fLabel,
-			"IOSF-MBI unavailable; skipping OCP fixup (soft dependency)\n");
-		return B_OK;
+	if (gIosfMbi == nullptr) {
+		JR_ERROR(fLabel, "IOSF-MBI dependency unavailable\n");
+		return B_NO_INIT;
 	}
 
 	uint32_t val = 0;
-	status_t status = mbi->read(kSccepUnit, IOSF_MBI_CR_READ, kOcpNetCtrl0Reg,
+	status_t status = gIosfMbi->read(kSccepUnit, IOSF_MBI_CR_READ, kOcpNetCtrl0Reg,
 		&val);
 	if (status != B_OK) {
 		JR_ERROR(fLabel, "IOSF-MBI: SCCEP 0x%" B_PRIx32 " read failed: %s\n",
 			kOcpNetCtrl0Reg, strerror(status));
-	} else if ((val & kOcpTimeoutMask) == 0) {
+		return status;
+	}
+	if ((val & kOcpTimeoutMask) == 0) {
 		JR_TRACE_ALWAYS(fLabel, "IOSF-MBI: OCP timeout already clear\n");
-	} else {
-		val &= ~kOcpTimeoutMask;
-		status = mbi->write(kSccepUnit, IOSF_MBI_CR_WRITE, kOcpNetCtrl0Reg, val);
-		if (status != B_OK) {
-			JR_ERROR(fLabel, "IOSF-MBI: SCCEP 0x%" B_PRIx32 " write failed: %s\n",
-				kOcpNetCtrl0Reg, strerror(status));
-		} else {
-			JR_TRACE_ALWAYS(fLabel,
-				"IOSF-MBI: OCP timeout cleared (0x%08" B_PRIx32 ")\n", val);
-		}
+		return B_OK;
 	}
 
-	put_module(B_IOSF_MBI_MODULE_NAME);
-	// The fixup is best-effort: a sideband hiccup should not abort a boot that
-	// may still work, so we always report success and let the card probe judge.
+	const uint32_t requested = val & ~kOcpTimeoutMask;
+	status = gIosfMbi->write(kSccepUnit, IOSF_MBI_CR_WRITE, kOcpNetCtrl0Reg,
+		requested);
+	if (status != B_OK) {
+		JR_ERROR(fLabel, "IOSF-MBI: SCCEP 0x%" B_PRIx32 " write failed: %s\n",
+			kOcpNetCtrl0Reg, strerror(status));
+		return status;
+	}
+
+	uint32_t verified = 0;
+	status = gIosfMbi->read(kSccepUnit, IOSF_MBI_CR_READ, kOcpNetCtrl0Reg,
+		&verified);
+	if (status != B_OK) {
+		JR_ERROR(fLabel, "IOSF-MBI: SCCEP 0x%" B_PRIx32
+			" verification read failed: %s\n", kOcpNetCtrl0Reg,
+			strerror(status));
+		return status;
+	}
+	if ((verified & kOcpTimeoutMask) != 0) {
+		JR_ERROR(fLabel, "IOSF-MBI: OCP timeout clear did not stick"
+			" (requested 0x%08" B_PRIx32 ", read 0x%08" B_PRIx32 ")\n",
+			requested, verified);
+		return B_IO_ERROR;
+	}
+
+	JR_TRACE_ALWAYS(fLabel,
+		"IOSF-MBI: OCP timeout cleared and verified (0x%08" B_PRIx32 ")\n",
+		verified);
 	return B_OK;
 }
 
@@ -249,15 +336,13 @@ SdhciController::_MapResources()
 }
 
 
-// The interrupt handler runs in interrupt context and does the bare minimum: it
-// forwards to the engine's "meow" (a lossy CV pulse, no register access) and
-// reports the line handled. Bay Trail gives each controller its own line, so we
-// never need to read status just to disown a shared interrupt.
+// The interrupt handler runs in interrupt context and delegates the minimal raw
+// source filter plus lossy wake hint to the engine. Command interpretation and
+// interrupt acknowledgement remain worker-only.
 int32
 SdhciController::_InterruptHandler(void* self)
 {
-	static_cast<SdhciController*>(self)->fEngine.HandleInterruptMeow();
-	return B_HANDLED_INTERRUPT;
+	return static_cast<SdhciController*>(self)->fEngine.HandleInterruptMeow();
 }
 
 
@@ -279,8 +364,17 @@ SdhciController::_InstallInterrupt()
 status_t
 SdhciController::_IdentifyCard()
 {
-	fCard = Card::Probe(fEngine);
+	fCard = Card::Create(fEngine, fDialect);
 	if (fCard == nullptr) {
+		if (fRemovable && fDialect == CardDialect::Sd) {
+			fCard = new(std::nothrow) SdCard(false);
+			if (fCard == nullptr)
+				return B_NO_MEMORY;
+			fEngine.SetDialect(CardDialect::Sd);
+			JR_TRACE_ALWAYS(fLabel,
+				"empty removable slot; publishing an offline disk\n");
+			return B_OK;
+		}
 		JR_ERROR(fLabel, "no card responded during identification\n");
 		return B_DEVICE_NOT_FOUND;
 	}
@@ -289,7 +383,6 @@ SdhciController::_IdentifyCard()
 	snprintf(fLabel.text, sizeof(fLabel.text), "sdhci_emb:%s",
 		fCard->PrettyName());
 	fEngine.SetDialect(fCard->Dialect());
-	fEngine.SetClock(25000);	// step up to 25 MHz after identification (fork parity)
 	return B_OK;
 }
 
@@ -297,19 +390,11 @@ SdhciController::_IdentifyCard()
 status_t
 SdhciController::_PublishDisk()
 {
-	// Strategy follows card dialect, mirroring the working fork: SD cards ride
-	// the proven single-buffer SDMA path, while eMMC uses ADMA2 scatter/gather.
-	// (ADMA2 is the known-suspect path -- but eMMC is the only caller, and eMMC
-	// bring-up is itself still unproven, so this keeps the SD path on the code
-	// that actually works.) The devfs node itself is created by
-	// register_child_devices in the glue.
-	const DmaStrategy strategy = (fCard->Dialect() == CardDialect::Mmc)
-		? DmaStrategy::Adma2
-		: DmaStrategy::Sdma;
-
-	fDisk = Disk::Create(strategy, *this, *fCard, fEngine);
+	fDisk = Disk::Create(fDmaStrategy, *this, *fCard, fEngine);
 	if (fDisk == nullptr)
 		return B_NO_MEMORY;
+	if (fCard->SectorCount() == 0)
+		fDisk->SetOnline(false);
 
 	fCardPublished = true;
 	JR_TRACE_ALWAYS(fLabel, "disk ready via %s\n", fDisk->StrategyName());
@@ -360,10 +445,27 @@ SdhciController::_WatcherLoop()
 	while (fWatcherRunning) {
 		snooze(500000);	// 500ms; this is not a hot path
 		const bool now = fEngine.CardPresent();
-		if (now != present) {
-			JR_TRACE_ALWAYS(fLabel, "card %s\n", now ? "inserted" : "removed");
+		if (!now && present) {
+			JR_TRACE_ALWAYS(fLabel, "card removed\n");
+			if (fDisk != nullptr)
+				fDisk->SetOnline(false);
 			present = now;
-			// Implementation point: re-identify on insert / tear down on remove.
+			continue;
+		}
+		if (now && (!present || (fDisk != nullptr && !fDisk->IsOnline()))) {
+			JR_TRACE_ALWAYS(fLabel, "card inserted; identifying\n");
+			if (fDisk != nullptr)
+				fDisk->SetOnline(false);
+			status_t status = RecoverCard();
+			if (status == B_OK) {
+				fDisk->SetOnline(true);
+				JR_TRACE_ALWAYS(fLabel, "card online: %llu sectors\n",
+					(unsigned long long)fCard->SectorCount());
+			} else {
+				JR_ERROR(fLabel, "card re-identification failed: %s\n",
+					strerror(status));
+			}
+			present = now;
 		}
 	}
 	return 0;

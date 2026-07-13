@@ -31,7 +31,7 @@ SPDX-License-Identifier = "MIT"
 SPDX-FileContributor = "Generated with Qwen 3.6"
 
 [[annotations]]
-path = ["docs/design/**"]
+path = ["docs/design/**", "docs/hardware/**"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 The Jidō Renga Authors"
 SPDX-License-Identifier = "MIT"

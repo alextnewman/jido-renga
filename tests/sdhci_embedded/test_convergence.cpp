@@ -18,6 +18,19 @@ JR_TEST(convergence, spurious_meow_detection)
 }
 
 
+JR_TEST(convergence, isr_only_wakes_for_managed_sources)
+{
+	JR_CHECK(!IsActionableMeow(0x00000000u));
+	JR_CHECK(!IsActionableMeow(0xffffffffu));
+	JR_CHECK(!IsActionableMeow(irq::kCardInsertion));
+	JR_CHECK(!IsActionableMeow(irq::kCardRemoval));
+	JR_CHECK(!IsActionableMeow(1u << 30));
+	JR_CHECK(IsActionableMeow(irq::kCommandComplete));
+	JR_CHECK(IsActionableMeow(irq::kTransferComplete | irq::kCardInsertion));
+	JR_CHECK(IsActionableMeow(irq::kDataCrc | irq::kErrorBit));
+}
+
+
 JR_TEST(convergence, storm_safe_idle_clear)
 {
 	// A spurious word is left alone: the idle worker must not write a garbage
@@ -25,14 +38,14 @@ JR_TEST(convergence, storm_safe_idle_clear)
 	JR_CHECK(StormSafeIdleClear(0x00000000u) == 0u);
 	JR_CHECK(StormSafeIdleClear(0xffffffffu) == 0u);
 
-	// The whole point of the idle drain: card insert/remove events are signal-
-	// enabled but no command drain clears them, so on a level-triggered line
-	// they would meow forever. The idle clear must write them back (write-1-to-
-	// clear), i.e. they must survive the mask.
-	JR_CHECK((kSignalMask & irq::kCardInsertion) != 0u);
-	JR_CHECK((kSignalMask & irq::kCardRemoval) != 0u);
-	JR_CHECK(StormSafeIdleClear(irq::kCardInsertion) == irq::kCardInsertion);
-	JR_CHECK(StormSafeIdleClear(irq::kCardRemoval) == irq::kCardRemoval);
+	// Hot-plug uses present-state polling, so card events never participate in
+	// the command IRQ line and the idle drain does not claim them.
+	JR_CHECK((kStatusEnableMask & irq::kCardInsertion) == 0u);
+	JR_CHECK((kStatusEnableMask & irq::kCardRemoval) == 0u);
+	JR_CHECK((kSignalMask & irq::kCardInsertion) == 0u);
+	JR_CHECK((kSignalMask & irq::kCardRemoval) == 0u);
+	JR_CHECK(StormSafeIdleClear(irq::kCardInsertion) == 0u);
+	JR_CHECK(StormSafeIdleClear(irq::kCardRemoval) == 0u);
 
 	// A stray completion word latched with no pending transaction is cleared too
 	// (it is in the signal-enabled set), so nothing keeps the line asserted.
@@ -43,23 +56,76 @@ JR_TEST(convergence, storm_safe_idle_clear)
 	// spurious write to a register we do not manage.
 	const uint32_t foreign = 1u << 30;
 	JR_CHECK((kSignalMask & foreign) == 0u);
-	JR_CHECK(StormSafeIdleClear(foreign | irq::kCardRemoval) == irq::kCardRemoval);
+	JR_CHECK(StormSafeIdleClear(foreign | irq::kCommandComplete)
+		== irq::kCommandComplete);
 }
 
 
-// The per-attempt drain and the signal-enable set must agree on the command
-// verdict bits (a completion/timeout/error the poll loop latched has to be both
-// signal-enabled to meow and drained to clear), or a converged command could
-// leave a bit latched that then storms the following idle wait.
-JR_TEST(convergence, drain_and_signal_masks_cover_command_bits)
+JR_TEST(convergence, status_signal_and_ack_masks_agree)
 {
 	const uint32_t commandBits = irq::kCommandComplete | irq::kTransferComplete
-		| irq::kCommandTimeout | irq::kDataTimeout;
+		| irq::kErrorBit | irq::kAllUnderlyingErrors;
 	JR_CHECK((kDrainMask & commandBits) == commandBits);
+	JR_CHECK((kStatusEnableMask & commandBits) == commandBits);
 	JR_CHECK((kSignalMask & commandBits) == commandBits);
-	// Every signal-enabled command bit (i.e. not the card events) is drainable.
-	const uint32_t cardBits = irq::kCardInsertion | irq::kCardRemoval;
-	JR_CHECK(((kSignalMask & ~cardBits) & ~kDrainMask) == 0u);
+	JR_CHECK_EQ(kStatusEnableMask, kDrainMask);
+	JR_CHECK_EQ(kSignalMask, kDrainMask);
+
+	JR_CHECK_EQ(InterruptBitsToAcknowledge(0), 0u);
+	JR_CHECK_EQ(InterruptBitsToAcknowledge(0xffffffffu), 0u);
+	JR_CHECK_EQ(InterruptBitsToAcknowledge(
+		irq::kCommandComplete | irq::kCardInsertion | (1u << 30)),
+		irq::kCommandComplete);
+}
+
+
+JR_TEST(convergence, split_completion_accumulates_in_software)
+{
+	uint32_t status = 0;
+
+	status = AccumulateInterruptStatus(status, irq::kCommandComplete);
+	JR_CHECK_EQ(status, irq::kCommandComplete);
+	JR_CHECK(ClassifyPoll(status, true) == PollVerdict::KeepPolling);
+
+	// A duplicate hint is harmless and cannot grow or change the evidence.
+	status = AccumulateInterruptStatus(status, irq::kCommandComplete);
+	JR_CHECK_EQ(status, irq::kCommandComplete);
+
+	// TransferComplete may arrive in a later hardware snapshot after the worker
+	// has already acknowledged CommandComplete to lower the IRQ line.
+	status = AccumulateInterruptStatus(status, irq::kTransferComplete);
+	JR_CHECK_EQ(status, irq::kCommandComplete | irq::kTransferComplete);
+	JR_CHECK(ClassifyPoll(status, true) == PollVerdict::TransferComplete);
+}
+
+
+JR_TEST(convergence, later_error_overrides_partial_completion)
+{
+	uint32_t status
+		= AccumulateInterruptStatus(0, irq::kCommandComplete);
+	JR_CHECK(ClassifyPoll(status, true) == PollVerdict::KeepPolling);
+
+	status = AccumulateInterruptStatus(status,
+		irq::kDataCrc | irq::kErrorBit);
+	JR_CHECK(ClassifyPoll(status, true) == PollVerdict::DataCrc);
+}
+
+
+JR_TEST(convergence, buffer_ready_is_terminal_only_for_tuning)
+{
+	JR_CHECK(ClassifyPoll(irq::kBufferReadReady, false)
+		== PollVerdict::KeepPolling);
+	JR_CHECK(ClassifyPoll(irq::kBufferReadReady, true, false)
+		== PollVerdict::KeepPolling);
+	JR_CHECK(ClassifyPoll(irq::kCommandComplete | irq::kBufferReadReady,
+		true, false) == PollVerdict::KeepPolling);
+	JR_CHECK(ClassifyPoll(irq::kBufferReadReady, true, true)
+		== PollVerdict::BufferReadReady);
+
+	// TransferComplete remains authoritative if buffer readiness was also
+	// observed during an ordinary DMA read.
+	JR_CHECK(ClassifyPoll(irq::kBufferReadReady | irq::kTransferComplete,
+		true, false) == PollVerdict::TransferComplete);
 }
 
 
@@ -75,6 +141,8 @@ JR_TEST(convergence, interpret_terminal_bits)
 		== PollVerdict::DataTimeout);
 	JR_CHECK(InterpretInterruptStatus(irq::kDataCrc)
 		== PollVerdict::DataCrc);
+	JR_CHECK(InterpretInterruptStatus(irq::kAdma)
+		== PollVerdict::AdmaError);
 	JR_CHECK(InterpretInterruptStatus(irq::kCommandTimeout)
 		== PollVerdict::CommandTimeout);
 	JR_CHECK(InterpretInterruptStatus(irq::kErrorBit)
@@ -82,11 +150,13 @@ JR_TEST(convergence, interpret_terminal_bits)
 }
 
 
-JR_TEST(convergence, completion_wins_over_error)
+JR_TEST(convergence, error_wins_over_completion)
 {
-	// A finish that also latched the error summary bit must read as complete.
+	// Completion can be latched alongside the failing data phase.
 	JR_CHECK(InterpretInterruptStatus(irq::kCommandComplete | irq::kErrorBit)
-		== PollVerdict::CommandComplete);
+		== PollVerdict::Error);
+	JR_CHECK(InterpretInterruptStatus(irq::kTransferComplete | irq::kAdma)
+		== PollVerdict::AdmaError);
 	// A specific data fault must surface distinctly, not as generic Error.
 	JR_CHECK(InterpretInterruptStatus(irq::kDataTimeout | irq::kErrorBit)
 		== PollVerdict::DataTimeout);
@@ -124,7 +194,7 @@ JR_TEST(convergence, retry_command_timeout_needs_card)
 	CommandConstraints busReset; busReset.maxRetries = 3;
 	busReset.needsBusResetOnError = true;
 	JR_CHECK(DecideRetry(AttemptResult::CommandTimeout, 0, 4, busReset, true)
-		== RetryAction::RetryWithBusReset);
+		== RetryAction::ResetAndReidentify);
 	// Card gone -> abort even with budget left.
 	JR_CHECK(DecideRetry(AttemptResult::CommandTimeout, 0, 4, c, false)
 		== RetryAction::Fail);
@@ -141,9 +211,9 @@ JR_TEST(convergence, retry_data_fault_uses_bus_reset)
 	CommandConstraints plain; plain.maxRetries = 3;
 
 	JR_CHECK(DecideRetry(AttemptResult::DataTimeout, 0, 4, reset, true)
-		== RetryAction::RetryWithBusReset);
+		== RetryAction::ResetAndReidentify);
 	JR_CHECK(DecideRetry(AttemptResult::DataCrc, 0, 4, reset, true)
-		== RetryAction::RetryWithBusReset);
+		== RetryAction::ResetAndReidentify);
 	// Without the bus-reset flag a data fault still recovers, via line reset.
 	JR_CHECK(DecideRetry(AttemptResult::DataTimeout, 0, 4, plain, true)
 		== RetryAction::RetryResetLines);
@@ -153,21 +223,33 @@ JR_TEST(convergence, retry_data_fault_uses_bus_reset)
 }
 
 
-JR_TEST(convergence, retry_busy_always_bus_resets)
+JR_TEST(convergence, busy_resets_lines_without_replaying_a_command)
 {
 	// The reference worker recovers a busy controller with a full bus reset
 	// whether or not the command carries the bus-reset quirk.
 	CommandConstraints reset; reset.maxRetries = 1;
 	reset.needsBusResetOnError = true;
 	JR_CHECK(DecideRetry(AttemptResult::Busy, 0, 2, reset, true)
-		== RetryAction::RetryWithBusReset);
+		== RetryAction::RetryResetLines);
 
 	CommandConstraints plain; plain.maxRetries = 1;
 	JR_CHECK(DecideRetry(AttemptResult::Busy, 0, 2, plain, true)
-		== RetryAction::RetryWithBusReset);
+		== RetryAction::RetryResetLines);
 
 	// Exhausted budget -> fail.
 	JR_CHECK(DecideRetry(AttemptResult::Busy, 1, 2, reset, true)
+		== RetryAction::Fail);
+}
+
+
+JR_TEST(convergence, uncertain_write_is_never_replayed)
+{
+	CommandConstraints write;
+	write.maxRetries = 3;
+	write.replaySafe = false;
+	JR_CHECK(DecideRetry(AttemptResult::DataTimeout, 0, 4, write, true)
+		== RetryAction::Fail);
+	JR_CHECK(DecideRetry(AttemptResult::AdmaError, 0, 4, write, true)
 		== RetryAction::Fail);
 }
 

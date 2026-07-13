@@ -494,6 +494,32 @@ The original `_ParseT9Contact` only set `contact->press = true` inside the `if (
 
 ---
 
+### 13.5 Device-Manager Registration Hardening
+
+The first Winky boot that reached I2C child registration faulted in `strcmp`
+under `device_node::_RegisterPath()`. KDL showed `RDI = 0`, proving that a
+driver support callback passed a null attribute string as the first comparison
+argument. Haiku's `get_attr_string()` returns `B_OK` when a string attribute
+exists with a null value, so checking status alone is insufficient.
+
+`i2c_atmel_mxt_support()` now initializes the bus pointer and requires both
+`B_OK` and a non-null value before comparing it with `"i2c"`. Stock
+`i2c_elan` remains in the image: the KDL frame did not identify Elan as the
+faulting callback, and HID/CID matching allows Atmel and Elan devices to
+coexist without an ownership protocol.
+
+Haiku's I2C child-node construction also publishes HID and CID attributes even
+when their string values are null. Winky defensively composes `i2c_guarded`,
+which reuses the pristine Haiku I2C module sources but replaces `I2CBus.cpp`
+with an overlay-owned translation unit that omits absent optional string
+attributes. The earlier branch had worked with the stock bus manager, so this
+normalization is not claimed as the proven cause of the original fault; the
+missing immediate caller below `strcmp` prevented that attribution.
+
+The resulting composition is hardware-validated. The guarded manager,
+`i2c_atmel_mxt`, stock `i2c_elan`, and the ChromeOS EC keyboard coexist in the
+same installed-capable Winky image, and the input devices work.
+
 ## 12. References
 
 - [Atmel maXTouch OBP Specification](atmel-maxtouch-trackpad-spec.md) — device protocol reference

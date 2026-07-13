@@ -8,7 +8,7 @@
 // Foundational value types for the sdhci_embedded stack.
 //
 // Everything in this header is pure: no kernel headers, no side effects. The
-// pure core (Types, Command, Adma2, Convergence, Transaction, Csd, Matcher,
+// pure core (Types, Command, Adma2, Convergence, Transaction, Csd, profiles,
 // Personality) is host-buildable so it can be unit tested off-target. The
 // kernel shell (Engine, Controller, Card, Disk, glue) translates these values
 // to/from Haiku's C ABI at its boundary.
@@ -16,8 +16,8 @@
 namespace jr::sdhci {
 
 
-// Which protocol dialect a card speaks. Chosen up front by the ExplicitMatcher
-// (from ACPI UID), never guessed at runtime.
+// Which protocol dialect a card speaks. Chosen up front by the BYT ACPI profile
+// (from the controller HID), never guessed at runtime.
 enum class CardDialect : uint8_t {
 	Unknown = 0,
 	Sd,			// SD / SDHC (ACMD41, SCR, ACMD6 bus width)
@@ -31,7 +31,7 @@ enum class DmaStrategy : uint8_t {
 	None = 0,
 	Pio,		// buffer-port programmed IO (bring-up only, never selected)
 	Sdma,		// single-segment DMA
-	Adma2,		// scatter/gather DMA (the Bay Trail target)
+	Adma2,		// scatter/gather DMA after host/profile validation
 };
 
 

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
 // SPDX-License-Identifier: MIT
 // SPDX-FileContributor: Generated with Qwen 3.6
+// SPDX-FileContributor: Generated with GitHub Copilot
 
 //! ChromeOS EC keyboard driver -- native driver for the 8042-class interface
 //! emulated by the ChromeOS Embedded Controller (WINKY / Chromebook 2).
@@ -709,9 +710,9 @@ cros_ec_supports_device(device_node* parent)
 	if (sDeviceManager == NULL || parent == NULL)
 		return 0.0f;
 
-	const char* bus;
+	const char* bus = NULL;
 	if (sDeviceManager->get_attr_string(parent, B_DEVICE_BUS, &bus, false)
-		!= B_OK || strcmp(bus, "acpi") != 0) {
+		!= B_OK || bus == NULL || strcmp(bus, "acpi") != 0) {
 		return 0.0f;
 	}
 

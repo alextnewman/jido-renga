@@ -32,16 +32,81 @@ namespace {
 	constexpr uint32_t	kInhibitGracePolls = 100;			// ~10ms grace, then Busy
 	constexpr bigtime_t	kRetryBackoffUs = 5000;				// backoff base between attempts
 	constexpr bigtime_t	kBusResetSettleUs = 50000;			// Bay Trail reset settle
-	constexpr int		kR1bBusyPolls = 2000;				// ~1s of 500us DataInhibit polls
+	constexpr int		kR1bBusyPolls = 10000;				// up to 5s of busy polling
 	constexpr bigtime_t	kR1bBusyPollUs = 500;
 	constexpr int		kRegulatorPolls = 100;				// regulator-stable settle
 	constexpr bigtime_t	kRegulatorPollUs = 100;
 	constexpr bigtime_t	kPowerOnDelayUs = 10000;			// POWER_ON_DELAY quirk settle
 	constexpr uint8_t	kTimeoutDividerRaw = 14;			// max 2^27 period (SD-clock timeout)
+	constexpr uint8_t	kHostVersion410 = 4;
 
-	// kDrainMask / kSignalMask now live in Convergence.h beside the bit names,
-	// so the "which bits matter" policy is one host-testable place (and the idle
-	// worker's StormSafeIdleClear can share kSignalMask).
+	// Interrupt masks and snapshot acknowledgement policy live in Convergence.h
+	// beside the bit names so "which bits matter" remains host-testable.
+
+	const char*
+	AttemptResultLabel(AttemptResult result)
+	{
+		switch (result) {
+			case AttemptResult::Ok:				return "ok";
+			case AttemptResult::SpuriousOcr:		return "bad-ocr";
+			case AttemptResult::Busy:			return "inhibit";
+			case AttemptResult::CommandTimeout:	return "command-timeout";
+			case AttemptResult::DataTimeout:		return "data-timeout";
+			case AttemptResult::DataCrc:			return "data-crc";
+			case AttemptResult::AdmaError:		return "adma-error";
+			case AttemptResult::Error:			return "controller-error";
+			default:							return "unknown";
+		}
+	}
+
+	const char*
+	RetryActionLabel(RetryAction action)
+	{
+		switch (action) {
+			case RetryAction::Succeed:				return "succeed";
+			case RetryAction::Retry:					return "retry";
+			case RetryAction::RetryResetLines:		return "reset-lines";
+			case RetryAction::ResetAndReidentify:	return "reidentify";
+			case RetryAction::Fail:					return "fail";
+			default:								return "unknown";
+		}
+	}
+}
+
+
+status_t
+SdhciEngine::ExecuteTuning(Cmd command, uint16_t blockSize)
+{
+	fRegs->hostControl2.SetExecuteTuning(true);
+
+	for (int attempt = 0; attempt < 40; attempt++) {
+		DataTransfer data;
+		data.blockSize = blockSize;
+		data.blockCount = 1;
+		data.transferMode = transfer_mode::kRead;
+		data.tuning = true;
+
+		CommandConstraints constraints;
+		constraints.timeoutMs = 50;
+		CommandOutcome outcome;
+		status_t status = ExecuteData(command, 0, ReplyType::R1, constraints,
+			data, outcome);
+		if (status != B_OK) {
+			fRegs->hostControl2.ClearTuning();
+			fRegs->softwareReset.ResetCommandLine();
+			fRegs->softwareReset.ResetDataLine();
+			return status;
+		}
+
+		if (!fRegs->hostControl2.ExecuteTuning()) {
+			if (fRegs->hostControl2.TunedClock())
+				return B_OK;
+			break;
+		}
+	}
+
+	fRegs->hostControl2.ClearTuning();
+	return B_ERROR;
 }
 
 
@@ -50,6 +115,76 @@ void
 SoftwareResetReg::BusyWait10ms()
 {
 	snooze(10000);
+}
+
+
+HostCapabilities
+SdhciEngine::Capabilities() const
+{
+	const uint8_t platformCaps = fPlatform != nullptr
+		? fPlatform->UhsCapabilities() : 0;
+	return DecodeHostCapabilities(fRegs->capabilities.Raw(),
+		fRegs->capabilities.Raw1(), platformCaps);
+}
+
+
+status_t
+SdhciEngine::ConfigureBus(const BusMode& mode)
+{
+	SetBusWidth(mode.width);
+
+	uint16_t uhsMode = HostControl2Reg::kSdr12;
+	switch (mode.timing) {
+		case BusTiming::MmcHs200:
+		case BusTiming::SdSdr104:
+			uhsMode = HostControl2Reg::kSdr104;
+			break;
+		case BusTiming::MmcDdr52:
+		case BusTiming::SdDdr50:
+			uhsMode = HostControl2Reg::kDdr50;
+			break;
+		case BusTiming::SdSdr50:
+			uhsMode = HostControl2Reg::kSdr50;
+			break;
+		case BusTiming::SdSdr25:
+			uhsMode = HostControl2Reg::kSdr25;
+			break;
+		default:
+			break;
+	}
+	fRegs->hostControl2.SetUhsMode(uhsMode);
+
+	const bool highSpeed = mode.timing != BusTiming::Legacy
+		&& mode.timing != BusTiming::SdSdr12;
+	fRegs->hostControl.SetHighSpeed(highSpeed);
+	return SetClock(mode.clockKHz, false);
+}
+
+
+status_t
+SdhciEngine::SwitchSignalVoltage(bool to1v8, bool checkDataLines)
+{
+	if (checkDataLines && to1v8 && fRegs->presentState.DataLineLevels() != 0)
+		return B_IO_ERROR;
+
+	fRegs->clockControl.DisableSdClock();
+	fRegs->hostControl2.SetSignal1v8(to1v8);
+
+	status_t status = fPlatform != nullptr
+		? fPlatform->SwitchSignalVoltage(to1v8) : B_NOT_SUPPORTED;
+	if (status != B_OK) {
+		fRegs->hostControl2.SetSignal1v8(!to1v8);
+		fRegs->clockControl.EnableSdClock();
+		return status;
+	}
+
+	snooze(5000);
+	fRegs->clockControl.EnableSdClock();
+	snooze(1000);
+
+	if (checkDataLines && to1v8 && fRegs->presentState.DataLineLevels() != 0xf)
+		return B_IO_ERROR;
+	return B_OK;
 }
 
 
@@ -85,18 +220,21 @@ SdhciEngine::Init(volatile RegisterBlock* regs, const HostPersonality* personali
 	// before any caller consults the cache.
 	_SyncVcState();
 
-	// Spec 4.2: set interrupt masks after reset. Status-enable is wide (bits must
-	// be enabled to latch, and the worker polls them); signal-enable is the set
-	// that may pulse the ISR "meow".
-	fRegs->interruptStatusEnable = 0xffffffff;
+	// Latch and signal only the completion/error sources the convergence policy
+	// understands. Card detection is owned by the present-state watcher.
+	fRegs->interruptStatusEnable = kStatusEnableMask;
 	fRegs->interruptSignalEnable = kSignalMask;
 
+	const uint32_t capabilities = fRegs->capabilities.Raw();
+	const uint32_t capabilities1 = fRegs->capabilities.Raw1();
 	fBaseClockKHz = fRegs->capabilities.BaseClockMHz() * 1000;
 	fTimeoutClockKHz = fRegs->capabilities.TimeoutClockKHz();
+	if (Has(fQuirks, Quirk::Fixed1MHzTimeoutClock))
+		fTimeoutClockKHz = 1000;
 
 	// Spec>4.00 controllers: clear the (reserved-on-BYT) HOST_CONTROL_2 bit 12.
 	if ((fRegs->hostControllerVersion & 0xff) > 3)
-		fRegs->hostControl2 = static_cast<uint16_t>(fRegs->hostControl2 & ~(1u << 12));
+		fRegs->hostControl2.ClearReservedV4Bit();
 
 	// Let the personality apply its post-reset fixups (preset disable, etc.).
 	if (fPersonality != nullptr)
@@ -106,22 +244,30 @@ SdhciEngine::Init(volatile RegisterBlock* regs, const HostPersonality* personali
 	// (EMMC_HW_RESET quirk) has no card-detect line, so force power on; a
 	// removable slot only powers up when a card is actually present.
 	const bool force = Has(fQuirks, Quirk::EmmcHardwareReset);
-	if (_PowerOnBus(force))
-		_BringUpBus();
-	else
+	if (_PowerOnBus(force)) {
+		const status_t status = _BringUpBus();
+		if (status != B_OK)
+			return status;
+	} else if (force) {
+		JR_ERROR(fLabel, "could not power soldered eMMC bus\n");
+		return B_IO_ERROR;
+	} else {
 		JR_TRACE_ALWAYS(fLabel, "no card present at init; bus left unpowered\n");
+	}
 
 	fWorkerRunning = true;
 	fWorker = spawn_kernel_thread(_WorkerEntry, "sdhci_emb worker",
-		B_REAL_TIME_PRIORITY, this);
+		B_NORMAL_PRIORITY, this);
 	if (fWorker < 0) {
 		fWorkerRunning = false;
 		return fWorker;
 	}
 	resume_thread(fWorker);
 
-	JR_TRACE_ALWAYS(fLabel, "engine up: base %" B_PRIu32 " kHz, timeout %"
-		B_PRIu32 " kHz\n", fBaseClockKHz, fTimeoutClockKHz);
+	JR_TRACE_ALWAYS(fLabel, "engine up: caps %#08" B_PRIx32 "/%#08" B_PRIx32
+		", host v%u, base %" B_PRIu32 " kHz, timeout %" B_PRIu32 " kHz\n",
+		capabilities, capabilities1, fRegs->hostControllerVersion & 0xff,
+		fBaseClockKHz, fTimeoutClockKHz);
 	return B_OK;
 }
 
@@ -143,16 +289,20 @@ SdhciEngine::Uninit()
 }
 
 
-// The "meow": interrupt context. No register reads, no locks -- just an unordered
-// pulse that nudges the owner awake to go see what the cat wants. It carries no
-// information and counts nothing, so an early, late, doubled, spurious, or
-// wrong-command meow is harmless: the worker's poll + stateful convergence decide
-// what is real. A pulse with no one waiting is simply lost, which degrades to a
-// timed recheck -- never a hang. (ConditionVariable::NotifyAll is ISR-safe.)
-void
+// The "meow": interrupt context. Read only enough raw status to disown an empty,
+// floating, or unmanaged source; never classify command meaning and never write
+// hardware here. A plausible interrupt becomes an unordered wake hint. Returning
+// B_INVOKE_SCHEDULER when a waiter was released lets the worker clear the
+// level-triggered source promptly instead of allowing the ISR to starve it.
+int32
 SdhciEngine::HandleInterruptMeow()
 {
-	fMeowCV.NotifyAll();
+	const uint32_t status = fRegs->interruptStatus;
+	if (!IsActionableMeow(status))
+		return B_UNHANDLED_INTERRUPT;
+
+	const int32 notified = fMeowCV.NotifyAll();
+	return notified > 0 ? B_INVOKE_SCHEDULER : B_HANDLED_INTERRUPT;
 }
 
 
@@ -186,15 +336,17 @@ SdhciEngine::ReadDataBlock(Cmd command, uint32_t argument, ReplyType reply,
 	pRestrictions.high_address = 0x100000000ull;	// 32-bit SDMA ceiling
 	pRestrictions.alignment = 512;
 
+	const size_t areaSize = ROUNDUP(size, B_PAGE_SIZE);
 	void* dmaBuffer = nullptr;
-	area_id area = create_area_etc(B_SYSTEM_TEAM, "sdhci_emb datablk", size,
+	area_id area = create_area_etc(B_SYSTEM_TEAM, "sdhci_emb datablk", areaSize,
 		B_CONTIGUOUS, B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, 0, 0,
 		&vRestrictions, &pRestrictions, &dmaBuffer);
 	if (area < B_OK || dmaBuffer == nullptr)
 		return B_NO_MEMORY;
 
 	physical_entry entry;
-	if (get_memory_map(dmaBuffer, size, &entry, 1) != B_OK) {
+	if (get_memory_map(dmaBuffer, areaSize, &entry, 1) != B_OK
+		|| entry.size < size || entry.address >= 0x100000000ull) {
 		delete_area(area);
 		return B_BAD_DATA;
 	}
@@ -207,8 +359,14 @@ SdhciEngine::ReadDataBlock(Cmd command, uint32_t argument, ReplyType reply,
 
 	CommandOutcome outcome;
 	status_t status = ExecuteData(command, argument, reply, data, outcome);
-	if (status == B_OK)
+	if (status == B_OK && reply == ReplyType::R1
+		&& R1HasError(outcome.response[0])) {
+		status = B_IO_ERROR;
+	}
+	if (status == B_OK) {
+		memory_read_barrier();
 		memcpy(buffer, dmaBuffer, size);
+	}
 
 	delete_area(area);
 	return status;
@@ -241,7 +399,9 @@ SdhciEngine::_Submit(Cmd command, uint32_t argument, ReplyType reply,
 		txn->blockCount = data->blockCount;
 		txn->dmaAddress = data->sdmaAddress;
 		txn->adma2Table = data->adma2Table;
+		txn->adma2Address = data->adma2Address;
 		txn->adma2Entries = data->adma2Entries;
+		txn->tuning = data->tuning;
 		// Honor an explicit Transfer Mode when the command opcode alone can't
 		// convey direction (EXT_CSD's CMD8 collides with SD SEND_IF_COND).
 		if (data->transferMode != 0)
@@ -265,30 +425,16 @@ SdhciEngine::_Submit(Cmd command, uint32_t argument, ReplyType reply,
 	fMailbox.Post(txn);
 	fMeowCV.NotifyAll();		// pulse the worker to claim the mailbox
 
-	// Wait for *our* ticket to reach a terminal verdict. The completion
-	// semaphore is only a nudge: a stale signal from an earlier abandoned
-	// command can still land here, so we re-check IsDone() and keep waiting
-	// until our own transaction is published or the budget expires. This is
-	// what prevents a stale wake from reporting a bogus success.
-	const bigtime_t deadline = system_time() + 10LL * 1000 * 1000;
-	for (;;) {
-		status_t acquired = acquire_sem_etc(fCompletion, 1, B_ABSOLUTE_TIMEOUT,
-			deadline);
-		if (acquired == B_OK) {
-			if (txn->IsDone())
-				break;
-			// A stale signal for someone else's command; keep waiting for ours.
+	// Once the worker can claim a data transaction, caller buffers must remain
+	// pinned until the worker has reset/quiesced the controller and acknowledged
+	// completion. Per-attempt budgets live inside the worker; there is no unsafe
+	// outer timeout that can release active DMA memory.
+	while (!txn->IsDone()) {
+		status_t acquired = acquire_sem(fCompletion);
+		if (acquired == B_INTERRUPTED)
 			continue;
-		}
-
-		// Timed out. Try to pull our ticket back; if the worker already claimed
-		// it, the worker owns the reference and will Release() after MarkDone(),
-		// writing only into the ticket -- never into caller storage.
-		if (fMailbox.Reclaim(txn))
-			txn->Release();
-		JR_ERROR(fLabel, "command %u timed out in worker\n",
-			(unsigned)static_cast<uint8_t>(command));
-		return B_TIMED_OUT;
+		if (acquired != B_OK)
+			return acquired;
 	}
 
 	// Our transaction is done and the worker is no longer touching it (its last
@@ -297,7 +443,7 @@ SdhciEngine::_Submit(Cmd command, uint32_t argument, ReplyType reply,
 	for (int i = 0; i < 4; i++)
 		outcome.response[i] = txn->responseWords[i];
 	outcome.result = txn->result >= 0 ? AttemptResult::Ok : AttemptResult::Error;
-	return txn->result >= 0 ? B_OK : B_ERROR;
+	return txn->result;
 }
 
 
@@ -305,7 +451,7 @@ void
 SdhciEngine::DisablePresetValueMode()
 {
 	// HOST_CONTROL_2 preset-value-enable is bit 15; clear it.
-	fRegs->hostControl2 = static_cast<uint16_t>(fRegs->hostControl2 & ~(1u << 15));
+	fRegs->hostControl2.DisablePresetValues();
 }
 
 
@@ -345,17 +491,13 @@ SdhciEngine::_ServiceOnce()
 {
 	Transaction* txn = fMailbox.Claim();
 	if (txn == nullptr) {
-		// Idle wakeup (a meow with no queued work): most are spurious, but a
-		// card insert/remove latches a signal-enabled bit that no command drain
-		// clears. On this level-triggered line that would re-fire the ISR
-		// forever, so clear it here -- the sole-accessor worker's one chance to
-		// keep an eventful-but-idle bus from meowing itself to death. Detection
-		// itself is the Controller's slow present-state poll, so there is nothing
-		// to react to; we only need the line to fall quiet. (Mirrors the
-		// reference driver's idle-path interrupt_status clear.)
+		// Idle wakeup (a meow with no queued work): clear any late managed
+		// completion/error source so the level-triggered line cannot stay
+		// asserted. Hot-plug itself is detected from Present State, not IRQ bits.
 		const uint32_t clear = StormSafeIdleClear(fRegs->interruptStatus);
 		if (clear != 0)
 			fRegs->interruptStatus = clear;
+		_SyncVcState();
 		return;
 	}
 	_DriveTransaction(*txn);
@@ -365,7 +507,7 @@ SdhciEngine::_ServiceOnce()
 
 
 // One command, driven to convergence. This is the worker-local retry loop: it
-// issues, polls the "virtual controller" read-only until a terminal verdict,
+// issues, snapshots/acknowledges the "virtual controller" until a terminal verdict,
 // classifies the attempt, and asks the pure policy whether to stop, re-issue,
 // reset the lines, or terminate+restore the whole bus. All hardware state lives
 // under the sole-accessor worker; callers only ever read the VC cache.
@@ -401,45 +543,53 @@ SdhciEngine::_DriveTransaction(Transaction& txn)
 	for (uint32_t attempt = 0; attempt < maxAttempts; attempt++) {
 		bool usedAdma2 = false;
 		AttemptResult attemptResult = AttemptResult::CommandTimeout;
+		uint32_t accumulatedStatus = 0;
+		uint32_t lastSnapshot = 0;
 
 		if (!_IssueToHardware(txn, reply, usedAdma2)) {
 			// The line stayed inhibited past the grace period.
 			attemptResult = AttemptResult::Busy;
 		} else {
 			const bigtime_t deadline = system_time() + attemptBudgetUs;
+			bool wokeByMeow = false;
 
 			// Pre-armed poll -> CV wait -> re-poll: the heart of the meow bus.
 			// Each pass arms a wakeup entry *before* looking, so a meow that
-			// fires while we read is not lost; a read-only poll then asks the
-			// pure convergence policy whether we are done. If not, we wait on
-			// that entry until the device meows (fast as interrupts) or the
-			// recheck timer fires (slow as polling), then look again. The meow
-			// only makes us *look* -- looking never mutates the bus, and
-			// ClassifyPoll alone decides convergence, so an early/spurious/late/
-			// wrong-command pulse is harmless.
+			// fires while we read is not lost. Each snapshot is acknowledged
+			// immediately to lower the level-triggered line, while its meaningful
+			// bits accumulate in worker-owned state. ClassifyPoll alone decides
+			// convergence, so split, early, duplicate, spurious, late, and
+			// wrong-command pulses remain harmless.
 			for (;;) {
 				ConditionVariableEntry entry;
 				fMeowCV.Add(&entry);
 
-				const uint32_t status = _ReadInterrupts();	// read-only
+				const uint32_t snapshot = _ReadAndClearInterrupts();
+				lastSnapshot = snapshot;
+				if (wokeByMeow)
+					JR_MEOW(fLabel, snapshot);
+				accumulatedStatus
+					= AccumulateInterruptStatus(accumulatedStatus, snapshot);
 
 				// A data transaction is only truly finished on TransferComplete:
 				// the controller raises CommandComplete first (command accepted)
 				// while the DMA/data phase is still running. That data-aware rule
 				// lives in the pure, host-proven core (ClassifyPoll).
-				const PollVerdict verdict = ClassifyPoll(status, txn.dataPresent);
+				const PollVerdict verdict
+					= ClassifyPoll(accumulatedStatus, txn.dataPresent, txn.tuning);
 
 				if (verdict == PollVerdict::KeepPolling) {
-					JR_MEOW(fLabel, status);
 					if (system_time() >= deadline)
 						break;			// budget spent -> stays CommandTimeout
-					entry.Wait(B_RELATIVE_TIMEOUT, kRecheckIntervalUs);
+					wokeByMeow = entry.Wait(B_RELATIVE_TIMEOUT,
+						kRecheckIntervalUs) == B_OK;
 					continue;			// re-arm and look again
 				}
 
 				switch (verdict) {
 					case PollVerdict::CommandComplete:
 					case PollVerdict::TransferComplete:
+					case PollVerdict::BufferReadReady:
 						_ReadResponse(reply, txn.responseWords);
 						attemptResult = AttemptResult::Ok;
 						// OCR sanity (personality decides what is garbage).
@@ -458,6 +608,10 @@ SdhciEngine::_DriveTransaction(Transaction& txn)
 					case PollVerdict::DataCrc:
 						attemptResult = AttemptResult::DataCrc;
 						break;
+					case PollVerdict::AdmaError:
+						_LogAdmaError(txn);
+						attemptResult = AttemptResult::AdmaError;
+						break;
 					case PollVerdict::Error:
 						attemptResult = AttemptResult::Error;
 						break;
@@ -467,19 +621,16 @@ SdhciEngine::_DriveTransaction(Transaction& txn)
 				break;
 			}
 
-			// One deliberate clear of everything we latched this attempt, so the
-			// next issue (or command) starts from a clean slate.
+			// Clear anything that raced the terminal snapshot so the next issue
+			// starts from a clean slate. Normal evidence was already acknowledged
+			// snapshot-by-snapshot above.
 			_DrainInterrupts();
 
-			// Restore the default SDMA mode after an ADMA2 transaction so the
-			// next single-address transfer (e.g. EXT_CSD) programs the right
-			// address register.
-			if (usedAdma2)
-				fRegs->hostControl.SetDmaMode(HostControlReg::kSdma);
-
 			// An R1b command may leave the card holding DATA0 low; wait it out.
-			if (attemptResult == AttemptResult::Ok && reply == ReplyType::R1b)
-				_WaitForR1bBusy();
+			if (attemptResult == AttemptResult::Ok && reply == ReplyType::R1b
+				&& !_WaitForR1bBusy()) {
+				attemptResult = AttemptResult::DataTimeout;
+			}
 		}
 
 		_SyncVcState();
@@ -487,22 +638,49 @@ SdhciEngine::_DriveTransaction(Transaction& txn)
 			maxAttempts, txn.constraints, fVcState.cardInserted);
 
 		if (action == RetryAction::Succeed) {
+			if (usedAdma2)
+				fRegs->hostControl.SetDmaMode(HostControlReg::kSdma);
 			txn.MarkDone(B_OK);
 			return;
 		}
+		_LogAttemptFailure(txn, attempt, maxAttempts, attemptResult, action,
+			accumulatedStatus, lastSnapshot, usedAdma2);
+		// Restore the default SDMA mode after capturing the failed ADMA state.
+		// The next single-address transfer (for example EXT_CSD) must interpret
+		// offset 0x58 as the SDMA address register.
+		if (usedAdma2)
+			fRegs->hostControl.SetDmaMode(HostControlReg::kSdma);
 		if (action == RetryAction::Fail) {
-			txn.MarkDone(B_ERROR);
+			status_t failure = B_ERROR;
+			if (txn.dataPresent
+				&& !fRegs->softwareReset.ResetCommandAndDataLines()) {
+				// Do not release caller DMA memory until the controller is
+				// unquestionably quiescent. Power removal is the final fence.
+				_TerminateBus();
+				snooze(kBusResetSettleUs);
+				_RestoreAfterReset();
+				failure = B_DEV_NOT_READY;
+			}
+			txn.MarkDone(failure);
 			return;
 		}
 		if (action == RetryAction::RetryResetLines) {
-			JR_TRACE(fLabel, "line reset before retry %" B_PRIu32 "\n", attempt);
-			fRegs->softwareReset.ResetCommandLine();
-			fRegs->softwareReset.ResetDataLine();
-		} else if (action == RetryAction::RetryWithBusReset) {
-			JR_TRACE(fLabel, "bus reset before retry %" B_PRIu32 "\n", attempt);
+			if (!fRegs->softwareReset.ResetCommandAndDataLines()) {
+				// A failed reset cannot prove DMA quiescence. Remove power before
+				// releasing the caller's pinned memory.
+				_TerminateBus();
+				snooze(kBusResetSettleUs);
+				_RestoreAfterReset();
+				txn.MarkDone(B_DEV_NOT_READY);
+				return;
+			}
+		} else if (action == RetryAction::ResetAndReidentify) {
+			JR_TRACE(fLabel, "bus reset requires card re-identification\n");
 			_TerminateBus();
 			snooze(kBusResetSettleUs);
 			_RestoreAfterReset();
+			txn.MarkDone(B_DEV_NOT_READY);
+			return;
 		}
 		// RetryAction::Retry (spurious OCR) re-issues as-is: no reset.
 		snooze(kRetryBackoffUs * (attempt + 1));	// gentle escalating backoff
@@ -527,35 +705,44 @@ SdhciEngine::_IssueToHardware(const Transaction& txn, ReplyType reply,
 			&& fRegs->presentState.CommandInhibit(); i++) {
 		snooze(kInhibitPollUs);
 	}
-	if (fRegs->presentState.CommandInhibit())
+	if (fRegs->presentState.CommandInhibit()) {
+		JR_WARN(fLabel, "CMD%u issue blocked by command inhibit; present %#08"
+			B_PRIx32 "\n", static_cast<unsigned>(txn.command),
+			fRegs->presentState.Raw());
 		return false;
-	if (txn.dataPresent) {
+	}
+	if (RequiresDataLineIdle(txn.dataPresent, reply)) {
 		for (uint32_t i = 0; i < kInhibitGracePolls
 				&& fRegs->presentState.DataInhibit(); i++) {
 			snooze(kInhibitPollUs);
 		}
-		if (fRegs->presentState.DataInhibit())
+		if (fRegs->presentState.DataInhibit()) {
+			JR_WARN(fLabel, "CMD%u issue blocked by data inhibit; present %#08"
+				B_PRIx32 "\n", static_cast<unsigned>(txn.command),
+				fRegs->presentState.Raw());
 			return false;
+		}
 	}
 
 	fRegs->argument = txn.argument;
 
 	if (txn.dataPresent) {
-		if (txn.adma2Table != nullptr) {
+		if (txn.tuning) {
+			fRegs->blockSize.Configure(txn.blockSize, BlockSizeReg::kBoundary512K);
+			fRegs->blockCount = 1;
+		} else if (txn.adma2Table != nullptr) {
 			// ADMA2: switch to ADMA2 mode and program the descriptor-table
-			// physical address (resolved here -- the worker is the sole HW
-			// accessor). Block size/count are still needed for the controller's
-			// internal timeout and data-inhibit bookkeeping.
+			// low 32-bit physical address. This host does not advertise 64-bit
+			// ADMA, so offset 0x5C must not be touched.
+			if (txn.adma2Address == 0 || txn.adma2Address >= 0x100000000ull) {
+				JR_WARN(fLabel, "CMD%u invalid ADMA2 table address %#" B_PRIx64
+					"\n", static_cast<unsigned>(txn.command), txn.adma2Address);
+				return false;
+			}
 			fRegs->hostControl.SetDmaMode(HostControlReg::kAdma32);
 			usedAdma2 = true;
-			addr_t admaPhys = reinterpret_cast<addr_t>(txn.adma2Table);
-			physical_entry entry;
-			const size_t tableSize = txn.adma2Entries * sizeof(Adma2Descriptor);
-			if (get_memory_map(const_cast<Adma2Descriptor*>(txn.adma2Table),
-					tableSize, &entry, 1) == B_OK) {
-				admaPhys = entry.address;
-			}
-			fRegs->admaSystemAddress = admaPhys;
+			memory_write_barrier();
+			fRegs->admaSystemAddress = static_cast<uint32_t>(txn.adma2Address);
 			fRegs->blockSize.Configure(txn.blockSize, BlockSizeReg::kBoundary512K);
 			fRegs->blockCount = static_cast<uint16_t>(txn.blockCount);
 		} else {
@@ -570,25 +757,14 @@ SdhciEngine::_IssueToHardware(const Transaction& txn, ReplyType reply,
 	// Drain stale latched bits before issuing: Bay Trail accumulates CMD_CMP/
 	// TRANS_CMP from earlier commands, and the first poll after SendCommand must
 	// not read a stale completion as an instant false success.
-	_DrainInterrupts();
-
-	uint8_t flags = 0;
-	switch (reply) {
-		case ReplyType::R2:
-			flags = CommandReg::kResp136 | CommandReg::kCheckCrc;
-			break;
-		case ReplyType::R1b:
-			flags = CommandReg::kResp48Busy | CommandReg::kCheckCrc
-				| CommandReg::kCheckIndex;
-			break;
-		case ReplyType::None:
-			flags = 0;
-			break;
-		default:
-			flags = CommandReg::kResp48 | CommandReg::kCheckCrc
-				| CommandReg::kCheckIndex;
-			break;
+	const uint32_t residualStatus = _DrainInterrupts();
+	if (InterruptBitsToAcknowledge(residualStatus) != 0) {
+		JR_WARN(fLabel, "CMD%u issue blocked by stale interrupt status %#08"
+			B_PRIx32 "\n", static_cast<unsigned>(txn.command), residualStatus);
+		return false;
 	}
+
+	uint8_t flags = ResponseFlags(reply);
 	if (txn.dataPresent)
 		flags |= CommandReg::kDataPresent;
 
@@ -597,47 +773,121 @@ SdhciEngine::_IssueToHardware(const Transaction& txn, ReplyType reply,
 }
 
 
-// Read-only poll of the interrupt-status word. Looking never mutates the bus;
-// clearing is a separate, deliberate act (_DrainInterrupts).
 uint32_t
-SdhciEngine::_ReadInterrupts() const
+SdhciEngine::_ReadAndClearInterrupts()
 {
-	return fRegs->interruptStatus;
+	const uint32_t snapshot = fRegs->interruptStatus;
+	const uint32_t clear = InterruptBitsToAcknowledge(snapshot);
+	if (clear != 0)
+		fRegs->interruptStatus = clear;
+	return snapshot;
 }
 
 
-void
+uint32_t
 SdhciEngine::_DrainInterrupts()
 {
-	// Write-1-to-clear the completion/error bits we act on. A spurious all-ones
-	// (floating line) word is skipped so we never write a garbage register back
-	// onto itself.
-	const uint32_t status = fRegs->interruptStatus;
-	if (!IsSpuriousMeow(status))
-		fRegs->interruptStatus = status & kDrainMask;
+	// Flush each write-one-to-clear with a readback before the next command can
+	// be issued. One pass is insufficient on Bay Trail when completion from the
+	// previous command is still propagating through the interrupt latch.
+	uint32_t status = fRegs->interruptStatus;
+	for (uint32_t pass = 0; pass < 4; pass++) {
+		const uint32_t clear = InterruptBitsToAcknowledge(status);
+		if (clear == 0)
+			break;
+		fRegs->interruptStatus = clear;
+		status = fRegs->interruptStatus;
+	}
+	return status;
 }
 
 
 void
+SdhciEngine::_LogAttemptFailure(const Transaction& txn, uint32_t attempt,
+	uint32_t maxAttempts, AttemptResult result, RetryAction action,
+	uint32_t accumulatedStatus, uint32_t lastSnapshot, bool usedAdma2) const
+{
+	JR_WARN(fLabel, "cookie CMD%u arg %#08" B_PRIx32 " attempt %" B_PRIu32
+		"/%" B_PRIu32 " result=%s action=%s irq=%#08" B_PRIx32
+		" last=%#08" B_PRIx32 " present=%#08" B_PRIx32 "\n",
+		static_cast<unsigned>(txn.command), txn.argument, attempt + 1,
+		maxAttempts, AttemptResultLabel(result), RetryActionLabel(action),
+		accumulatedStatus, lastSnapshot, fRegs->presentState.Raw());
+
+	if (!txn.dataPresent)
+		return;
+
+	JR_WARN(fLabel, "cookie data=%ux%u mode=%#04x host=%#02x block=%#04x"
+		" timeout=%#02x dma=%s addr=%#08" B_PRIx32 "\n",
+		txn.blockCount, txn.blockSize, fRegs->transferMode.Get(),
+		fRegs->hostControl.Get(), fRegs->blockSize.Get(),
+		fRegs->timeoutControl.Get(), usedAdma2 ? "ADMA2" : "SDMA",
+		usedAdma2 ? fRegs->admaSystemAddress : fRegs->systemAddress);
+
+	if (usedAdma2 && txn.adma2Table != nullptr && txn.adma2Entries > 0) {
+		const Adma2Descriptor& first = txn.adma2Table[0];
+		const Adma2Descriptor& last = txn.adma2Table[txn.adma2Entries - 1];
+		JR_WARN(fLabel, "cookie ADMA state=%#02x current=%#08" B_PRIx32
+			" table=%#08" B_PRIx64 " entries=%" B_PRIu32
+			" first=%#04x/%#04x/%#08x last=%#04x/%#04x/%#08x\n",
+			fRegs->admaErrorStatus, fRegs->admaSystemAddress, txn.adma2Address,
+			txn.adma2Entries, AdmaLittle16(first.attributes),
+			AdmaLittle16(first.length), AdmaLittle32(first.address),
+			AdmaLittle16(last.attributes), AdmaLittle16(last.length),
+			AdmaLittle32(last.address));
+	}
+}
+
+
+void
+SdhciEngine::_LogAdmaError(const Transaction& txn) const
+{
+	const uint32_t current = fRegs->admaSystemAddress;
+	JR_ERROR(fLabel, "ADMA2 error: state %#02x current %#" B_PRIx32
+		" table %#" B_PRIx64 " entries %" B_PRIu32 "\n",
+		fRegs->admaErrorStatus, current, txn.adma2Address, txn.adma2Entries);
+
+	if (txn.adma2Table == nullptr)
+		return;
+	for (uint32_t i = 0; i < txn.adma2Entries; i++) {
+		const Adma2Descriptor& d = txn.adma2Table[i];
+		JR_ERROR(fLabel, "  adma[%" B_PRIu32 "] attr %#04x len %#04x addr %#08x\n",
+			i, AdmaLittle16(d.attributes), AdmaLittle16(d.length),
+			AdmaLittle32(d.address));
+		if ((AdmaLittle16(d.attributes)
+				& static_cast<uint16_t>(Adma2Attr::TransferEnd))
+			== static_cast<uint16_t>(Adma2Attr::TransferEnd)) {
+			break;
+		}
+	}
+}
+
+
+bool
 SdhciEngine::_WaitForR1bBusy()
 {
 	// After an R1b (busy) response the card may hold DATA0 low; wait for the
 	// data line to release so the next command does not collide.
 	for (int i = 0; i < kR1bBusyPolls; i++) {
 		if (!fRegs->presentState.DataInhibit())
-			return;
+			return true;
 		snooze(kR1bBusyPollUs);
 	}
 	JR_ERROR(fLabel, "data line still busy after R1b command\n");
+	return false;
 }
 
 
 void
 SdhciEngine::_SyncVcState()
 {
+	const bool inserted = Has(fQuirks, Quirk::EmmcHardwareReset)
+		|| fRegs->presentState.CardInserted();
+	const bool regulatorStable
+		= (fRegs->hostControllerVersion & 0xff) < kHostVersion410
+			|| fRegs->presentState.RegulatorStable();
 	fVcState.Update(fRegs->presentState.CommandInhibit(),
-		fRegs->presentState.DataInhibit(), fRegs->presentState.CardInserted(),
-		fRegs->presentState.RegulatorStable());
+		fRegs->presentState.DataInhibit(), inserted, regulatorStable);
 }
 
 
@@ -688,37 +938,51 @@ SdhciEngine::_PowerOnBus(bool force)
 }
 
 
-void
+status_t
 SdhciEngine::_BringUpBus()
 {
-	// Wait for the regulator, then honor the Bay Trail post-power settle.
-	for (int i = 0; i < kRegulatorPolls
-			&& !fRegs->presentState.RegulatorStable(); i++) {
-		snooze(kRegulatorPollUs);
+	// SDHCI 4.10+ exposes a regulator-stable indication. Bay Trail predates that
+	// contract, so its profile uses the bounded post-power delay below instead of
+	// polling a reserved Present State bit.
+	if ((fRegs->hostControllerVersion & 0xff) >= kHostVersion410) {
+		for (int i = 0; i < kRegulatorPolls
+				&& !fRegs->presentState.RegulatorStable(); i++) {
+			snooze(kRegulatorPollUs);
+		}
+		if (!fRegs->presentState.RegulatorStable()) {
+			JR_ERROR(fLabel, "bus regulator did not stabilize\n");
+			return B_TIMED_OUT;
+		}
 	}
+
 	if (Has(fQuirks, Quirk::PowerOnDelay))
 		snooze(kPowerOnDelayUs);
 
-	// After reset Host Control 1 is undefined; force SDMA (ADMA2 is toggled
-	// per-transaction) and high speed, then drop to the identification clock.
+	// After reset Host Control 1 is undefined; force SDMA, one-bit legacy timing,
+	// then drop to the identification clock.
 	fRegs->hostControl.SetDmaMode(HostControlReg::kSdma);
-	fRegs->hostControl.SetHighSpeed(true);
-	SetClock(400, false);
-
-	// Data-timeout divider: on Bay Trail the counter rides the SD clock, so use
-	// the maximum period; otherwise derive it from the timeout clock frequency.
-	if (Has(fQuirks, Quirk::TimeoutClockFromSdClock)) {
-		fRegs->timeoutControl.SetRaw(kTimeoutDividerRaw);
-	} else {
-		uint32_t timeoutKHz = fPersonality != nullptr
-			? fPersonality->TimeoutClockKHz() : 0;
-		if (timeoutKHz == 0)
-			timeoutKHz = fRegs->capabilities.TimeoutClockKHz();
-		if (timeoutKHz != 0)
-			fRegs->timeoutControl.SetForDelay(timeoutKHz, 500);
+	fRegs->hostControl.SetHighSpeed(false);
+	fRegs->hostControl.SetBusWidth(HostControlReg::kWidth1);
+	const status_t clockStatus = SetClock(400, false);
+	if (clockStatus != B_OK) {
+		JR_ERROR(fLabel, "identification clock failed: %s\n",
+			strerror(clockStatus));
+		return clockStatus;
 	}
 
+	uint32_t timeoutKHz = fTimeoutClockKHz;
+	if (timeoutKHz == 0 && fPersonality != nullptr)
+		timeoutKHz = fPersonality->TimeoutClockKHz();
+	if (timeoutKHz != 0)
+		fRegs->timeoutControl.SetForDelay(timeoutKHz, 500);
+	else
+		fRegs->timeoutControl.SetRaw(kTimeoutDividerRaw);
+	JR_TRACE_ALWAYS(fLabel, "identification baseline: clock %" B_PRIu32
+		" kHz, timeout source %" B_PRIu32 " kHz, DTOCV %u\n",
+		fVcState.currentClockKHz, timeoutKHz, fRegs->timeoutControl.Get());
+
 	_SyncVcState();
+	return B_OK;
 }
 
 
@@ -760,15 +1024,29 @@ SdhciEngine::_TerminateBus()
 void
 SdhciEngine::_RestoreAfterReset()
 {
-	// Re-power (forcing for soldered eMMC), re-run the identification bring-up,
-	// and re-arm interrupts. This deliberately drops the SD clock back to
-	// 400 kHz -- a known post-reset speed regression the higher layer must
-	// re-negotiate (see the improvement log).
-	const bool force = Has(fQuirks, Quirk::EmmcHardwareReset);
-	if (_PowerOnBus(force))
-		_BringUpBus();
+	if (!fRegs->softwareReset.ResetAll()) {
+		JR_ERROR(fLabel, "controller reset did not quiesce after power cycle\n");
+		return;
+	}
+	if (fPersonality != nullptr)
+		fPersonality->PostResetInit(*this);
 
-	fRegs->interruptStatusEnable = 0xffffffff;
+	// Re-power (forcing for soldered eMMC), re-run the identification bring-up,
+	// and re-arm interrupts. Card protocol state is intentionally not restored:
+	// callers must start identification again after this destructive reset.
+	const bool force = Has(fQuirks, Quirk::EmmcHardwareReset);
+	if (_PowerOnBus(force)) {
+		const status_t status = _BringUpBus();
+		if (status != B_OK) {
+			JR_ERROR(fLabel, "bus restore failed: %s\n", strerror(status));
+			return;
+		}
+	} else {
+		JR_ERROR(fLabel, "bus restore could not reapply power\n");
+		return;
+	}
+
+	fRegs->interruptStatusEnable = kStatusEnableMask;
 	fRegs->interruptSignalEnable = kSignalMask;
 }
 
@@ -786,31 +1064,34 @@ SdhciEngine::SetClock(uint32_t targetKHz, bool allowAuto)
 	// this branch.
 	if (allowAuto && (fRegs->hostControllerVersion & 0xff) > 2
 			&& !Has(fQuirks, Quirk::BrokenPresetValues)) {
-		fRegs->hostControl2 = static_cast<uint16_t>(fRegs->hostControl2
-			| (1u << 15));	// preset value enable
+		fRegs->hostControl2.Set(static_cast<uint16_t>(
+			fRegs->hostControl2.Get() | (1u << 15)));
 		return B_OK;
 	}
 
 	fRegs->clockControl.DisableSdClock();
 
-	// Linear divider: base(MHz)*1000 / target(kHz), matching the reference. The
-	// register accessor encodes the SDHCI divided-clock form internally.
-	uint16_t divider = static_cast<uint16_t>(fBaseClockKHz / targetKHz);
-	if (divider == 0)
-		divider = 1;
-	fRegs->clockControl.SetDivider(divider);
+	const ClockSetting setting = ComputeClockSetting(fBaseClockKHz, targetKHz);
+	const uint16_t applied
+		= fRegs->clockControl.SetDivider(setting.divider);
 
-	// Bring the internal clock up, wait for stability, enable the PLL, wait
-	// again, then gate SDCLK on -- the Bay Trail sequence.
+	// Bring the internal clock up, wait for stability, run the Bay Trail PLL
+	// stage when selected by the profile, then gate SDCLK on.
 	fRegs->clockControl.EnableInternal();
 	for (int i = 0; i < 100 && !fRegs->clockControl.InternalStable(); i++)
 		snooze(1000);
-	fRegs->clockControl.EnablePll();
-	for (int i = 0; i < 100 && !fRegs->clockControl.InternalStable(); i++)
-		snooze(1000);
+	if (!fRegs->clockControl.InternalStable())
+		return B_TIMED_OUT;
+	if (Has(fQuirks, Quirk::ClockPllSequence)) {
+		fRegs->clockControl.EnablePll();
+		for (int i = 0; i < 100 && !fRegs->clockControl.InternalStable(); i++)
+			snooze(1000);
+		if (!fRegs->clockControl.InternalStable())
+			return B_TIMED_OUT;
+	}
 	fRegs->clockControl.EnableSdClock();
 
-	fVcState.currentClockKHz = targetKHz;
+	fVcState.currentClockKHz = fBaseClockKHz / applied;
 
 	// If the data-timeout counter rides the SD clock, recompute its divider now
 	// that the clock changed.
@@ -855,7 +1136,7 @@ SdhciEngine::PowerOff()
 bool
 SdhciEngine::CardPresent() const
 {
-	return fRegs->presentState.CardInserted();
+	return Has(fQuirks, Quirk::EmmcHardwareReset) || fVcState.cardInserted;
 }
 
 

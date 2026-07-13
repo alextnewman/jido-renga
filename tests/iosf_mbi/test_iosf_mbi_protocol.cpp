@@ -15,6 +15,16 @@
 using namespace jr::iosf;
 
 
+JR_TEST(iosf_mbi, accepts_only_known_transaction_routers)
+{
+	JR_CHECK(IsSupportedHostBridge(kIntelVendorId, kBayTrailHostBridgeId));
+	JR_CHECK(IsSupportedHostBridge(kIntelVendorId, kCherryTrailHostBridgeId));
+	JR_CHECK(!IsSupportedHostBridge(0x1234, kBayTrailHostBridgeId));
+	JR_CHECK(!IsSupportedHostBridge(kIntelVendorId, 0x0f14));
+	JR_CHECK(!IsSupportedHostBridge(kIntelVendorId, 0x0f16));
+}
+
+
 JR_TEST(iosf_mbi, form_mcr_packs_opcode_port_offset_enable)
 {
 	// opcode=0x06 (CR read), port=0x63 (SCCEP), offset=0x1078 -> low byte 0x78.

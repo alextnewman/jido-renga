@@ -59,10 +59,15 @@ wants to be used; it wants to be useful. Making it work well long after its make
 moved on is a fine reward on its own; mostly, though, it's just a fun place to build.
 
 Bringing **WINKY** up means teaching Haiku its particular parts — the ChromeOS
-Embedded-Controller keyboard, the Atmel maXTouch trackpad, and the Bay Trail SoC
-sideband the platform leans on. Those are the drivers below. The internal storage it
-boots from is the next stretch of the verse — still being brought up, and not yet
-listed here.
+Embedded-Controller keyboard, the Atmel maXTouch trackpad, the Bay Trail SoC
+sideband, and its embedded SDHCI hosts. Winky is an explicit, exclusive BSP:
+where it supplies a replacement controller driver, the composed image omits the
+conflicting upstream add-on rather than allowing both to touch the same hardware.
+
+**Milestone, July 2026:** Winky boots Haiku from SD, identifies and runs its
+eMMC through the ADMA2 path, installs Haiku onto that eMMC at full speed, and
+brings up its keyboard and touchpad. The first verse is now a usable machine,
+not merely a collection of drivers that build.
 
 ---
 
@@ -110,9 +115,10 @@ jido-renga/
 ├── overlay/            # the build-time graft surface
 │   ├── Jamfile         # walks the overlay (SubInclude of each module)
 │   ├── headers/common/ # Jidō Renga's own public include root
-│   ├── bus_managers/   # shared modules (e.g. iosf_mbi)
+│   ├── bus_managers/   # shared/replacement modules (e.g. iosf_mbi, guarded i2c)
+│   ├── busses/         # host controllers (e.g. mmc/sdhci_embedded)
 │   └── drivers/        # leaf drivers (e.g. input/cros_ec_keyboard, input/i2c_atmel_mxt)
-├── config/             # UserBuildConfig.in (graft template) + revision.conf
+├── config/             # graft template, BSP manifests, and revision.conf
 ├── tools/              # weave, haiku-revision, jr-jam, banner.{sh,txt}
 ├── skills/             # agent skills (overlay build/extend playbook)
 ├── docs/               # development logs + design notes
@@ -133,7 +139,8 @@ mkdir generated.x86_64 && cd generated.x86_64   # a throwaway build dir
 ../haiku/configure --cross-tools-source ../buildtools --build-cross-tools x86_64
 cd .. && tools/weave generated.x86_64           # install the graft
 cd generated.x86_64
-../tools/jr-jam -q iosf_mbi cros_ec_keyboard i2c_atmel_mxt
+../tools/jr-jam -q iosf_mbi i2c_guarded sdhci_embedded \
+  cros_ec_keyboard i2c_atmel_mxt
 ```
 
 `tools/weave` grafts the overlay by writing one managed block into the build
@@ -152,12 +159,21 @@ image profile instead of the individual targets:
 ../tools/jr-jam -q @nightly-anyboot        # -> haiku-nightly-anyboot.iso
 ```
 
-The overlay grafts each add-on into the image's **non-packaged** kernel add-on
-tree (`/boot/system/non-packaged/add-ons/kernel/…`) — the writable seam the
-kernel and `device_manager` scan alongside the packaged tree. The captive's
-read-only packagefs is never touched; the drivers simply ride along beside it.
-The result is `generated.x86_64/haiku-nightly-anyboot.iso`: stock Haiku plus
-these drivers, ready to write to a USB stick (`dd`, Etcher, …) and boot.
+The overlay composes each BSP add-on directly into `haiku.hpkg` at its canonical
+kernel add-on path. The captive's source tree and package recipe remain
+untouched; the out-of-tree graft adapts Haiku's public package rules while Jam
+constructs the image. The default `winky` BSP omits Haiku's generic
+`busses/mmc/sdhci` add-on so `sdhci_embedded` solely owns the Bay Trail MMC
+controllers. It also packages the overlay's guarded I2C implementation under
+the canonical `bus_managers/i2c` filename while retaining both Atmel and Elan
+input drivers. Set `JIDO_RENGA_BSP = none` in `UserBuildConfig` before the
+overlay walk to build the add-ons without applying a BSP image policy.
+
+The Winky BSP also adds its embedded SDHCI controller and IOSF-MBI dependency to
+`haiku.hpkg`'s `add-ons/kernel/boot` set. Packaged Haiku stage two sees only the
+system package before entering the kernel, so keeping each boot link and target
+inside that package is what makes both modules available before ordinary
+device-manager discovery.
 
 > The first anyboot build is a full Haiku build — it compiles the OS and pulls
 > HaikuPorts packages, so it is long and needs a network. Later builds are
@@ -165,8 +181,8 @@ these drivers, ready to write to a USB stick (`dd`, Etcher, …) and boot.
 > the usual desktop.
 
 Set `JIDO_RENGA_INSTALL_IN_IMAGE = 0` in `UserBuildConfig` (before the overlay
-is walked) to opt out and keep building loose add-ons only — e.g. to drop onto a
-running system's own `non-packaged` tree by hand.
+is walked) to opt out and keep building loose add-ons only -- e.g. to copy onto
+a running system's own `non-packaged` tree by hand.
 
 ---
 
@@ -188,6 +204,7 @@ Everything here serves the first verse — the parts that make up WINKY:
 | Module | Class | Binds | Notes |
 |--------|-------|-------|-------|
 | `iosf_mbi` | bus_manager (shared) | — | BayTrail IOSF message-bus sideband. Consumed by other overlay drivers, never referenced outside the overlay. Publishes `<common/iosf_mbi.h>`. |
+| `sdhci_embedded` | busses/mmc | ACPI `80860F14`, `80860F16` | Bay Trail eMMC and SD host driver. WINKY's BSP omits Haiku's generic `sdhci` add-on, so the two stacks never contend for a controller. |
 | `cros_ec_keyboard` | drivers/input | ACPI HID `GOOG000A` | ChromeOS Embedded Controller keyboard (i8042-class). Self-contained. |
 | `i2c_atmel_mxt` | drivers/input | Atmel maXTouch | I²C touchpad (WINKY's trackpad). The exemplar factored C++ driver: an `MxtDevice` owns transport / object-table discovery / worker thread / event ring buffer, with a separate `TouchEngine`. |
 

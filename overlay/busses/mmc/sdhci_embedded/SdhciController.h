@@ -33,10 +33,10 @@ class Disk;
 //
 // A card yanked mid-boot may be missed; that is acceptable (there is no shell
 // yet, and ejecting your boot disk is on you).
-class SdhciController {
+class SdhciController : public IPlatformControl {
 public:
 	explicit SdhciController(device_node* node);
-	~SdhciController();
+	virtual ~SdhciController();
 
 	SdhciController(const SdhciController&) = delete;
 	SdhciController& operator=(const SdhciController&) = delete;
@@ -49,6 +49,15 @@ public:
 	Card* ActiveCard() const { return fCard; }
 	Disk* ActiveDisk() const { return fDisk; }
 	const TraceLabel& Label() const { return fLabel; }
+	bool IsRemovable() const { return fRemovable; }
+	bool CardPresent() const { return fEngine.CardPresent(); }
+	bool MediaPresent() const;
+	status_t RecoverCard();
+	status_t SwitchSignalVoltage(bool to1v8) override;
+	uint8_t UhsCapabilities() const override
+	{
+		return static_cast<uint8_t>(fDsmUhsCapabilities & 0x0f);
+	}
 
 	device_node* Node() const { return fNode; }
 
@@ -56,13 +65,14 @@ private:
 	status_t _MapResources();
 	status_t _SelectPersonality();
 	status_t _ApplyOcpFixup();		// IOSF-MBI, before any SDHCI register access
+	void _InitPlatformControl();
 	status_t _InstallInterrupt();	// after Engine.Init, before identify
 	status_t _IdentifyCard();		// synchronous
 	status_t _PublishDisk();
 	void _StartWatcher();			// lazy, after publish; only if removable
 
-	// ISR trampoline -> Engine.HandleInterruptMeow(). A bare "meow": it reads no
-	// registers and forwards to the engine's lossy CV pulse (see SdhciEngine).
+	// ISR trampoline -> Engine.HandleInterruptMeow(). The engine performs only a
+	// raw-source filter before forwarding a content-free, lossy CV pulse.
 	static int32 _InterruptHandler(void* self);
 
 	static int32 _WatcherEntry(void* self);
@@ -76,6 +86,8 @@ private:
 	volatile RegisterBlock*	fRegs = nullptr;
 	uint8_t					fIrq = 0;
 	bool					fInterruptInstalled = false;
+	uint32					fDsmFunctions = 0;
+	uint32					fDsmUhsCapabilities = 0;
 
 	const HostPersonality*	fPersonality = nullptr;
 	Quirk					fQuirks = Quirk::None;
@@ -86,7 +98,11 @@ private:
 	thread_id				fWatcher = -1;
 	volatile bool			fWatcherRunning = false;
 	bool					fRemovable = false;		// gates the hot-plug watcher
+	CardDialect				fDialect = CardDialect::Unknown;
+	DmaStrategy				fDmaStrategy = DmaStrategy::None;
 	bool					fCardPublished = false;
+	mutex					fRecoveryLock
+		= MUTEX_INITIALIZER("sdhci_emb recovery");
 };
 
 

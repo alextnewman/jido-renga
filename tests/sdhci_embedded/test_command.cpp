@@ -9,27 +9,26 @@
 using namespace jr::sdhci;
 
 namespace {
-constexpr Quirk kByt = Quirk::PowerOnDelay | Quirk::TimeoutClockFromSdClock
-	| Quirk::StopTransmissionBusy | Quirk::CardOnNeedsBusOn;
+constexpr Quirk kByt = Quirk::StopTransmissionBusy | Quirk::CardOnNeedsBusOn;
 }
 
 
 JR_TEST(command, op_cond_gets_retries_and_ocr_on_baytrail)
 {
 	const CommandConstraints c = GetCommandConstraints(Cmd::MmcSendOpCond, kByt);
-	JR_CHECK_EQ(c.maxRetries, 20);
+	JR_CHECK_EQ(c.maxRetries, 3);
 	JR_CHECK(c.validateOcr);
-	JR_CHECK_EQ(c.Attempts(), 21u);
+	JR_CHECK_EQ(c.Attempts(), 4u);
 }
 
 
-JR_TEST(command, op_cond_is_plain_without_quirks)
+JR_TEST(command, op_cond_is_sane_without_silicon_quirks)
 {
 	const CommandConstraints c
 		= GetCommandConstraints(Cmd::MmcSendOpCond, Quirk::None);
-	JR_CHECK_EQ(c.maxRetries, 0);
-	JR_CHECK(!c.validateOcr);
-	JR_CHECK_EQ(c.Attempts(), 1u);
+	JR_CHECK_EQ(c.maxRetries, 3);
+	JR_CHECK(c.validateOcr);
+	JR_CHECK_EQ(c.Attempts(), 4u);
 }
 
 
@@ -44,20 +43,25 @@ JR_TEST(command, app_cmd_retries_short_timeout)
 JR_TEST(command, switch_needs_bus_reset)
 {
 	const CommandConstraints c = GetCommandConstraints(Cmd::MmcSwitch, kByt);
-	JR_CHECK_EQ(c.maxRetries, 3);
+	JR_CHECK_EQ(c.maxRetries, 1);
 	JR_CHECK_EQ(c.timeoutMs, 2000);
-	JR_CHECK(c.needsBusResetOnError);
+	JR_CHECK(!c.needsBusResetOnError);
 }
 
 
-JR_TEST(command, data_commands_recover_via_bus_reset)
+JR_TEST(command, reads_retry_but_writes_never_replay)
 {
-	for (Cmd cmd : {Cmd::ReadSingleBlock, Cmd::WriteSingleBlock,
-			Cmd::ReadMultipleBlocks, Cmd::WriteMultipleBlocks}) {
+	for (Cmd cmd : {Cmd::ReadSingleBlock, Cmd::ReadMultipleBlocks}) {
 		const CommandConstraints c = GetCommandConstraints(cmd, kByt);
-		JR_CHECK_EQ(c.maxRetries, 3);
+		JR_CHECK_EQ(c.maxRetries, 2);
 		JR_CHECK_EQ(c.timeoutMs, 5000);
-		JR_CHECK(c.needsBusResetOnError);
+		JR_CHECK(c.replaySafe);
+	}
+	for (Cmd cmd : {Cmd::WriteSingleBlock, Cmd::WriteMultipleBlocks}) {
+		const CommandConstraints c = GetCommandConstraints(cmd, kByt);
+		JR_CHECK_EQ(c.maxRetries, 0);
+		JR_CHECK_EQ(c.timeoutMs, 5000);
+		JR_CHECK(!c.replaySafe);
 	}
 }
 
@@ -76,7 +80,7 @@ JR_TEST(command, select_card_needs_bus_reset_and_retries)
 	const CommandConstraints c
 		= GetCommandConstraints(Cmd::SelectDeselectCard, kByt);
 	JR_CHECK(c.needsBusResetOnError);
-	JR_CHECK_EQ(c.maxRetries, 3);
+	JR_CHECK_EQ(c.maxRetries, 1);
 	JR_CHECK_EQ(c.timeoutMs, 2000);
 }
 
@@ -119,7 +123,25 @@ JR_TEST(command, sd_op_cond_shares_cmd1_policy)
 	const CommandConstraints sd = GetSdOpCondConstraints(kByt);
 	const CommandConstraints mmc = GetCommandConstraints(Cmd::MmcSendOpCond, kByt);
 	JR_CHECK_EQ(sd.maxRetries, mmc.maxRetries);
-	JR_CHECK_EQ(sd.maxRetries, 20);
+	JR_CHECK_EQ(sd.maxRetries, 3);
 	JR_CHECK(sd.validateOcr);
 	JR_CHECK_EQ(sd.validateOcr, mmc.validateOcr);
+}
+
+
+JR_TEST(command, r3_disables_crc_and_index_checks)
+{
+	JR_CHECK_EQ(ResponseFlags(ReplyType::R3), command_flag::kResp48);
+	JR_CHECK((ResponseFlags(ReplyType::R3) & command_flag::kCheckCrc) == 0);
+	JR_CHECK((ResponseFlags(ReplyType::R3) & command_flag::kCheckIndex) == 0);
+	JR_CHECK((ResponseFlags(ReplyType::R1) & command_flag::kCheckCrc) != 0);
+	JR_CHECK((ResponseFlags(ReplyType::R1) & command_flag::kCheckIndex) != 0);
+}
+
+
+JR_TEST(command, busy_responses_require_an_idle_data_line)
+{
+	JR_CHECK(!RequiresDataLineIdle(false, ReplyType::R1));
+	JR_CHECK(RequiresDataLineIdle(false, ReplyType::R1b));
+	JR_CHECK(RequiresDataLineIdle(true, ReplyType::R1));
 }

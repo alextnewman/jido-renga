@@ -18,6 +18,7 @@ SubDir JIDO_RENGA_TOP overlay ;
 
 # Shared jido-renga modules first -- leaf drivers may depend on the modules
 # they publish.
+SubInclude JIDO_RENGA_TOP overlay bus_managers i2c ;
 SubInclude JIDO_RENGA_TOP overlay bus_managers iosf_mbi ;
 
 # Bus drivers (host controllers).
@@ -27,45 +28,167 @@ SubInclude JIDO_RENGA_TOP overlay busses mmc sdhci_embedded ;
 SubInclude JIDO_RENGA_TOP overlay drivers input cros_ec_keyboard ;
 SubInclude JIDO_RENGA_TOP overlay drivers input i2c_atmel_mxt ;
 
+# --- BSP composition ---------------------------------------------------------
+#
+# A BSP declares two things: the overlay add-ons to ship and the exact paths in
+# haiku.hpkg that it replaces. The policy is intentionally image-time only: no
+# driver attempts to negotiate ownership with a competing driver at runtime.
+JIDO_RENGA_BSP ?= winky ;
+JIDO_RENGA_BSP_IMAGE_BUS_MANAGERS = ;
+JIDO_RENGA_BSP_IMAGE_I2C_BUS_MANAGER = ;
+JIDO_RENGA_BSP_IMAGE_BUSSES_MMC = ;
+JIDO_RENGA_BSP_IMAGE_DRIVERS_INPUT = ;
+JIDO_RENGA_BSP_BOOT_MODULE_TARGETS = ;
+JIDO_RENGA_BSP_OMIT_HAIKU_PACKAGE_FILES = ;
+JIDO_RENGA_BSP_OMIT_HAIKU_BOOT_MODULE_TARGETS = ;
+
+if $(JIDO_RENGA_BSP) = winky {
+	include [ FDirName $(JIDO_RENGA_TOP) config bsp winky.jam ] ;
+} else if $(JIDO_RENGA_BSP) != none {
+	Exit "Unknown Jido Renga BSP:" $(JIDO_RENGA_BSP) ;
+}
+
 # --- Image integration ------------------------------------------------------
 #
 # Graft the built add-ons into a Haiku image so they LOAD at boot -- this is
 # what turns `jam @nightly-anyboot` (or any *-image target) into an anyboot
-# with these drivers present. Runs here, after the SubIncludes above have
-# defined the KernelAddon targets and while the image container already exists
-# (build/jam/BuildSetup defines HAIKU_IMAGE_CONTAINER_NAME unconditionally), so
-# the ordering is always valid; for a standalone `jam sdhci_embedded` it simply
-# registers install rules the add-on target never triggers -- a harmless no-op.
+# with these drivers present. This deferred overlay runs after the KernelAddon
+# targets exist but before Haiku's package recipe is parsed, so the adapters
+# below can inject BSP policy without patching that recipe. A standalone
+# `jam sdhci_embedded` never requests haiku.hpkg and remains a normal add-on
+# build.
 #
-# Everything lands under system/non-packaged/. The packaged tree
-# (/boot/system/add-ons/kernel) is owned by packagefs -- composed read-only from
-# the captive's .hpkg files -- so loose out-of-tree files dropped there are
-# masked. The kernel and device_manager scan the non-packaged add-on dirs too
-# (src/system/kernel/module.cpp; device_manager.cpp _AddPath), which is exactly
-# the writable seam for out-of-tree drivers: nothing in the captive is touched.
+# BSP add-ons are composed directly into haiku.hpkg. This is required for boot
+# drivers: on a packaged volume stage two replaces its system-directory view
+# with the contents of haiku.hpkg, so loose system/non-packaged modules are not
+# visible until after the kernel has mounted the boot volume. Package rules are
+# still image-time policy; the captive source tree remains untouched.
 #
 # Set JIDO_RENGA_INSTALL_IN_IMAGE = 0 in UserBuildConfig (before the overlay
-# walk) to build the add-ons as loose files only -- e.g. to copy onto a running
-# system's /boot/system/non-packaged/add-ons/kernel by hand -- without wiring
-# them into an image.
+# walk) to build the add-ons without composing them into haiku.hpkg.
 JIDO_RENGA_INSTALL_IN_IMAGE ?= 1 ;
-if $(JIDO_RENGA_INSTALL_IN_IMAGE) = 1 {
-	# Bus manager: a flat file in bus_managers/. The name matters -- sdhci's
-	# OCP fixup resolves it by get_module("bus_managers/iosf_mbi/v1"), which
-	# maps to the file .../bus_managers/iosf_mbi.
-	AddFilesToHaikuImage system non-packaged add-ons kernel bus_managers
-		: iosf_mbi ;
 
-	# Host controller: the device_manager scans busses/mmc/ and probes each
-	# add-on it finds there.
-	AddFilesToHaikuImage system non-packaged add-ons kernel busses mmc
-		: sdhci_embedded ;
+# Haiku's package recipe hard-codes the stock SDHCI target. It is parsed after
+# this deferred overlay, but exposes no exclusion hook. Reimplement only its
+# tiny public package adapters so a BSP can omit exact haiku.hpkg paths and
+# their boot-module links; all ordinary package paths retain upstream behavior.
+rule JidoRengaPackageTargets directory : targets
+{
+	local kept = $(targets) ;
 
-	# Leaf (device_manager) drivers: the modern flat layout,
-	# drivers/<category>/<name> -- mirrors in-tree AddNewDriversToPackage input,
-	# not the legacy drivers/bin + drivers/dev symlink pair.
-	AddFilesToHaikuImage system non-packaged add-ons kernel drivers input
-		: cros_ec_keyboard ;
-	AddFilesToHaikuImage system non-packaged add-ons kernel drivers input
-		: i2c_atmel_mxt ;
+	if $(JIDO_RENGA_INSTALL_IN_IMAGE) = 1
+		&& $(HAIKU_CURRENTLY_BUILT_HAIKU_PACKAGE) = haiku.hpkg {
+		kept = ;
+		local target ;
+		for target in $(targets) {
+			local path = [ FDirName $(directory) $(target:BSM) ] ;
+			if ! $(path) in $(JIDO_RENGA_BSP_OMIT_HAIKU_PACKAGE_FILES) {
+				kept += $(target) ;
+			}
+		}
+
+		local additions ;
+		local directoryPath = [ FDirName $(directory) ] ;
+		if $(directoryPath) = add-ons/kernel/bus_managers {
+			additions = $(JIDO_RENGA_BSP_IMAGE_BUS_MANAGERS) ;
+		} else if $(directoryPath) = add-ons/kernel/busses/mmc {
+			additions = $(JIDO_RENGA_BSP_IMAGE_BUSSES_MMC) ;
+		}
+
+		for target in $(additions) {
+			if ! $(target) in $(kept) {
+				kept += $(target) ;
+			}
+		}
+	}
+
+	return $(kept) ;
+}
+
+
+rule JidoRengaBootModuleTargets targets
+{
+	local kept = $(targets) ;
+
+	if $(JIDO_RENGA_INSTALL_IN_IMAGE) = 1
+		&& $(HAIKU_CURRENTLY_BUILT_HAIKU_PACKAGE) = haiku.hpkg {
+		kept = ;
+		local target ;
+		for target in $(targets) {
+			if ! $(target:BSM) in $(JIDO_RENGA_BSP_OMIT_HAIKU_BOOT_MODULE_TARGETS) {
+				kept += $(target) ;
+			}
+		}
+
+		for target in $(JIDO_RENGA_BSP_BOOT_MODULE_TARGETS) {
+			if ! $(target) in $(kept) {
+				kept += $(target) ;
+			}
+		}
+	}
+
+	return $(kept) ;
+}
+
+
+rule AddFilesToPackage directory : targets : destName
+{
+	if ! [ FDontRebuildCurrentPackage ] {
+		targets = [ JidoRengaPackageTargets $(directory) : $(targets) ] ;
+		AddFilesToContainer $(HAIKU_CURRENTLY_BUILT_HAIKU_PACKAGE)
+			: $(directory) : $(targets) : $(destName) ;
+
+		if $(JIDO_RENGA_INSTALL_IN_IMAGE) = 1
+			&& $(HAIKU_CURRENTLY_BUILT_HAIKU_PACKAGE) = haiku.hpkg
+			&& [ FDirName $(directory) ] = add-ons/kernel/bus_managers
+			&& $(JIDO_RENGA_BSP_IMAGE_I2C_BUS_MANAGER) {
+			AddFilesToContainer $(HAIKU_CURRENTLY_BUILT_HAIKU_PACKAGE)
+				: $(directory) : $(JIDO_RENGA_BSP_IMAGE_I2C_BUS_MANAGER)
+				: i2c ;
+		}
+	}
+}
+
+
+rule AddBootModuleSymlinksToPackage targets
+{
+	if ! [ FDontRebuildCurrentPackage ] {
+		targets = [ JidoRengaBootModuleTargets $(targets) ] ;
+		AddBootModuleSymlinksToContainer $(HAIKU_CURRENTLY_BUILT_HAIKU_PACKAGE)
+			: $(targets) ;
+	}
+}
+
+
+rule AddNewDriversToPackage relativeDirectoryTokens : targets
+{
+	if ! [ FDontRebuildCurrentPackage ] {
+		if $(JIDO_RENGA_INSTALL_IN_IMAGE) = 1
+			&& $(HAIKU_CURRENTLY_BUILT_HAIKU_PACKAGE) = haiku.hpkg {
+			local kept ;
+			local target ;
+			for target in $(targets) {
+				local path = [ FDirName add-ons kernel drivers
+					$(relativeDirectoryTokens) $(target:BSM) ] ;
+				if ! $(path) in $(JIDO_RENGA_BSP_OMIT_HAIKU_PACKAGE_FILES) {
+					kept += $(target) ;
+				}
+			}
+			targets = $(kept) ;
+		}
+
+		if $(JIDO_RENGA_INSTALL_IN_IMAGE) = 1
+			&& $(HAIKU_CURRENTLY_BUILT_HAIKU_PACKAGE) = haiku.hpkg
+			&& [ FDirName $(relativeDirectoryTokens) ] = input {
+			local target ;
+			for target in $(JIDO_RENGA_BSP_IMAGE_DRIVERS_INPUT) {
+				if ! $(target) in $(targets) {
+					targets += $(target) ;
+				}
+			}
+		}
+
+		AddNewDriversToContainer $(HAIKU_CURRENTLY_BUILT_HAIKU_PACKAGE)
+			: $(relativeDirectoryTokens) : $(targets) ;
+	}
 }

@@ -9,6 +9,7 @@
 #include "dma_resources.h"
 #include "IORequest.h"
 #include "IOSchedulerSimple.h"
+#include <io_requests.h>
 
 #include "Card.h"
 #include "SdhciController.h"
@@ -52,9 +53,9 @@ Disk::Create(DmaStrategy strategy, SdhciController& controller, Card& card,
 	if (disk == nullptr)
 		return nullptr;
 
-	// A Disk isn't usable until its DMA resource + scheduler exist; fold that
-	// into construction so callers never see a half-built device.
-	if (disk->InitIo() != B_OK) {
+	// Fold strategy and I/O initialization into construction so callers never
+	// see a half-built device.
+	if (disk->InitStrategy() != B_OK || disk->InitIo() != B_OK) {
 		delete disk;
 		return nullptr;
 	}
@@ -77,6 +78,7 @@ Disk::InitIo()
 	restrictions.high_address = dr.highAddress;
 	restrictions.alignment = dr.alignment;
 	restrictions.boundary = dr.boundary;
+	restrictions.max_transfer_size = dr.maxTransferSize;
 	restrictions.max_segment_size = dr.maxSegmentSize;
 	restrictions.max_segment_count = dr.maxSegmentCount;
 
@@ -100,6 +102,23 @@ Disk::InitIo()
 	// is what lets each strategy reuse per-Disk scratch (e.g. the ADMA2 table)
 	// without its own locking.
 	fScheduler->SetCallback(&_IoCallback, this);
+	return B_OK;
+}
+
+
+status_t
+Disk::ValidateRequest(io_request* request) const
+{
+	if (request == nullptr)
+		return B_BAD_VALUE;
+
+	const uint64_t deviceSize = Capacity() * BlockSize();
+	const off_t offset = request->Offset();
+	const uint64_t length = request->Length();
+	if (offset < 0 || static_cast<uint64_t>(offset) > deviceSize
+		|| length > deviceSize - static_cast<uint64_t>(offset)) {
+		return B_BAD_VALUE;
+	}
 	return B_OK;
 }
 
@@ -128,6 +147,16 @@ Disk::_IoCallback(void* data, IOOperation* operation)
 status_t
 Disk::_RunOperation(IOOperation* operation)
 {
+	if (!IsOnline()) {
+		status_t status = B_DEV_NO_MEDIA;
+		if (fEngine.CardPresent())
+			status = fController.RecoverCard();
+		if (status != B_OK) {
+			fScheduler->OperationCompleted(operation, status, 0);
+			return status;
+		}
+	}
+
 	// The operation's vecs are already decomposed to honor our restrictions and
 	// translated to physical addresses (bounce-buffered if needed), so the
 	// strategy can consume them directly.
@@ -147,8 +176,19 @@ Disk::_RunOperation(IOOperation* operation)
 status_t
 Disk::DoIO(io_request* request)
 {
+	status_t status = ValidateRequest(request);
+	if (status != B_OK) {
+		if (request != nullptr)
+			notify_io_request(request, status);
+		return status;
+	}
 	if (fScheduler == nullptr)
 		return B_NO_INIT;
+	if (!IsOnline()) {
+		notify_io_request(request, B_DEV_NO_MEDIA);
+		return B_DEV_NO_MEDIA;
+	}
+
 	return fScheduler->ScheduleRequest(request);
 }
 

@@ -17,32 +17,34 @@ constexpr Quirk kByteEmmcQuirks =
 	Quirk::BrokenPresetValues
 	| Quirk::PowerOnDelay
 	| Quirk::StopTransmissionBusy
-	| Quirk::TimeoutClockFromSdClock
-	| Quirk::CardOnNeedsBusOn
 	| Quirk::EmmcHardwareReset
-	| Quirk::NeedsIosfOcpFixup;
+	| Quirk::NeedsIosfOcpFixup
+	| Quirk::ClockPllSequence
+	| Quirk::Fixed1MHzTimeoutClock;
 
 constexpr Quirk kByteSdQuirks =
 	Quirk::BrokenPresetValues
 	| Quirk::PowerOnDelay
-	| Quirk::TimeoutClockFromSdClock
+	| Quirk::StopTransmissionBusy
 	| Quirk::CardOnNeedsBusOn
-	| Quirk::NeedsIosfOcpFixup;
+	| Quirk::NeedsIosfOcpFixup
+	| Quirk::ClockPllSequence;
 
 const MatchProfile kProfiles[] = {
-	// Intel Bay Trail eMMC (SCC eMMC controller), UID 1. Soldered: not removable,
-	// no card-detect line -> no hot-plug watcher, powered on unconditionally.
+	// Intel Bay Trail eMMC (SCC eMMC controller). Soldered: not removable, no
+	// card-detect line -> no hot-plug watcher, powered on unconditionally. _UID
+	// is an instance identifier; the HID alone identifies the eMMC role.
 	{
-		"80860F14", 1,
+		"80860F14",
 		CardDialect::Mmc, false, DmaStrategy::Adma2, kByteEmmcQuirks,
 		PersonalityKind::BayTrail,
 		"Intel Bay Trail eMMC Host (sdhci_emb)",
 	},
-	// Intel Bay Trail SD (SCC SD controller), any UID. Removable slot -> the
-	// Controller starts the lazy insert/remove watcher after boot.
+	// Intel Bay Trail SD (SCC SD controller). Removable slot -> the Controller
+	// starts the lazy insert/remove watcher after boot.
 	{
-		"80860F16", kAnyUid,
-		CardDialect::Sd, true, DmaStrategy::Adma2, kByteSdQuirks,
+		"80860F16",
+		CardDialect::Sd, true, DmaStrategy::Sdma, kByteSdQuirks,
 		PersonalityKind::BayTrail,
 		"Intel Bay Trail SD Host (sdhci_emb)",
 	},
@@ -54,7 +56,7 @@ constexpr uint32_t kProfileCount = sizeof(kProfiles) / sizeof(kProfiles[0]);
 
 
 const MatchProfile*
-MatchProfileFor(const char* hid, uint32_t uid) noexcept
+MatchProfileFor(const char* hid) noexcept
 {
 	if (hid == nullptr)
 		return nullptr;
@@ -63,18 +65,9 @@ MatchProfileFor(const char* hid, uint32_t uid) noexcept
 		const MatchProfile& p = kProfiles[i];
 		if (strcmp(p.hid, hid) != 0)
 			continue;
-		if (p.uid != kAnyUid && p.uid != uid)
-			continue;
 		return &p;
 	}
 	return nullptr;
-}
-
-
-float
-ScoreFor(const char* hid, uint32_t uid) noexcept
-{
-	return MatchProfileFor(hid, uid) != nullptr ? kMatchScore : kNoMatchScore;
 }
 
 

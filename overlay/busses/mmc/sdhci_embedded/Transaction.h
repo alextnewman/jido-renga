@@ -42,10 +42,12 @@ public:
 
 	// Data phase.
 	bool				dataPresent = false;
+	bool				tuning = false;
 	uint64_t			dmaAddress = 0;		// SDMA physical address
 	uint16_t			blockSize = 0;
 	uint32_t			blockCount = 0;
 	Adma2Descriptor*	adma2Table = nullptr;	// non-null selects ADMA2
+	uint64_t			adma2Address = 0;
 	uint32_t			adma2Entries = 0;
 
 	// Result, published by the worker into the ticket itself (never a pointer
@@ -159,8 +161,8 @@ private:
 
 
 // Cached view of controller present-state, maintained by the worker (the sole
-// hardware accessor). Callers read it to skip hardware pokes for common
-// pre-checks. Pure data: the engine feeds it raw bits via Update().
+// semantic/mutating hardware owner). Callers read it to skip hardware pokes for
+// common pre-checks. Pure data: the engine feeds it via Update().
 struct VirtualControllerState {
 	// Mutable present-state, refreshed after each attempt.
 	bool	commandInhibit = true;

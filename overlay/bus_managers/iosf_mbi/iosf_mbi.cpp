@@ -16,15 +16,21 @@
  *   1. Initialization ran from free `init_module()` / `uninit_module()`
  *      functions -- a Linux-ism. Haiku never calls those, so the singleton was
  *      never created and B_MODULE_INIT always reported failure (the module was
- *      dead on arrival). Discovery now happens in the real std_ops hook.
+ *      dead on arrival). The singleton and mandatory hardware discovery now
+ *      come from the real std_ops hook.
  *
  *   2. It bound to whichever BayTrail PCI function it saw first (PMC, or even an
  *      SDHCI controller). The message-bus registers (MCR/MDR/MCRX at 0xD0..0xD8)
  *      live ONLY in the SoC transaction router / host bridge config space
  *      (0:0:0). Writing 0xD0 on any other function is not a sideband access --
  *      at best a no-op, at worst poking a real register. We now bind strictly to
- *      the host bridge (BYT 8086:0F00, CHT 8086:2280), matching Linux's
- *      iosf_mbi_pci_ids.
+ *      the BYT/CHT host bridge.
+ *
+ * Haiku probes bus_managers (including ACPI) before busses/pci. An ACPI-hosted
+ * boot disk can therefore request IOSF before the normal root scan has
+ * registered the x86 PCI controller. This module resolves that ordering through
+ * formal module dependencies and the x86 driver's normal register_device hook;
+ * all configuration traffic still goes through Haiku's PCI bus manager.
  */
 
 #include <common/iosf_mbi.h>
@@ -33,8 +39,11 @@
 
 #include <KernelExport.h>
 #include <PCI.h>
+#include <device_manager.h>
+#include <util/AutoLock.h>
 
 #include <new>
+#include <string.h>
 
 
 #define TRACE_IOSF_MBI
@@ -49,94 +58,158 @@
 namespace {
 
 
+pci_module_info* gPci = nullptr;
+device_manager_info* gDeviceManager = nullptr;
+driver_module_info* gX86PciController = nullptr;
+
+constexpr char kX86PciControllerModuleName[]
+	= "busses/pci/x86/driver_v1";
+
+
 // The ONLY PCI functions that host the IOSF-MBI message-bus registers: the SoC
 // transaction router (a.k.a. host bridge / "SSA-CUnit"), always at 0:0:0. This
 // list is deliberately narrow -- see the file header for why the PMC and the
 // SDHCI controllers must NOT appear here.
-struct HostBridgeId {
-	uint16		vendor;
-	uint16		device;
-	const char*	name;
-};
-
-const HostBridgeId kMessageBusHosts[] = {
-	{ 0x8086, 0x0f00, "BayTrail SoC transaction router" },
-	{ 0x8086, 0x2280, "CherryTrail SoC transaction router" },
-};
-
-constexpr size_t kMessageBusHostCount =
-	sizeof(kMessageBusHosts) / sizeof(kMessageBusHosts[0]);
+const char*
+HostBridgeName(uint16 device)
+{
+	switch (device) {
+		case jr::iosf::kBayTrailHostBridgeId:
+			return "Bay Trail SoC transaction router";
+		case jr::iosf::kCherryTrailHostBridgeId:
+			return "Cherry Trail SoC transaction router";
+		default:
+			return "unknown host bridge";
+	}
+}
 
 
 // Owns the PCI location of the message-bus host bridge and performs the two-
 // (or three-) step MCR/MDR handshake. One per system.
 class IosfMbiBus {
 public:
+	IosfMbiBus() { mutex_init(&fLock, "iosf mbi transaction"); }
+	~IosfMbiBus() { mutex_destroy(&fLock); }
+
 	status_t	Discover();
 
 	status_t	ReadRegister(uint8_t port, uint8_t opcode, uint32_t offset,
-					uint32_t* value) const;
+					uint32_t* value);
 	status_t	WriteRegister(uint8_t port, uint8_t opcode, uint32_t offset,
-					uint32_t value) const;
-
-	pci_module_info*	Pci() const { return fPci; }
+					uint32_t value);
 
 private:
-	pci_module_info*	fPci = nullptr;
+	status_t	_ProbeHostBridge();
+	status_t	_RegisterPciController();
+
 	uint8				fBus = 0;
 	uint8				fDevice = 0;
 	uint8				fFunction = 0;
+	bool				fDiscovered = false;
+	mutable mutex		fLock;
 };
+
+
+status_t
+IosfMbiBus::_ProbeHostBridge()
+{
+	if (gPci == nullptr)
+		return B_NO_INIT;
+
+	const uint32 id = gPci->read_pci_config(0, 0, 0, PCI_vendor_id, 4);
+	if (id == UINT32_MAX)
+		return B_NO_INIT;
+
+	const uint16 vendor = id & 0xffffu;
+	const uint16 device = id >> 16;
+	if (!jr::iosf::IsSupportedHostBridge(vendor, device)) {
+		ERROR("PCI 0:0.0 is %04x:%04x, not a supported IOSF-MBI host\n",
+			vendor, device);
+		return B_DEVICE_NOT_FOUND;
+	}
+
+	fBus = 0;
+	fDevice = 0;
+	fFunction = 0;
+	fDiscovered = true;
+	TRACE("bound to %s at 0:0.0\n", HostBridgeName(device));
+	return B_OK;
+}
+
+
+status_t
+IosfMbiBus::_RegisterPciController()
+{
+	if (gDeviceManager == nullptr || gX86PciController == nullptr
+		|| gX86PciController->register_device == nullptr) {
+		return B_NO_INIT;
+	}
+
+	device_node* root = gDeviceManager->get_root_node();
+	if (root == nullptr)
+		return B_NO_INIT;
+
+	status_t status = gX86PciController->register_device(root);
+	gDeviceManager->put_node(root);
+
+	if (status == B_NAME_IN_USE)
+		return B_OK;
+	if (status != B_OK) {
+		ERROR("early x86 PCI controller registration failed: %s\n",
+			strerror(status));
+		return status;
+	}
+
+	TRACE("registered x86 PCI controller ahead of ACPI boot-media probing\n");
+	return B_OK;
+}
 
 
 status_t
 IosfMbiBus::Discover()
 {
-	if (get_module(B_PCI_MODULE_NAME, (module_info**)&fPci) != B_OK) {
-		TRACE("PCI module not available\n");
-		return B_ERROR;
-	}
+	if (fDiscovered)
+		return B_OK;
 
-	pci_info info;
-	for (long i = 0; fPci->get_nth_pci_info(i, &info) == B_OK; i++) {
-		for (size_t j = 0; j < kMessageBusHostCount; j++) {
-			if (info.vendor_id != kMessageBusHosts[j].vendor
-				|| info.device_id != kMessageBusHosts[j].device) {
-				continue;
-			}
-			fBus = info.bus;
-			fDevice = info.device;
-			fFunction = info.function;
-			TRACE("bound to %s at %d:%d.%d\n", kMessageBusHosts[j].name,
-				fBus, fDevice, fFunction);
-			return B_OK;
-		}
-	}
+	status_t status = _ProbeHostBridge();
+	if (status != B_NO_INIT)
+		return status;
 
-	TRACE("no IOSF-MBI host bridge present; module inert\n");
-	put_module(B_PCI_MODULE_NAME);
-	fPci = nullptr;
-	return B_ENTRY_NOT_FOUND;
+	TRACE("PCI domain not registered yet; starting it through device_manager\n");
+	status = _RegisterPciController();
+	if (status != B_OK)
+		return status;
+
+	status = _ProbeHostBridge();
+	if (status == B_NO_INIT) {
+		ERROR("x86 PCI controller registered without a usable domain\n");
+		return B_NO_INIT;
+	}
+	return status;
 }
 
 
 status_t
 IosfMbiBus::ReadRegister(uint8_t port, uint8_t opcode, uint32_t offset,
-	uint32_t* value) const
+	uint32_t* value)
 {
-	if (fPci == nullptr || value == nullptr)
+	if (value == nullptr)
 		return B_ERROR;
+	MutexLocker locker(fLock);
+	status_t status = Discover();
+	if (status != B_OK)
+		return status;
 
 	const uint32_t mcr = jr::iosf::FormMcr(opcode, port, offset);
 	const uint32_t mcrx = jr::iosf::McrxFor(offset);
 
-	if (mcrx != 0) {
-		fPci->write_pci_config(fBus, fDevice, fFunction, jr::iosf::kMcrxOffset,
-			4, mcrx);
-	}
-	fPci->write_pci_config(fBus, fDevice, fFunction, jr::iosf::kMcrOffset, 4,
+	// Always write MCRX, including zero, so a prior extended-offset access cannot
+	// leak its upper address bits into this transaction.
+	gPci->write_pci_config(fBus, fDevice, fFunction, jr::iosf::kMcrxOffset, 4,
+		mcrx);
+	gPci->write_pci_config(fBus, fDevice, fFunction, jr::iosf::kMcrOffset, 4,
 		mcr);
-	*value = fPci->read_pci_config(fBus, fDevice, fFunction,
+	*value = gPci->read_pci_config(fBus, fDevice, fFunction,
 		jr::iosf::kMdrOffset, 4);
 	return B_OK;
 }
@@ -144,23 +217,23 @@ IosfMbiBus::ReadRegister(uint8_t port, uint8_t opcode, uint32_t offset,
 
 status_t
 IosfMbiBus::WriteRegister(uint8_t port, uint8_t opcode, uint32_t offset,
-	uint32_t value) const
+	uint32_t value)
 {
-	if (fPci == nullptr)
-		return B_ERROR;
+	MutexLocker locker(fLock);
+	status_t status = Discover();
+	if (status != B_OK)
+		return status;
 
 	const uint32_t mcr = jr::iosf::FormMcr(opcode, port, offset);
 	const uint32_t mcrx = jr::iosf::McrxFor(offset);
 
 	// Data first, then the extended offset, then the trigger (MCR) last --
 	// writing MCR is what actually launches the transaction.
-	fPci->write_pci_config(fBus, fDevice, fFunction, jr::iosf::kMdrOffset, 4,
+	gPci->write_pci_config(fBus, fDevice, fFunction, jr::iosf::kMdrOffset, 4,
 		value);
-	if (mcrx != 0) {
-		fPci->write_pci_config(fBus, fDevice, fFunction, jr::iosf::kMcrxOffset,
-			4, mcrx);
-	}
-	fPci->write_pci_config(fBus, fDevice, fFunction, jr::iosf::kMcrOffset, 4,
+	gPci->write_pci_config(fBus, fDevice, fFunction, jr::iosf::kMcrxOffset, 4,
+		mcrx);
+	gPci->write_pci_config(fBus, fDevice, fFunction, jr::iosf::kMcrOffset, 4,
 		mcr);
 	return B_OK;
 }
@@ -192,9 +265,8 @@ iosf_mbi_write_fn(uint8_t port, uint8_t opcode, uint32_t offset, uint32_t value)
 }
 
 
-// The real Haiku module lifecycle. Discovery lives here (NOT in a free
-// init_module) so the module is "available" via get_module ONLY once it has a
-// message-bus host bridge to talk to.
+// IOSF is a mandatory BSP facility. Initialization does not succeed until the
+// host bridge is reachable through Haiku's registered PCI controller.
 static status_t
 iosf_mbi_std_ops(int32 op, ...)
 {
@@ -218,8 +290,6 @@ iosf_mbi_std_ops(int32 op, ...)
 
 		case B_MODULE_UNINIT:
 			if (gBus != nullptr) {
-				if (gBus->Pci() != nullptr)
-					put_module(B_PCI_MODULE_NAME);
 				delete gBus;
 				gBus = nullptr;
 			}
@@ -245,4 +315,12 @@ static iosf_mbi_module_info sIosfMbiModule = {
 module_info* modules[] = {
 	(module_info*)&sIosfMbiModule,
 	NULL
+};
+
+
+module_dependency module_dependencies[] = {
+	{ B_DEVICE_MANAGER_MODULE_NAME, (module_info**)&gDeviceManager },
+	{ B_PCI_MODULE_NAME, (module_info**)&gPci },
+	{ kX86PciControllerModuleName, (module_info**)&gX86PciController },
+	{}
 };

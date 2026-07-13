@@ -16,6 +16,20 @@
 namespace jr::iosf {
 
 
+constexpr uint16_t kIntelVendorId = 0x8086;
+constexpr uint16_t kBayTrailHostBridgeId = 0x0f00;
+constexpr uint16_t kCherryTrailHostBridgeId = 0x2280;
+
+
+constexpr bool
+IsSupportedHostBridge(uint16_t vendor, uint16_t device) noexcept
+{
+	return vendor == kIntelVendorId
+		&& (device == kBayTrailHostBridgeId
+			|| device == kCherryTrailHostBridgeId);
+}
+
+
 // PCI config-space offsets of the message-bus registers in the host bridge.
 constexpr uint8_t kMcrOffset  = 0xd0;	// Message Control Register
 constexpr uint8_t kMdrOffset  = 0xd4;	// Message Data Register

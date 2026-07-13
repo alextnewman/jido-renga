@@ -9,6 +9,7 @@
 
 #include "Command.h"
 #include "Convergence.h"
+#include "BusMode.h"
 #include "Personality.h"
 #include "SdhciRegisters.h"
 #include "Trace.h"
@@ -38,19 +39,31 @@ struct CommandOutcome {
 
 
 // Data-phase parameters a Disk strategy stages for a transfer command. They are
-// copied onto the ticket so the worker -- the sole hardware accessor -- programs
-// SDMA/ADMA2 atomically with the command issue, instead of the caller poking DMA
-// registers from its own thread (which could interleave with the worker).
+// copied onto the ticket so the worker -- the sole mutating hardware owner --
+// programs SDMA/ADMA2 atomically with the command issue, instead of the caller
+// poking DMA registers from its own thread (which could interleave with it).
 struct DataTransfer {
 	uint16_t			blockSize = 0;
 	uint32_t			blockCount = 0;
 	uint64_t			sdmaAddress = 0;		// used when adma2Table == nullptr
 	Adma2Descriptor*	adma2Table = nullptr;	// non-null selects ADMA2
+	uint64_t			adma2Address = 0;		// retained physical table address
 	uint32_t			adma2Entries = 0;
+	bool				tuning = false;
 	// Optional Transfer Mode override (0 == derive from the command). Needed for
 	// the eMMC EXT_CSD read: CMD8 collides with SD's non-data SEND_IF_COND, so
 	// the command alone can't tell ComputeTransferMode() it is a data read.
 	uint16_t			transferMode = 0;
+};
+
+
+class IPlatformControl {
+public:
+	virtual status_t SwitchSignalVoltage(bool to1v8) = 0;
+	virtual uint8_t UhsCapabilities() const = 0;
+
+protected:
+	~IPlatformControl() = default;
 };
 
 
@@ -76,6 +89,7 @@ public:
 	// The controller's quirk set, used to derive per-command constraints for the
 	// convenience Execute() overload below.
 	void SetQuirks(Quirk quirks) { fQuirks = quirks; }
+	void SetPlatformControl(IPlatformControl* platform) { fPlatform = platform; }
 
 	// Serialized command execution. Blocks until the worker reaches a terminal
 	// verdict for this command (or the convergence budget is exhausted). Thread
@@ -114,6 +128,7 @@ public:
 	// the Disk strategies decompose bulk transfers through the IO scheduler.
 	status_t ReadDataBlock(Cmd command, uint32_t argument, ReplyType reply,
 		void* buffer, uint32_t size);
+	status_t ExecuteTuning(Cmd command, uint16_t blockSize);
 
 	// IHostQuirkTarget: the personality's only register hook.
 	void DisablePresetValueMode() override;
@@ -123,6 +138,9 @@ public:
 	// Trail, whose presets are broken); the identification path passes false.
 	status_t SetClock(uint32_t targetKHz, bool allowAuto = false);
 	void SetBusWidth(uint8_t width);
+	status_t ConfigureBus(const BusMode& mode);
+	status_t SwitchSignalVoltage(bool to1v8, bool checkDataLines);
+	HostCapabilities Capabilities() const;
 	void PowerOn(uint8_t voltage);
 	void PowerOff();
 	bool CardPresent() const;
@@ -139,11 +157,10 @@ public:
 	// be between transactions.
 	void RecoverBus();
 
-	// The "meow": called from interrupt context. An unordered pulse that wakes
-	// the worker to LOOK; it carries no data and counts nothing, so an early,
-	// late, doubled, or wrong-command meow is harmless. Performs no register
-	// reads. See HandleInterruptMeow().
-	void HandleInterruptMeow();
+	// The "meow": called from interrupt context. Reads raw interrupt status only
+	// to reject empty/floating/unmanaged sources, then emits an unordered pulse
+	// that carries no command meaning. Returns the Haiku interrupt disposition.
+	int32 HandleInterruptMeow();
 
 	const TraceLabel& Label() const { return fLabel; }
 
@@ -162,11 +179,11 @@ private:
 
 	// Hardware sequences (implementation points; see the design doc at
 	// docs/design/sdhci_embedded.md).
-	// Bring the powered bus to the identification baseline: wait for the
-	// regulator, honor the power-on settle quirk, force SDMA + high speed, drop
-	// to 400 kHz, and program the data-timeout divider. Shared by Init() and the
-	// bus-reset recovery so both leave the controller in an identical state.
-	void _BringUpBus();
+	// Bring the powered bus to the identification baseline: honor any
+	// version-defined regulator indication and the profile's power-on settle,
+	// force SDMA + legacy timing, drop to 400 kHz, and program the data-timeout
+	// divider. Shared by Init() and bus-reset recovery.
+	status_t _BringUpBus();
 	// Pick the highest supported bus voltage from Capabilities and raise VDD.
 	// `force` bypasses the card-present check for soldered eMMC (no detect line).
 	bool _PowerOnBus(bool force);
@@ -184,18 +201,27 @@ private:
 	// personality-resolved response type.
 	bool _IssueToHardware(const Transaction& txn, ReplyType reply,
 		bool& usedAdma2);
-	// Read-only poll of the interrupt-status word. The meow ideal: looking never
-	// mutates the bus. Clearing is done once, deliberately, by _DrainInterrupts.
-	uint32_t _ReadInterrupts() const;
-	void _DrainInterrupts();
+	// Read one interrupt-status snapshot and immediately write-1-clear the bits
+	// the convergence policy understands. The caller accumulates those bits in
+	// software, so split completion remains durable without holding the
+	// level-triggered IRQ line asserted.
+	uint32_t _ReadAndClearInterrupts();
+	// Drain acknowledged evidence to a stable readback. The returned raw status
+	// lets the pre-issue path refuse to reuse an uncleared completion.
+	uint32_t _DrainInterrupts();
+	void _LogAttemptFailure(const Transaction& txn, uint32_t attempt,
+		uint32_t maxAttempts, AttemptResult result, RetryAction action,
+		uint32_t accumulatedStatus, uint32_t lastSnapshot, bool usedAdma2) const;
+	void _LogAdmaError(const Transaction& txn) const;
 	// After an R1b command the card may hold DATA0 low (busy); wait it out so the
 	// next command does not collide with a still-busy card.
-	void _WaitForR1bBusy();
+	bool _WaitForR1bBusy();
 	void _SyncVcState();
 	void _ReadResponse(ReplyType reply, uint32_t out[4]);
 
 	volatile RegisterBlock*		fRegs = nullptr;
 	const HostPersonality*		fPersonality = nullptr;
+	IPlatformControl*			fPlatform = nullptr;
 	TraceLabel					fLabel;
 
 	mutex						fBusLock = MUTEX_INITIALIZER("sdhci_emb bus");
