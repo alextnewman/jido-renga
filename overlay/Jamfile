@@ -18,7 +18,6 @@ SubDir JIDO_RENGA_TOP overlay ;
 
 # Shared jido-renga modules first -- leaf drivers may depend on the modules
 # they publish.
-SubInclude JIDO_RENGA_TOP overlay bus_managers i2c ;
 SubInclude JIDO_RENGA_TOP overlay bus_managers iosf_mbi ;
 
 # Bus drivers (host controllers).
@@ -35,7 +34,6 @@ SubInclude JIDO_RENGA_TOP overlay drivers input i2c_atmel_mxt ;
 # driver attempts to negotiate ownership with a competing driver at runtime.
 JIDO_RENGA_BSP ?= winky ;
 JIDO_RENGA_BSP_IMAGE_BUS_MANAGERS = ;
-JIDO_RENGA_BSP_IMAGE_I2C_BUS_MANAGER = ;
 JIDO_RENGA_BSP_IMAGE_BUSSES_MMC = ;
 JIDO_RENGA_BSP_IMAGE_DRIVERS_INPUT = ;
 JIDO_RENGA_BSP_BOOT_MODULE_TARGETS = ;
@@ -137,15 +135,6 @@ rule AddFilesToPackage directory : targets : destName
 		targets = [ JidoRengaPackageTargets $(directory) : $(targets) ] ;
 		AddFilesToContainer $(HAIKU_CURRENTLY_BUILT_HAIKU_PACKAGE)
 			: $(directory) : $(targets) : $(destName) ;
-
-		if $(JIDO_RENGA_INSTALL_IN_IMAGE) = 1
-			&& $(HAIKU_CURRENTLY_BUILT_HAIKU_PACKAGE) = haiku.hpkg
-			&& [ FDirName $(directory) ] = add-ons/kernel/bus_managers
-			&& $(JIDO_RENGA_BSP_IMAGE_I2C_BUS_MANAGER) {
-			AddFilesToContainer $(HAIKU_CURRENTLY_BUILT_HAIKU_PACKAGE)
-				: $(directory) : $(JIDO_RENGA_BSP_IMAGE_I2C_BUS_MANAGER)
-				: i2c ;
-		}
 	}
 }
 

@@ -508,17 +508,17 @@ exists with a null value, so checking status alone is insufficient.
 faulting callback, and HID/CID matching allows Atmel and Elan devices to
 coexist without an ownership protocol.
 
-Haiku's I2C child-node construction also publishes HID and CID attributes even
-when their string values are null. Winky defensively composes `i2c_guarded`,
-which reuses the pristine Haiku I2C module sources but replaces `I2CBus.cpp`
-with an overlay-owned translation unit that omits absent optional string
-attributes. The earlier branch had worked with the stock bus manager, so this
-normalization is not claimed as the proven cause of the original fault; the
-missing immediate caller below `strcmp` prevented that attribution.
+An early defensive experiment replaced Haiku's I2C manager with a guarded copy
+that omitted absent HID/CID strings. That wrapper had no demonstrated
+performance or ordering benefit, and the earlier in-tree driver had already
+worked with the stock manager. The missing immediate caller below `strcmp`
+also prevented attributing the fault to I2C child construction.
 
-The resulting composition is hardware-validated. The guarded manager,
-`i2c_atmel_mxt`, stock `i2c_elan`, and the ChromeOS EC keyboard coexist in the
-same installed-capable Winky image, and the input devices work.
+The wrapper was therefore removed. Winky uses Haiku's stock I2C manager while
+the Atmel and ChromeOS EC support callbacks retain their justified null checks.
+The previously validated image proved that `i2c_atmel_mxt`, stock `i2c_elan`,
+and the ChromeOS EC keyboard can coexist; the stock-manager package update
+requires its own live validation.
 
 ## 12. References
 

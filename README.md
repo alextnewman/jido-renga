@@ -115,7 +115,7 @@ jido-renga/
 ├── overlay/            # the build-time graft surface
 │   ├── Jamfile         # walks the overlay (SubInclude of each module)
 │   ├── headers/common/ # Jidō Renga's own public include root
-│   ├── bus_managers/   # shared/replacement modules (e.g. iosf_mbi, guarded i2c)
+│   ├── bus_managers/   # shared modules (e.g. iosf_mbi)
 │   ├── busses/         # host controllers (e.g. mmc/sdhci_embedded)
 │   └── drivers/        # leaf drivers (e.g. input/cros_ec_keyboard, input/i2c_atmel_mxt)
 ├── config/             # graft template, BSP manifests, and revision.conf
@@ -139,7 +139,7 @@ mkdir generated.x86_64 && cd generated.x86_64   # a throwaway build dir
 ../haiku/configure --cross-tools-source ../buildtools --build-cross-tools x86_64
 cd .. && tools/weave generated.x86_64           # install the graft
 cd generated.x86_64
-../tools/jr-jam -q iosf_mbi i2c_guarded sdhci_embedded \
+../tools/jr-jam -q iosf_mbi sdhci_embedded \
   cros_ec_keyboard i2c_atmel_mxt
 ```
 
@@ -164,8 +164,7 @@ kernel add-on path. The captive's source tree and package recipe remain
 untouched; the out-of-tree graft adapts Haiku's public package rules while Jam
 constructs the image. The default `winky` BSP omits Haiku's generic
 `busses/mmc/sdhci` add-on so `sdhci_embedded` solely owns the Bay Trail MMC
-controllers. It also packages the overlay's guarded I2C implementation under
-the canonical `bus_managers/i2c` filename while retaining both Atmel and Elan
+controllers. It retains Haiku's stock I2C bus manager and both Atmel and Elan
 input drivers. Set `JIDO_RENGA_BSP = none` in `UserBuildConfig` before the
 overlay walk to build the add-ons without applying a BSP image policy.
 

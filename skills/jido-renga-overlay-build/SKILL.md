@@ -85,7 +85,7 @@ tools/weave generated.x86_64
 
 # 3. Build from inside the build dir, via the jr-jam wrapper.
 cd generated.x86_64
-../tools/jr-jam -q iosf_mbi i2c_guarded sdhci_embedded \
+../tools/jr-jam -q iosf_mbi sdhci_embedded \
   cros_ec_keyboard i2c_atmel_mxt
 
 # 4. (optional) Fold the selected BSP's add-ons into a bootable anyboot image
@@ -102,21 +102,17 @@ before the overlay walk to build the add-ons without a BSP image policy.
 
 ### Proven Winky composition
 
-The hardware-validated Winky image applies three surgical policies:
+The Winky image applies two surgical storage policies:
 
 1. Omit stock `add-ons/kernel/busses/mmc/sdhci`, package
    `sdhci_embedded` in its canonical bus directory, and create its boot link.
 2. Package `iosf_mbi` and create its boot link so the SDHCI dependency is
    available before boot-media discovery.
-3. Omit stock `add-ons/kernel/bus_managers/i2c`, but package the internal
-   `i2c_guarded` target under the canonical filename
-   `add-ons/kernel/bus_managers/i2c`. The filename matters because
-   `get_module("bus_managers/i2c/...")` maps to it; the distinct Jam target name
-   avoids colliding with the captive target.
 
-The third policy is a defensive normalization of optional HID/CID attributes,
-not a claim that the stock manager can never work. It preserves all stock
-consumers, including `i2c_elan`.
+Haiku's stock `add-ons/kernel/bus_managers/i2c` remains in the package. Leaf
+support callbacks must treat a successful null string attribute as absent;
+this preserves stock consumers, including `i2c_elan`, without replacing the
+shared bus manager.
 
 ## The derivative-revision seam
 
@@ -202,7 +198,7 @@ git diff --check
 
 # Cross-link every overlay module used by the BSP.
 cd generated.x86_64
-../tools/jr-jam -q iosf_mbi i2c_guarded sdhci_embedded \
+../tools/jr-jam -q iosf_mbi sdhci_embedded \
   cros_ec_keyboard i2c_atmel_mxt
 
 # Compose the real package/image, not only loose add-ons.
@@ -225,6 +221,7 @@ For Winky, require all of these:
 - `add-ons/kernel/drivers/input/i2c_atmel_mxt`
 - `add-ons/kernel/drivers/input/i2c_elan`
 - no stock `add-ons/kernel/busses/mmc/sdhci`
+- no overlay `i2c_guarded` target or replacement bus manager
 
 When a target is renamed during packaging, extract the canonical package entry
 and compare it with the built target. Record SHA-256 values for the anyboot,

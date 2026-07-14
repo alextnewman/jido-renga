@@ -361,8 +361,8 @@ The July 2026 live validation closed the original BSP loop:
 - eMMC completes identification with CMD7 encoded as Linux's plain R1;
 - Haiku was installed onto the eMMC through the ADMA2 path, with high sustained
   performance and no storage failure;
-- the guarded I2C composition, Atmel touchpad, stock Elan support, and ChromeOS
-  EC keyboard coexist in the same image and the machine's input devices work.
+- the Atmel touchpad, stock Elan support, and ChromeOS EC keyboard coexist in
+  the same image and the machine's input devices work.
 
 This matters beyond a successful boot. The tested image exercised the entire
 stack in one session: image-time driver ownership, stage-two boot links,

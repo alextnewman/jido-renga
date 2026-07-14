@@ -470,7 +470,7 @@ proof.
 | eMMC HS200/DDR52/HS52/HS26 ladder | Negotiation completes and supports the validated installation workload; the exact selected rung was not captured in the milestone log |
 | SD UHS/high-speed ladder | High-speed 4-bit 50 MHz confirmed on Winky; UHS remains disabled because Intel DSM is unavailable |
 | Removable-media recovery | Implemented; awaiting hardware validation |
-| Winky I2C input composition | Confirmed on Winky: the guarded I2C manager, `i2c_atmel_mxt`, stock `i2c_elan`, and the ChromeOS EC keyboard coexist and the input devices work |
+| Winky I2C input composition | The Atmel touchpad, stock Elan support, and ChromeOS EC keyboard were confirmed together on Winky; current source restores Haiku's stock I2C manager and awaits live validation |
 
 The hardware-validated milestone artifact is:
 
@@ -483,10 +483,10 @@ Its `haiku.hpkg` checksum is
 `0ab25cd782afde011309f9af6219e4cf64a34b0f1851a904ca7fd5c1bcdc6ce7`.
 The staged `sdhci_embedded` is byte-identical to the inspected build output
 (`cb991c9cc26b23ad6785581cd836c132896d20beaed37586834b5878bdcc1aa8`);
-the package contains its boot link and no stock `sdhci` add-on. The canonical
-`bus_managers/i2c` package entry is byte-identical to the guarded overlay build
-(`0f864ba271cc49f4c22a2a2cf0604b7b59188b84f3c5f1e220a2b1fb869d5934`).
-The input directory contains both `i2c_atmel_mxt` and stock `i2c_elan`.
+the package contains its boot link and no stock `sdhci` add-on. That historical
+artifact used the temporary guarded I2C experiment. Current source removes the
+replacement and restores Haiku's stock `bus_managers/i2c`; the input directory
+continues to contain both `i2c_atmel_mxt` and stock `i2c_elan`.
 
 ### 12.1 July 2026 Winky milestone
 
@@ -502,6 +502,23 @@ The artifact above crossed the line from bring-up image to usable system:
 This is the first end-to-end proof of the BSP contract: composition, boot-media
 discovery, both embedded storage hosts, DMA block I/O, and machine-specific
 input all operate together in one image.
+
+### 12.2 Stock I2C restoration package
+
+The first package-only update after the milestone removes the temporary I2C
+replacement and restores Haiku's stock manager:
+
+```text
+version r1~beta5_hrev57937_jido_renga_0.1.1-1
+haiku.hpkg SHA-256 481a5bb94de5a0f3dacb3a482bb68dbb138e0c4e9ac3c8927d10ff65a8bafefb
+stock bus_managers/i2c SHA-256 e8f1292fdca87c6f5c46ea35a4b9eddaf1bcc19f407753e5e7c4c9929a4a14e7
+```
+
+Archive inspection confirms the stock canonical I2C entry, both Atmel and Elan
+input drivers, `iosf_mbi`, and `sdhci_embedded` with their boot links. It
+contains neither `i2c_guarded` nor stock `busses/mmc/sdhci`. The packaged I2C
+binary is byte-identical to Haiku's staged stock build. This package is
+build-validated and still requires a Winky boot/input check.
 
 ## 13. Extending the contract
 

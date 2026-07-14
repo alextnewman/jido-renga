@@ -5,7 +5,6 @@
 # Winky is an exclusive BSP: Jido Renga owns each controller it supports.
 # Entries are paths inside haiku.hpkg, not host paths or packagefs paths.
 JIDO_RENGA_BSP_OMIT_HAIKU_PACKAGE_FILES +=
-	add-ons/kernel/bus_managers/i2c
 	add-ons/kernel/busses/mmc/sdhci
 	;
 JIDO_RENGA_BSP_OMIT_HAIKU_BOOT_MODULE_TARGETS += sdhci ;
@@ -15,7 +14,6 @@ JIDO_RENGA_BSP_OMIT_HAIKU_BOOT_MODULE_TARGETS += sdhci ;
 JIDO_RENGA_BSP_IMAGE_BUS_MANAGERS +=
 	iosf_mbi
 	;
-JIDO_RENGA_BSP_IMAGE_I2C_BUS_MANAGER = i2c_guarded ;
 JIDO_RENGA_BSP_IMAGE_BUSSES_MMC += sdhci_embedded ;
 JIDO_RENGA_BSP_IMAGE_DRIVERS_INPUT +=
 	cros_ec_keyboard
