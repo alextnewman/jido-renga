@@ -82,15 +82,17 @@ Match `B_DEVICE_BUS == "acpi"` and an exact HID. This is `acpi_battery`
 static float
 my_supports_device(device_node* parent)
 {
-	const char* bus;
+	const char* bus = NULL;
 	if (sDeviceManager->get_attr_string(parent, B_DEVICE_BUS, &bus, false)
-			!= B_OK || strcmp(bus, "acpi") != 0)
+			!= B_OK || bus == NULL || strcmp(bus, "acpi") != 0) {
 		return 0.0f;
+	}
 
-	const char* hid;
+	const char* hid = NULL;
 	if (sDeviceManager->get_attr_string(parent, ACPI_DEVICE_HID_ITEM, &hid,
-			false) == B_OK && strcmp(hid, "PNP0C0A") == 0)
+			false) == B_OK && hid != NULL && strcmp(hid, "PNP0C0A") == 0) {
 		return 0.6f;
+	}
 	return 0.0f;
 }
 ```
@@ -119,10 +121,11 @@ This is exactly what our maXTouch driver does
 static float
 i2c_atmel_mxt_support(device_node* parent)
 {
-	const char* bus;
+	const char* bus = NULL;
 	if (sDeviceManager->get_attr_string(parent, B_DEVICE_BUS, &bus, false)
-			!= B_OK || strcmp(bus, "i2c") != 0)
+			!= B_OK || bus == NULL || strcmp(bus, "i2c") != 0) {
 		return 0.0f;
+	}
 
 	// Must carry an ACPI handle we can walk _CRS on later.
 	uint64 handle;
@@ -130,13 +133,18 @@ i2c_atmel_mxt_support(device_node* parent)
 			&handle, false) != B_OK)
 		return 0.0f;
 
-	const char* name;
+	const char* name = NULL;
 	if (sDeviceManager->get_attr_string(parent, ACPI_DEVICE_HID_ITEM, &name,
-			false) == B_OK && strcmp(name, "ATML0000") == 0)
+			false) == B_OK && name != NULL
+		&& strcmp(name, "ATML0000") == 0) {
 		return 0.6f;
+	}
+	name = NULL;
 	if (sDeviceManager->get_attr_string(parent, ACPI_DEVICE_CID_ITEM, &name,
-			false) == B_OK && strcmp(name, "ATML0000") == 0)
+			false) == B_OK && name != NULL
+		&& strcmp(name, "ATML0000") == 0) {
 		return 0.6f;
+	}
 	return 0.0f;
 }
 ```
@@ -206,6 +214,9 @@ address-space variants) in the same callback — switch on `res->Type` and read
 
 - **HID compare is exact and case-sensitive `strcmp`.** `ATML0000` ≠
   `atml0000`. Verify the exact string with `dmesg`/`listdev` on the target.
+- **String lookup success does not imply a non-null value.** Initialize every
+  output pointer and check it before `strcmp`; malformed optional HID/CID
+  attributes have caused real device-manager faults.
 - **Match CID as a fallback after HID.** Many devices advertise a generic
   compatible ID (e.g. HID i2c-hid touchpads under `PNP0C50`) via `_CID`.
 - **Drivers assume the *first* IRQ / *first* MMIO window.** `_CRS` can list

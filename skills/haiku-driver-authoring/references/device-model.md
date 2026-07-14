@@ -85,10 +85,13 @@ For each node, the manager offers it to every `driver_module_info` via:
 float supports_device(device_node* parent);
 ```
 
-Return `0.0` for "not mine"; a higher score wins the node. Convention: a generic
-match ~`0.5`, a specific HID/vendor match `0.6`–`0.8`, an exact model `0.9`+.
-Read parent attributes to decide (never assume). The winner is bound and its
-`register_device(parent)` runs.
+Return `0.0` for "not mine"; a higher score wins an ordinary node. Convention:
+a generic match ~`0.5`, a specific HID/vendor match `0.6`–`0.8`, an exact model
+`0.9`+. Read parent attributes to decide (never assume). For nodes carrying
+`B_FIND_MULTIPLE_CHILDREN`, there is intentionally no single winner:
+`_RegisterPath()` calls `register_device(parent)` for every positive match.
+This is common for I2C peripherals and other simple buses, so support callbacks
+must be side-effect-free and coexistence-safe.
 
 ### 3b. The driver lifecycle (hooks in call order)
 
@@ -178,6 +181,11 @@ void     put_node(device_node*);		// release a node you obtained
 `recursive == true` walks **up** the tree until the attribute is found — this is
 how a child reads an attribute a bus manager set on an ancestor (important for
 ACPI; see acpi-layering.md).
+
+For string attributes, `B_OK` does not prove the returned pointer is non-null:
+a producer can register a `B_STRING_TYPE` attribute whose value is `NULL`.
+Initialize output pointers and require both `B_OK` and a non-null value before
+logging or calling `strcmp`.
 
 ### 3e. Attributes (device_attr)
 

@@ -50,9 +50,10 @@ add-ons export a null-terminated `module_info* modules[]` array).
    `device_node`s. Bus managers (PCI, ACPI, I2C, USB…) enumerate hardware and
    register child nodes with attributes. Your driver publishes a
    `driver_module_info` whose `supports_device()` is scored against candidate
-   parent nodes; the best score wins and gets bound. This is how the kernel
-   *finds* your hardware for you, handles hot-plug/removal, and lets you sit
-   cleanly beneath a bus. **Write new drivers this way.**
+   parent nodes. Ordinary nodes bind the best score; nodes marked
+   `B_FIND_MULTIPLE_CHILDREN` deliberately register every positive match. This
+   is how the kernel *finds* your hardware for you, handles hot-plug/removal,
+   and lets you sit cleanly beneath a bus. **Write new drivers this way.**
 
 Decision rule: if your device is enumerated by any bus (PCI/ACPI/I2C/USB), use
 `device_manager`. Reach for the legacy API only for a bus-less pseudo-device, or
@@ -96,10 +97,11 @@ static device_manager_info* sDeviceManager;
 static float
 foo_supports_device(device_node* parent)
 {
-	const char* bus;
+	const char* bus = NULL;
 	if (sDeviceManager->get_attr_string(parent, B_DEVICE_BUS, &bus, false)
-			!= B_OK)
+			!= B_OK || bus == NULL) {
 		return 0.0f;
+	}
 	if (strcmp(bus, "my_bus") != 0)
 		return 0.0f;
 	// Inspect vendor/device or ACPI HID here to be sure it is ours.
@@ -263,10 +265,12 @@ driver silently fails to bind. Full treatment, with both matching styles and
 
 ## Synchronization, the parts that bite
 
-- An **ISR must never block, sleep, or take a mutex.** Keep it tiny: acknowledge
-  the hardware, stash minimal state, wake a worker, return
+- An **ISR must never block, sleep, or take a mutex.** Keep it tiny: capture only
+  the evidence the hardware contract requires, acknowledge only when and where
+  that contract requires it, wake a worker, return
   `B_HANDLED_INTERRUPT` (or `B_INVOKE_SCHEDULER` if you released a semaphore that
-  should preempt).
+  should preempt). Some controllers need immediate W1C; others are safer when
+  the ISR treats the interrupt as an unordered hint.
 - The idiomatic pattern is **ISR + worker thread**: the ISR does
   `fEventCV.NotifyOne()` (or `release_sem`) and returns; a `spawn_kernel_thread`
   worker does the real, possibly-blocking work.

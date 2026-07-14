@@ -81,9 +81,13 @@ foo_free(void* _cookie)
 ### ISR rules (memorize)
 
 An interrupt handler runs in interrupt context. It **must not** block, sleep,
-`snooze`, take a `mutex`, or allocate. Keep it to: acknowledge/quiesce the
-hardware, copy out or stash minimal state, signal a worker, return. The return
-value (`headers/os/drivers/KernelExport.h`):
+`snooze`, take a `mutex`, or allocate. Keep it to the minimum required by the
+controller contract: establish whether the shared line may be yours, snapshot
+or acknowledge only the required status, signal a worker, and return. Do not
+make “the ISR always owns acknowledgement” a generic rule; some hardware needs
+immediate W1C while other designs safely treat the interrupt as an unordered
+hint and converge in the worker. The return value
+(`headers/os/drivers/KernelExport.h`):
 
 - `B_UNHANDLED_INTERRUPT` (`0`) — not mine, pass on.
 - `B_HANDLED_INTERRUPT` (`1`) — mine, done.

@@ -20,6 +20,9 @@ no `jido-renga` in `#include`s; mirror Haiku's device classes) read the root
 - The single integration seam is `<build-dir>/UserBuildConfig`, a file Haiku's
   `Jamrules` auto-includes from the build output directory. `tools/weave`
   renders and installs it. Nothing else in the captive scope is ever written.
+- The derivative revision is not another file graft. `tools/jr-jam` exports
+  `HAIKU_REVISION` before Jam starts, then removes Jam's cached revision only
+  when it disagrees with the requested value.
 
 ## The host build environment
 
@@ -63,7 +66,8 @@ three moves:
 `config/UserBuildConfig.in` is the checked-in template for move (1). `weave`
 substitutes this repo's absolute path and merges the result into
 `<build-dir>/UserBuildConfig` inside a managed marker block, so it coexists with
-any hand-kept settings and is safe to re-run.
+any hand-kept settings and is safe to re-run. It does not edit
+`build/BuildConfig`; always invoke builds through `tools/jr-jam`.
 
 ## Build procedure
 
@@ -194,6 +198,7 @@ Before shipping a BSP milestone:
 ```sh
 # Pure policy/concurrency coverage.
 make -C tests
+git diff --check
 
 # Cross-link every overlay module used by the BSP.
 cd generated.x86_64
@@ -226,6 +231,8 @@ and compare it with the built target. Record SHA-256 values for the anyboot,
 `haiku.hpkg`, and critical replacement binaries in the hardware validation
 ledger. Build success is not hardware proof: update that ledger only after the
 actual boot, identification, I/O, and device behavior have been observed.
+Before staging, inspect `git status` and exclude generated build output,
+research corpora, and dirty captive-submodule worktrees.
 
 ## Files you will touch
 
