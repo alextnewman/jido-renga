@@ -4,9 +4,11 @@
 Winky. It binds to an I2C child with ACPI HID or CID `ATML0000` and publishes a
 standard Haiku touchpad device.
 
-The Winky image uses Haiku's stock I2C bus manager. The driver's support
-callbacks treat missing or null device attributes as absent and do not require a
-replacement bus manager.
+The Winky image uses a small native I2C bus shim that omits absent ACPI HID/CID
+attributes during child-node registration. Haiku's device manager compares
+registered string attributes with `strcmp()`, so publishing a successful null
+string makes a later scan unsafe before any leaf driver's support callback runs.
+The Atmel callback independently treats missing or null attributes as absent.
 
 ## Device discovery
 

@@ -85,7 +85,7 @@ tools/weave generated.x86_64
 
 # 3. Build from inside the build dir, via the jr-jam wrapper.
 cd generated.x86_64
-../tools/jr-jam -q iosf_mbi sdhci_embedded \
+../tools/jr-jam -q i2c_guarded iosf_mbi sdhci_embedded \
   cros_ec_keyboard i2c_atmel_mxt
 
 # 4. (optional) Fold the selected BSP's add-ons into a bootable anyboot image
@@ -107,17 +107,16 @@ before the overlay walk to build the add-ons without a BSP image policy.
 
 ### Proven Winky composition
 
-The Winky image applies two surgical storage policies:
+The Winky image applies three surgical composition policies:
 
 1. Omit stock `add-ons/kernel/busses/mmc/sdhci`, package
    `sdhci_embedded` in its canonical bus directory, and create its boot link.
 2. Package `iosf_mbi` and create its boot link so the SDHCI dependency is
    available before boot-media discovery.
-
-Haiku's stock `add-ons/kernel/bus_managers/i2c` remains in the package. Leaf
-support callbacks must treat a successful null string attribute as absent;
-this preserves stock consumers, including `i2c_elan`, without replacing the
-shared bus manager.
+3. Build the native `i2c_guarded` shim, which omits absent ACPI HID/CID
+   attributes during child registration, then package it under the canonical
+   `bus_managers/i2c` filename. Unchanged I2C companion units compile directly
+   from the captive tree; no captive source is copied or rewritten.
 
 ## The derivative-revision seam
 
@@ -251,7 +250,7 @@ git diff --check
 
 # Cross-link every overlay module used by the BSP.
 cd generated.x86_64
-../tools/jr-jam -q iosf_mbi sdhci_embedded \
+../tools/jr-jam -q i2c_guarded iosf_mbi sdhci_embedded \
   cros_ec_keyboard i2c_atmel_mxt
 
 # Compose the real package/image, not only loose add-ons.
@@ -274,7 +273,7 @@ For Winky, require all of these:
 - `add-ons/kernel/drivers/input/i2c_atmel_mxt`
 - `add-ons/kernel/drivers/input/i2c_elan`
 - no stock `add-ons/kernel/busses/mmc/sdhci`
-- no overlay `i2c_guarded` target or replacement bus manager
+- the canonical `bus_managers/i2c` entry matches the `i2c_guarded` target
 
 When a target is renamed during packaging, extract the canonical package entry
 and compare it with the built target. Keep transient hashes and inspection

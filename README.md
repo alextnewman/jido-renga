@@ -89,7 +89,7 @@ cd generated.x86_64
 cd ..
 tools/weave generated.x86_64
 cd generated.x86_64
-../tools/jr-jam -q iosf_mbi sdhci_embedded \
+../tools/jr-jam -q i2c_guarded iosf_mbi sdhci_embedded \
   cros_ec_keyboard i2c_atmel_mxt
 ```
 

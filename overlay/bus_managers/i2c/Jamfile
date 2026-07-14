@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
+# SPDX-License-Identifier: MIT
+# SPDX-FileContributor: Generated with GitHub Copilot
+
+SubDir JIDO_RENGA_TOP overlay bus_managers i2c ;
+
+UsePrivateHeaders i2c ;
+UsePrivateKernelHeaders ;
+
+local captiveI2c = [ FDirName $(HAIKU_TOP)
+	src add-ons kernel bus_managers i2c ] ;
+SubDirHdrs $(captiveI2c) ;
+SEARCH_SOURCE += $(captiveI2c) ;
+
+# This translation unit owns I2C child registration. Unchanged device, module,
+# and raw-bus plumbing is compiled directly from the captive Haiku tree.
+KernelAddon i2c_guarded :
+	I2CBus.cpp
+	I2CDevice.cpp
+	I2CModule.cpp
+	bus_raw.cpp
+	;
