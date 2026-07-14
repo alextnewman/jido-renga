@@ -465,8 +465,6 @@ Current limits:
   as a persistent diagnostic.
 - Removable-media failure recovery is implemented but still requires broader
   physical removal and replacement testing.
-- The current image uses Haiku's stock I2C manager; the complete stock-I2C input
-  composition requires a final live regression check.
 
 ## 13. Extending the contract
 

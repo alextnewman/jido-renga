@@ -49,7 +49,6 @@ The first BSP targets the Samsung Chromebook 2 `XE500C12`, ChromeOS board
 
 Winky boots Haiku from removable SD, identifies and uses its eMMC, supports
 installation to eMMC, and provides working keyboard and touchpad input.
-A final live Winky input regression remains outstanding.
 
 The Winky BSP is intentionally exclusive where controllers cannot safely have
 two owners. Its image omits Haiku's generic SDHCI add-on and installs
