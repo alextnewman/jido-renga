@@ -1,3 +1,24 @@
+```
+━━〘 自動連歌 · JIDŌ RENGA 〙━━━━━━━━━━━━━━
+
+            ██╗██╗██████╗  ██████╗
+            ██║██║██╔══██╗██╔═══██╗
+            ██║██║██║  ██║██║   ██║
+       ██   ██║██║██║  ██║██║   ██║
+       ╚█████╔╝██║██████╔╝╚██████╔╝
+        ╚════╝ ╚═╝╚═════╝  ╚═════╝
+██████╗ ███████╗███╗   ██╗ ██████╗  █████╗
+██╔══██╗██╔════╝████╗  ██║██╔════╝ ██╔══██╗
+██████╔╝█████╗  ██╔██╗ ██║██║  ███╗███████║
+██╔══██╗██╔══╝  ██║╚██╗██║██║   ██║██╔══██║
+██║  ██║███████╗██║ ╚████║╚██████╔╝██║  ██║
+╚═╝  ╚═╝╚══════╝╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═╝
+
+  ⟳──◇──◇──◇   self-moving linked verse — the poem continues
+               itself, stanza after stanza, with no hand.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
 # Jidō Renga
 
 **Out-of-tree device drivers for [Haiku](https://www.haiku-os.org/), developed
@@ -28,13 +49,12 @@ The first BSP targets the Samsung Chromebook 2 `XE500C12`, ChromeOS board
 
 Winky boots Haiku from removable SD, identifies and uses its eMMC, supports
 installation to eMMC, and provides working keyboard and touchpad input.
-The current stock-I2C image composition still needs a final live input
-regression check.
+A final live Winky input regression remains outstanding.
 
 The Winky BSP is intentionally exclusive where controllers cannot safely have
 two owners. Its image omits Haiku's generic SDHCI add-on and installs
-`sdhci_embedded` instead. It retains Haiku's stock I2C bus manager and stock
-drivers that do not conflict.
+`sdhci_embedded` instead; otherwise normal Haiku image composition is left
+alone.
 
 ## Relationship with Haiku
 
@@ -131,11 +151,6 @@ Hardware-independent policy is separated where practical so it can be tested
 on the host. Hardware contracts, concurrency invariants, and current
 limitations are documented; investigation transcripts and temporary build
 evidence are not part of the repository documentation.
-
-The SDHCI driver's interrupt architecture is the
-[**meow bus**](docs/design/sdhci_embedded.md#the-meow-bus): interrupts are
-untrusted wake hints, and only worker-observed controller state determines what
-actually happened.
 
 AI does substantial implementation work here, but human direction and review
 remain part of the design. Generated code is expected to meet the same
