@@ -9,12 +9,9 @@
 // (T5 message processor, T7 power, T100 touch, T19 GPIO, ...). If parsing is
 // wrong, every subsequent register access is wrong, so it is worth pinning.
 //
-// The CRC-24 routines are exercised as *characterization* only. As of this pass
-// they are dead code (VerifyCRC has no caller and MxtDevice notes "CRC disabled
-// on this device"), and their correctness versus the controller is an open
-// question — see docs/design/improvement-log.md. These tests capture current
-// behavior so any future change is caught for review; they do NOT bless the
-// values as hardware-correct.
+// The CRC-24 routines are characterization only. Runtime does not use them, and
+// the batch and streaming implementations disagree. These tests lock current
+// behavior without claiming that either value is hardware-correct.
 
 #include "framework/jr_test.h"
 
@@ -23,9 +20,7 @@
 
 namespace {
 
-// Streaming CRC over a whole buffer, mirroring how a caller would drive the
-// mxt_crc24_init/update/finish API. Used to demonstrate that the streaming and
-// batch implementations currently disagree.
+// Drive the streaming CRC API over a complete buffer.
 uint32
 StreamingCrc(uint8* data, size_t length)
 {
@@ -122,10 +117,8 @@ JR_TEST(object_table, rejects_malformed_tables)
 
 JR_TEST(object_table, crc24_batch_is_stable)
 {
-	// Characterization of the live batch routine (the one VerifyCRC uses).
-	// Values were hand-derived from the pair-based algorithm in ObjectTable.cpp
-	// and are pinned so an accidental change to the hot path is caught. They are
-	// NOT independently verified against controller silicon.
+	// Lock the batch routine's current output without treating it as a protocol
+	// reference value.
 	uint8 data[] = { 0x01, 0x02, 0x03, 0x04 };
 
 	uint32 even = mxt_crc24_compute(data, sizeof(data));
@@ -143,11 +136,9 @@ JR_TEST(object_table, crc24_batch_is_stable)
 
 JR_TEST(object_table, crc24_streaming_diverges_from_batch)
 {
-	// KNOWN DISCREPANCY (docs/design/improvement-log.md): the streaming
-	// mxt_crc24_update/finish path does not reproduce the batch result for the
-	// same bytes. Both paths are presently dead code. This test pins the
-	// divergence so that "fixing" either implementation in isolation trips a
-	// review rather than silently changing behavior.
+	// The unused streaming path does not reproduce the batch result. Keep the
+	// discrepancy visible until both implementations can be checked against
+	// controller data.
 	uint8 data[] = { 0x01, 0x02, 0x03, 0x04 };
 
 	uint32 batch = mxt_crc24_compute(data, sizeof(data));

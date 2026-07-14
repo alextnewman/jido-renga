@@ -51,9 +51,8 @@ JR_TEST(convergence, storm_safe_idle_clear)
 	// (it is in the signal-enabled set), so nothing keeps the line asserted.
 	JR_CHECK(StormSafeIdleClear(irq::kCommandComplete) == irq::kCommandComplete);
 
-	// Bits outside the signal-enabled set are not our concern on the idle path;
-	// they cannot assert the line, so we leave them untouched rather than risk a
-	// spurious write to a register we do not manage.
+	// Bits outside the signal-enabled set cannot assert this line and must not
+	// be acknowledged by the idle path.
 	const uint32_t foreign = 1u << 30;
 	JR_CHECK((kSignalMask & foreign) == 0u);
 	JR_CHECK(StormSafeIdleClear(foreign | irq::kCommandComplete)

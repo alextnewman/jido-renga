@@ -7,9 +7,7 @@
 
 #include "Convergence.h"
 
-// A tiny *reacting* model of an SDHCI controller's interrupt-status evolution
-// for a single command. It does not virtualize a kernel -- it just codifies our
-// timing assumptions so the real poll classifier can be driven against them:
+// Reacting model of one command's interrupt-status evolution:
 //
 //   * a command presents CommandComplete at `cmdCompleteAtPoll`;
 //   * a data command presents TransferComplete later, at `xferCompleteAtPoll`;

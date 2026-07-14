@@ -4,16 +4,11 @@
 
 SubDir JIDO_RENGA_TOP overlay bus_managers iosf_mbi ;
 
-# Kernel ABI comes from the captive Haiku submodule (correct build-time
-# vendoring, not a leak).
+# Kernel ABI comes from the captive Haiku submodule.
 UsePrivateKernelHeaders ;
 
-# iosf_mbi is a SHARED jido-renga module: consumed by other overlay drivers
-# (e.g. sdhci), never referenced outside jido-renga. Its public API is
-# published from the overlay's own shared include root and included as
-# <common/iosf_mbi.h> -- we deliberately do NOT reuse Haiku's
-# "UsePrivateHeaders drivers" (that would put it in Haiku's <drivers/...>
-# namespace). Intentionally vendored, with our own identifier.
+# Shared consumers include the module API as <common/iosf_mbi.h>. It must remain
+# outside Haiku's private <drivers/...> namespace.
 SubDirSysHdrs $(JIDO_RENGA_TOP) overlay headers ;
 
 if $(TARGET_ARCH) = "x86" || $(TARGET_ARCH) = "x86_64" {

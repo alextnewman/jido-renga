@@ -114,11 +114,10 @@ SdhciController::Boot()
 		return status;
 	_InitPlatformControl();
 
-	// Bay Trail only: clear the SCC over-current-protection timeout via IOSF-MBI
-	// BEFORE we touch a single SDHCI register. If OCP is left armed, the reset
+	// Bay Trail requires the SCC over-current-protection timeout to be cleared
+	// through IOSF-MBI before any SDHCI register access. If left armed, reset
 	// and every long (R1b / data) command trips it and the controller wedges.
-	// This runs on a different bus (PCI sideband on the host bridge), so it is
-	// independent of our MMIO mapping and must precede fEngine.Init()'s reset.
+	// PCI sideband access is independent of the mapped SDHCI register block.
 	status = _ApplyOcpFixup();
 	if (status != B_OK)
 		return status;
@@ -128,18 +127,13 @@ SdhciController::Boot()
 	if (status != B_OK)
 		return status;
 
-	// The engine's worker is now running (with its idle-drain), so it is safe to
-	// route the hardware line into the "meow". We install after Init -- never
-	// before -- so an early pulse can never reach an unbuilt condition variable;
-	// until this point the worker relied on its recheck timer, which is only a
-	// latency difference, not a correctness one.
+	// Install the meow source only after the worker and condition variable exist.
+	// Before this point the worker's timed recheck preserves correctness.
 	status = _InstallInterrupt();
 	if (status != B_OK)
 		return status;
 
-	// Init() has already raised VDD and dropped the bus to the 400 kHz
-	// identification clock (mirroring the reference constructor), so probing can
-	// begin immediately.
+	// Init() leaves the powered bus at the 400 kHz identification baseline.
 	status = _IdentifyCard();
 	if (status != B_OK)
 		return status;
@@ -299,9 +293,7 @@ SdhciController::_ApplyOcpFixup()
 status_t
 SdhciController::_MapResources()
 {
-	// Flattened topology: register_node() bound us directly under the ACPI
-	// device, so our immediate parent *is* the node carrying _CRS (one level up,
-	// unlike the reference driver, which has an extra SDHC-bus meta-node).
+	// The immediate ACPI parent owns the controller's _CRS resources.
 	device_node* parent = gDeviceManager->get_parent_node(fNode);
 	if (parent == nullptr)
 		return B_ERROR;
@@ -405,13 +397,8 @@ SdhciController::_PublishDisk()
 void
 SdhciController::_StartWatcher()
 {
-	// The full thread topology, made explicit: boot is a single ACTIVE INIT on
-	// the device_manager thread (already done by the time we get here), and this
-	// watcher covers only FUTURE insert/remove events. A soldered eMMC part has
-	// no card-detect line and can never change, so we spawn NOTHING for it -- the
-	// controller then runs with exactly one long-lived thread (the engine
-	// worker). A removable SD slot adds this one poller. Nothing hot-plug-related
-	// ever runs at boot.
+	// Only removable media needs a post-publication insertion/removal watcher.
+	// Soldered eMMC retains only the engine worker.
 	if (!fRemovable) {
 		JR_TRACE_ALWAYS(fLabel, "non-removable slot: no hot-plug watcher\n");
 		return;

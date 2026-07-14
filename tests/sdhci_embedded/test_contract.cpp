@@ -32,9 +32,7 @@ DriveToDone(const jr::test::FakeController& hw, bool dataPresent, uint32_t& atPo
 }
 
 
-// The headline: a reacting mock that codifies "command-complete precedes
-// transfer-complete" drives the real classifier, and the shared contract
-// predicate confirms the completion is justified -- at the transfer, not before.
+// Data-command completion is justified only by TransferComplete.
 JR_TEST(contract, data_command_waits_for_transfer_complete)
 {
 	jr::test::FakeController hw;
@@ -51,10 +49,7 @@ JR_TEST(contract, data_command_waits_for_transfer_complete)
 }
 
 
-// The guard proper: the OLD data-unaware rule (InterpretInterruptStatus) would
-// have stopped at command-complete, and the shared contract catches that this
-// is NOT a justified completion for a data command. This is bug #4, reproduced
-// and now fenced by an executable assumption.
+// A command-only verdict violates the data-command completion contract.
 JR_TEST(contract, data_unaware_completion_violates_the_contract)
 {
 	jr::test::FakeController hw;

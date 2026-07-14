@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
 // SPDX-License-Identifier: MIT
 // SPDX-FileContributor: Generated with Qwen 3.6
+// SPDX-FileContributor: Generated with GitHub Copilot
 
 //! Stateful touch engine for Atmel maXTouch controllers.
 // Tracks individual contacts, persistent button state, and classifies
@@ -59,9 +60,7 @@ TouchEngine::ProcessMessage(const uint8* msg, size_t msgSize,
 		return _ParseT100Contact(msg, msgSize, t100ReportIDMin);
 	}
 
-	// T19 GPIO (clickpad button) — update persistent button state.
-	// T19 messages are change-only; the engine carries the last known
-	// value forward across drain cycles so clicks are never missed.
+	// T19 is change-only, so button state persists between messages.
 	if (t19ReportID != 0 && reportID == t19ReportID) {
 		if (msgSize >= 2) {
 			uint8 gpio = msg[1];
@@ -171,9 +170,7 @@ TouchEngine::ButtonPressed() const
 uint8
 TouchEngine::_ContactIndex(uint8 reportID, uint8 reportIDMin) const
 {
-	// Each contact has a unique, stable report ID. The index into our
-	// contact table is the offset from the minimum report ID for this
-	// object type.
+	// Contact-table indices are offsets from the object's minimum report ID.
 	return MIN(reportID - reportIDMin, MXT_MAX_CONTACTS - 1);
 }
 
@@ -241,9 +238,7 @@ TouchEngine::_ParseT9Contact(const uint8* msg, size_t msgSize,
 		contact->deltaY = 0;
 	}
 
-	// Mark as updated this cycle so Flush() knows the finger is still down.
-	// Without this, contacts expire on cycle 2 (press=false from cycle 1
-	// cleanup → treated as "no message" → expired).
+	// Flush() treats press as the per-cycle contact refresh marker.
 	contact->press = true;
 
 	contact->x = x;
@@ -308,8 +303,7 @@ TouchEngine::_ParseT100Contact(const uint8* msg, size_t msgSize,
 	if (msgSize >= 8)
 		area = msg[7];
 
-	// T100 has no explicit PRESS/RELEASE flags. Infer press from
-	// contact not being in our table (new arrival).
+	// T100 contact arrival is inferred from the persistent contact table.
 	uint8 index = _ContactIndex(msg[0], reportIDMin);
 	mxt_contact_state* contact = &fContacts[index];
 
@@ -322,7 +316,7 @@ TouchEngine::_ParseT100Contact(const uint8* msg, size_t msgSize,
 		contact->deltaY = 0;
 	}
 
-	// Mark as updated this cycle (same rationale as T9 path).
+	// Mark the contact as refreshed for this drain cycle.
 	contact->press = true;
 
 	contact->x = x;

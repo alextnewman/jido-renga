@@ -77,7 +77,9 @@ Groups, separated by a blank line, **alphabetized within each group**:
 
 - Doxygen for API/interface documentation. File/function doc uses `/*!` … `*/`
   or `//!` for the brief.
-- Comment **why**, not what. Don't narrate obvious code.
+- Comment contracts, invariants, hardware meaning, units, and non-obvious safety
+  requirements. Do not narrate debugging history, discarded approaches,
+  external source-reading, or obvious code.
 - Section banners are fine sparingly; keep them short.
 
 ## Tooling

@@ -1,7 +1,7 @@
 # Winky Bay Trail SDHCI Hardware Contract
 
-This is the living hardware and platform contract for the `winky` BSP. It
-describes what the composed image and `sdhci_embedded` driver must assume,
+This document defines the hardware and platform contract for the `winky` BSP.
+It describes what the composed image and `sdhci_embedded` driver must assume,
 provide, verify, and publish for the Intel Bay Trail storage controllers in the
 Samsung Chromebook 2 (Winky).
 
@@ -252,7 +252,7 @@ The required sequence is:
 5. Intersect card OCR with host-supported voltage windows.
 6. Repeat CMD1 with the selected voltage and sector-mode bit until ready.
 7. CMD2, host-assigned RCA 1 through CMD3, CMD9, then CMD7 with a plain R1
-   response, matching Linux's MMC core.
+   response.
 8. Read the mandatory 512-byte EXT_CSD with CMD8.
 9. Require non-zero EXT_CSD `SEC_COUNT`; publish 512-byte logical sectors.
 
@@ -445,80 +445,28 @@ Recovery is selected by what state may have been lost:
 - Scheduler and DMA resources must be destroyed before the controller worker and
   MMIO mapping are torn down.
 
-## 12. Validation ledger
+## 12. Current validation status
 
-This table prevents implementation status from being mistaken for hardware
-proof.
+The following behavior is validated on Winky:
 
-| Contract area | Current status |
+| Area | Status |
 |---|---|
-| Winky-exclusive package composition | Built and inspected |
-| Stage-two visibility and ACPI driver binding | Confirmed on Winky |
-| ACPI resource mapping | Confirmed; eMMC observed on IRQ 44 |
-| Formal `sdhci_embedded -> iosf_mbi` dependency | Built and ELF-inspected |
-| Formal IOSF PCI/device-manager dependency | Built and ELF-inspected |
-| Early x86 PCI registration before ACPI boot media | Confirmed on Winky |
-| IOSF host bridge access and OCP readback | Confirmed on Winky; OCP timeout field observed already clear |
-| Host reset, power, and card identification | Confirmed for both controllers: SD identifies, negotiates 4-bit high-speed at 50 MHz, discovers partitions, and boots; eMMC completes identification and publishes a writable disk |
-| Filtered ISR and snapshot-acknowledged convergence | Confirmed far enough on Winky to identify SD, negotiate high speed, and publish the disk |
-| ADMA2 descriptor policy | Host-tested |
-| Removable-SD `IOSchedulerSimple` path | Rejected: KDL showed `R15 = 0xdeadbeefdeadbeef` at `owner->operations.RemoveHead()`, proving a freed `RequestOwner` after a partial-operation error |
-| Staged removable-SD SDMA request worker | Confirmed on Winky through partition discovery and boot after correcting the `IORequest::CopyData()` direction |
-| 32-bit capability and ADMA MMIO access widths | Confirmed by Winky capability logs and cross-compiled object inspection |
-| eMMC CMD7 response | Linux-aligned plain R1 selection confirmed by successful eMMC identification and sustained block I/O; the former `0xef924000` stale-CMD9 failure is gone |
-| eMMC ADMA2 data transfer | Confirmed on Winky by installing Haiku onto the eMMC through the ADMA2 path; sustained performance was reported as fast |
-| eMMC HS200/DDR52/HS52/HS26 ladder | Negotiation completes and supports the validated installation workload; the exact selected rung was not captured in the milestone log |
-| SD UHS/high-speed ladder | High-speed 4-bit 50 MHz confirmed on Winky; UHS remains disabled because Intel DSM is unavailable |
-| Removable-media recovery | Implemented; awaiting hardware validation |
-| Winky I2C input composition | The Atmel touchpad, stock Elan support, and ChromeOS EC keyboard were confirmed together on Winky; current source restores Haiku's stock I2C manager and awaits live validation |
+| Image ownership | JR `sdhci_embedded` is present with its boot link; stock `sdhci` is absent |
+| Early dependency order | `iosf_mbi`, PCI registration, ACPI binding, and IOSF OCP access complete before SDHCI MMIO |
+| Removable SD | Identifies, negotiates four-bit high-speed at 50 MHz, discovers partitions, and boots Haiku through the staged SDMA path |
+| eMMC | Identifies, publishes writable media, and supports installation and sustained block I/O through ADMA2 |
+| Interrupt convergence | Supports identification and runtime traffic without treating interrupt delivery as authoritative |
+| Input drivers | JR keyboard and Atmel touchpad behavior is validated on Winky |
 
-The hardware-validated milestone artifact is:
+Current limits:
 
-```text
-generated.x86_64/haiku-nightly-anyboot.iso
-SHA-256 556e56770597630955a08884930d53e8edc1b2609de26916f8ba24fb8a2744fb
-```
-
-Its `haiku.hpkg` checksum is
-`0ab25cd782afde011309f9af6219e4cf64a34b0f1851a904ca7fd5c1bcdc6ce7`.
-The staged `sdhci_embedded` is byte-identical to the inspected build output
-(`cb991c9cc26b23ad6785581cd836c132896d20beaed37586834b5878bdcc1aa8`);
-the package contains its boot link and no stock `sdhci` add-on. That historical
-artifact used the temporary guarded I2C experiment. Current source removes the
-replacement and restores Haiku's stock `bus_managers/i2c`; the input directory
-continues to contain both `i2c_atmel_mxt` and stock `i2c_elan`.
-
-### 12.1 July 2026 Winky milestone
-
-The artifact above crossed the line from bring-up image to usable system:
-
-- Haiku boots from the removable SD path backed by the serialized SDMA worker.
-- The soldered eMMC identifies successfully after the Linux-aligned CMD7 fix.
-- A complete Haiku installation was written to eMMC through ADMA2, with
-  subjectively high throughput and no storage fault.
-- The composed I2C/input stack initializes and the Winky keyboard and touchpad
-  work.
-
-This is the first end-to-end proof of the BSP contract: composition, boot-media
-discovery, both embedded storage hosts, DMA block I/O, and machine-specific
-input all operate together in one image.
-
-### 12.2 Stock I2C restoration package
-
-The first package-only update after the milestone removes the temporary I2C
-replacement and restores Haiku's stock manager:
-
-```text
-version r1~beta5_hrev57937_jido_renga_0.1.1-1
-haiku.hpkg SHA-256 481a5bb94de5a0f3dacb3a482bb68dbb138e0c4e9ac3c8927d10ff65a8bafefb
-stock bus_managers/i2c SHA-256 e8f1292fdca87c6f5c46ea35a4b9eddaf1bcc19f407753e5e7c4c9929a4a14e7
-```
-
-Archive inspection confirms the stock canonical I2C entry, both Atmel and Elan
-input drivers, `iosf_mbi`, and `sdhci_embedded` with their boot links. It
-contains neither `i2c_guarded` nor stock `busses/mmc/sdhci`. The packaged I2C
-binary is byte-identical to Haiku's staged stock build. This package is
-build-validated and still requires a Winky boot/input check.
+- SD UHS modes remain disabled when the Intel DSM interface is unavailable.
+- The exact eMMC timing rung selected by the current mode ladder is not exposed
+  as a persistent diagnostic.
+- Removable-media failure recovery is implemented but still requires broader
+  physical removal and replacement testing.
+- The current image uses Haiku's stock I2C manager; the complete stock-I2C input
+  composition requires a final live regression check.
 
 ## 13. Extending the contract
 
@@ -532,7 +480,7 @@ A new BSP must declare its own:
 - card roles, widths, mode ceilings, and fallback ladders;
 - DMA address and descriptor limits;
 - interrupt-sharing assumptions;
-- hardware validation ledger.
+- current hardware validation status and known limits.
 
 Do not broaden an existing matcher merely because a controller looks similar.
 Explicit platform contracts are the mechanism by which Jido Renga remains

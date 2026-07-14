@@ -5,13 +5,8 @@
 
 #include <stdint.h>
 
-// Pure IOSF-MBI message-bus wire protocol -- no kernel dependencies, so the
-// encoding can be proven on the host. On BayTrail/CherryTrail the sideband
-// message bus is driven through three PCI config registers of the SoC
-// transaction router (host bridge, 0:0:0): MCR, MDR, MCRX. A transaction is a
-// write to MCRX (high offset bits) + MCR (opcode/port/low-offset), then a
-// read/write of MDR (the data). This mirrors Linux's mbi_form_mcr and the
-// MBI_MASK_HI / MBI_MASK_LO split in arch/x86/platform/intel/iosf_mbi.c.
+// Kernel-independent IOSF-MBI wire encoding. The SoC transaction router at
+// 0:0.0 exposes MCR, MDR, and MCRX in PCI configuration space.
 
 namespace jr::iosf {
 
@@ -35,7 +30,7 @@ constexpr uint8_t kMcrOffset  = 0xd0;	// Message Control Register
 constexpr uint8_t kMdrOffset  = 0xd4;	// Message Data Register
 constexpr uint8_t kMcrxOffset = 0xd8;	// Message Control Register eXtended
 
-// The MCR low byte is a fixed all-byte-enables pattern (Linux MBI_ENABLE).
+// The MCR low byte enables all four data bytes.
 constexpr uint32_t kMbiByteEnable = 0xf0;
 
 
@@ -53,9 +48,8 @@ FormMcr(uint8_t opcode, uint8_t port, uint32_t offset) noexcept
 }
 
 
-// The high 24 bits of the target offset go in MCRX. Zero means "no extended
-// register write needed" -- callers skip the MCRX write in that case, matching
-// Linux's `if (mcrx)` guard.
+// MCRX carries the high 24 bits of the target offset. Callers must write it for
+// every transaction, including zero, to clear a previous extended address.
 constexpr uint32_t
 McrxFor(uint32_t offset) noexcept
 {

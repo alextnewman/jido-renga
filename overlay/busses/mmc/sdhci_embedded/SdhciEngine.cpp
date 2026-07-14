@@ -10,24 +10,19 @@
 #include <util/AutoLock.h>
 #include <vm/vm.h>			// create_area_etc + address restriction structs
 
-// The engine is the *mechanism*: register pokes plus the worker thread. All the
-// "what does this mean / should we retry" judgement lives in the pure, host-
-// tested Convergence policy -- this file just calls it and obeys.
+// Register access and worker plumbing; convergence policy is defined separately.
 
 namespace jr::sdhci {
 
 
 namespace {
-	// The worker never busy-spins on this soft controller. Between looks it waits
-	// on the meow condition variable with a timeout: a meow (interrupt) cuts the
-	// wait short -- as fast as interrupts; the timeout guarantees a look even when
-	// the line stays silent -- as slow as polling. Deliberately lazy cadences,
-	// because hammering Bay Trail's bus in a tight loop can wedge it.
+	// Timed condition-variable waits cover missed interrupts without busy-spinning
+	// a controller that can wedge under aggressive polling.
 	constexpr bigtime_t	kRecheckIntervalUs = 2000;			// in-command meow recheck
 	constexpr bigtime_t	kDispatchRecheckUs = 100LL * 1000;	// idle-worker recheck (~100ms)
 	// Per-attempt wall-clock budget when the command carries no timeout of its
 	// own (data commands ask for seconds via their constraints).
-	constexpr bigtime_t	kDefaultAttemptBudgetUs = 2000LL * 1000;	// ~2s (matches fork default)
+	constexpr bigtime_t	kDefaultAttemptBudgetUs = 2000LL * 1000;	// ~2s
 	constexpr bigtime_t	kInhibitPollUs = 100;				// pre-issue inhibit settle
 	constexpr uint32_t	kInhibitGracePolls = 100;			// ~10ms grace, then Busy
 	constexpr bigtime_t	kRetryBackoffUs = 5000;				// backoff base between attempts
@@ -205,14 +200,11 @@ SdhciEngine::Init(volatile RegisterBlock* regs, const HostPersonality* personali
 	fCompletion = create_sem(0, "sdhci_emb completion");
 	if (fCompletion < 0)
 		return fCompletion;
-	// The meow: an anonymous condition variable pulsed by the ISR and by callers
-	// posting work. Lossy by design -- a missed pulse just becomes a timed
-	// recheck, never a lost command.
+	// Lossy wake hint; timed rechecks cover missed pulses.
 	fMeowCV.Init(this, "sdhci_emb meow");
 
-	// Make sure we are in a sane state: full software reset. (The IOSF-MBI OCP
-	// fixup, when required, has already been applied by the Controller before
-	// this call -- it must precede any SDHCI register access.)
+	// The Controller applies any required IOSF-MBI fixup before this first SDHCI
+	// access.
 	if (!fRegs->softwareReset.ResetAll())
 		return B_TIMED_OUT;
 
@@ -327,9 +319,7 @@ status_t
 SdhciEngine::ReadDataBlock(Cmd command, uint32_t argument, ReplyType reply,
 	void* buffer, uint32_t size)
 {
-	// Allocate a DMA-safe, physically-contiguous, 32-bit-addressable scratch
-	// buffer for the single-block read (mirrors the fork's EXT_CSD path). SDMA
-	// can only address 32 bits, so cap the physical range accordingly.
+	// Single-block SDMA requires a physically contiguous buffer below 4 GiB.
 	virtual_address_restrictions vRestrictions = {};
 	vRestrictions.address_specification = B_ANY_KERNEL_ADDRESS;
 	physical_address_restrictions pRestrictions = {};
@@ -408,19 +398,15 @@ SdhciEngine::_Submit(Cmd command, uint32_t argument, ReplyType reply,
 			txn->transferMode = data->transferMode;
 	}
 
-	// Capture policy and dialect on the ticket itself. A worker still finishing
-	// a previously-timed-out command reads *its* ticket, so it can never race
-	// the state this new call is setting up.
+	// Policy and dialect remain attached to the transaction for its full lifetime.
 	txn->constraints = constraints;
 	txn->dialect = fActiveDialect;
 
-	// Drain any stale completion signal from a previously-abandoned command so
-	// the wait below starts from a clean slate.
+	// Discard stale completion signals; the ticket's IsDone() remains truth.
 	while (acquire_sem_etc(fCompletion, 1, B_RELATIVE_TIMEOUT, 0) == B_OK)
 		;
 
-	// Hand a reference to the worker so a late completion after a timeout can
-	// never use-after-free the ticket (stale-discard intent of the tested model).
+	// The worker reference keeps the ticket alive through late completion.
 	txn->Retain();
 	fMailbox.Post(txn);
 	fMeowCV.NotifyAll();		// pulse the worker to claim the mailbox
@@ -437,9 +423,8 @@ SdhciEngine::_Submit(Cmd command, uint32_t argument, ReplyType reply,
 			return acquired;
 	}
 
-	// Our transaction is done and the worker is no longer touching it (its last
-	// write happened-before the completion release we just acquired). Copy the
-	// response out of the ticket into caller storage.
+	// The completion acquire orders the worker's final ticket write before this
+	// response copy.
 	for (int i = 0; i < 4; i++)
 		outcome.response[i] = txn->responseWords[i];
 	outcome.result = txn->result >= 0 ? AttemptResult::Ok : AttemptResult::Error;
@@ -470,13 +455,8 @@ SdhciEngine::_WorkerLoop()
 		if (!fWorkerRunning)
 			break;
 
-		// Idle wait, the same shape as the in-command loop: pre-arm a meow entry,
-		// then re-check the mailbox. Arming *before* the check means a post+meow
-		// that races us is never lost -- if work arrived after Add(), the pulse
-		// marks our entry and Wait() returns at once; if it arrived before,
-		// Empty() is false and we skip the wait entirely. A wholly missed meow
-		// just falls through to the ~100ms recheck. Bay Trail's line is never
-		// trusted to fire, so the timer is the backstop, not the plan.
+		// Arm before checking the mailbox to close the lost-wakeup window. The
+		// timeout covers an absent interrupt.
 		ConditionVariableEntry entry;
 		fMeowCV.Add(&entry);
 		if (fMailbox.Empty() && fWorkerRunning)
@@ -531,9 +511,7 @@ SdhciEngine::_DriveTransaction(Transaction& txn)
 			reply = overridden;
 	}
 
-	// A zero-block data command would trip Bay Trail's strict data-length check;
-	// the reference driver treats it as a no-op success rather than touching
-	// hardware at all.
+	// Bay Trail rejects zero-block data commands; treat them as no-op success.
 	if (txn.dataPresent && txn.blockCount == 0) {
 		JR_TRACE_ALWAYS(fLabel, "zero block count with data present; skipping\n");
 		txn.MarkDone(B_OK);
@@ -553,13 +531,10 @@ SdhciEngine::_DriveTransaction(Transaction& txn)
 			const bigtime_t deadline = system_time() + attemptBudgetUs;
 			bool wokeByMeow = false;
 
-			// Pre-armed poll -> CV wait -> re-poll: the heart of the meow bus.
-			// Each pass arms a wakeup entry *before* looking, so a meow that
-			// fires while we read is not lost. Each snapshot is acknowledged
-			// immediately to lower the level-triggered line, while its meaningful
-			// bits accumulate in worker-owned state. ClassifyPoll alone decides
-			// convergence, so split, early, duplicate, spurious, late, and
-			// wrong-command pulses remain harmless.
+			// The heart of the meow bus: arm before looking, inspect and clear
+			// the hardware, then sleep until another meow or the polling
+			// backstop. Accumulated state, never the sound itself, determines the
+			// terminal verdict.
 			for (;;) {
 				ConditionVariableEntry entry;
 				fMeowCV.Add(&entry);
@@ -571,10 +546,8 @@ SdhciEngine::_DriveTransaction(Transaction& txn)
 				accumulatedStatus
 					= AccumulateInterruptStatus(accumulatedStatus, snapshot);
 
-				// A data transaction is only truly finished on TransferComplete:
-				// the controller raises CommandComplete first (command accepted)
-				// while the DMA/data phase is still running. That data-aware rule
-				// lives in the pure, host-proven core (ClassifyPoll).
+				// Data commands require TransferComplete; CommandComplete may
+				// arrive while DMA is still active.
 				const PollVerdict verdict
 					= ClassifyPoll(accumulatedStatus, txn.dataPresent, txn.tuning);
 
@@ -1012,8 +985,7 @@ SdhciEngine::RecoverBus()
 void
 SdhciEngine::_TerminateBus()
 {
-	// Cut the line, the clock, and the power -- the first half of the heavy
-	// recovery hammer.
+	// Quiesce interrupt, clock, and power before destructive recovery.
 	fRegs->interruptSignalEnable = 0;
 	fRegs->interruptStatusEnable = 0;
 	fRegs->clockControl.DisableSdClock();

@@ -29,7 +29,7 @@ class SdhciEngine;
 
 // The DMA constraints a strategy imposes, in dependency-free form. The
 // Controller translates this into the kernel's dma_restrictions when it builds
-// the DMA resource -- our headers stay clean of private kernel source headers.
+// the DMA resource, keeping private kernel types out of this header.
 struct DmaRestrictions {
 	uint64_t	lowAddress = 0;
 	uint64_t	highAddress = 0;		// 0 == no ceiling
@@ -43,10 +43,10 @@ struct DmaRestrictions {
 
 // Disk -- the DMA-strategy axis, and node #2 (the devfs-published device).
 //
-// This is the second (and last) device_manager node we create. A Disk turns
+// This is the second and final device_manager node. A Disk turns
 // block IORequests into card commands, and the *strategy* subclass decides how
 // bytes move: ADMA2 scatter/gather, single-buffer SDMA, or (unused) PIO. That
-// choice changes IORequest decomposition and the DMA restrictions we advertise,
+// choice changes IORequest decomposition and the advertised DMA restrictions,
 // which is exactly why it is a class axis rather than a flag.
 //
 // The Disk borrows the Controller's Card and Engine; the Controller owns their

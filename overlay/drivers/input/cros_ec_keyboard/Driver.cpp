@@ -961,10 +961,8 @@ cros_ec_init_driver(device_node* node, void** _driverCookie)
 		return status;
 	}
 
-	// Device bring-up is deferred to first open (like the PS/2 driver).
-	// This leaves the keyboard available for KDL / early boot code that
-	// reads scan codes directly from the controller. Once a userland
-	// process opens the device, we take full control.
+	// Defer keyboard commands until first open so early boot can continue
+	// reading scan codes directly from the controller.
 	d->fOpenCount = 0;
 	d->fIRQInstalled = true;
 
@@ -1039,8 +1037,7 @@ struct open_cookie {
 static status_t
 cros_ec_device_init_device(void* _driverCookie, void** _deviceCookie)
 {
-	// We don't need a separate device-level cookie; the driver cookie
-	// carries all state. The device manager passes this to open/close/control.
+	// Driver and device hooks share one state object.
 	*_deviceCookie = _driverCookie;
 	return B_OK;
 }
@@ -1073,9 +1070,7 @@ cros_ec_device_open(void* _deviceCookie, const char* path, int openMode,
 
 	int32 prevCount = atomic_add(&d->fOpenCount, 1);
 
-	// Lazy bring-up on first open (like PS/2 probe_keyboard).
-	// Keeps the keyboard available for KDL / early boot until a
-	// userland process actually opens the device.
+	// First open transfers the controller from early-boot access to this driver.
 	if (prevCount == 0 && !d->fDecodingEnabled) {
 		status_t status = _bring_up_device(d);
 		if (status != B_OK)
@@ -1100,8 +1095,7 @@ cros_ec_device_close(void* _cookie)
 	if (d != NULL && c->fIsDebugger)
 		d->fHasDebugReader = false;
 
-	// Tear down on last close (like the PS/2 driver).
-	// This returns keyboard control to the kernel debugger.
+	// Last close returns the controller to direct debugger access.
 	if (d != NULL && atomic_add(&d->fOpenCount, -1) == 1)
 		_tear_down_device(d);
 

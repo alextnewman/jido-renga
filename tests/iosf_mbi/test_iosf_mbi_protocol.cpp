@@ -6,11 +6,8 @@
 
 #include "IosfMbiProtocol.h"
 
-// The IOSF-MBI wire encoding is pure, so we prove it off-target against values
-// cross-checked with Linux (arch/x86/platform/intel/iosf_mbi.c: mbi_form_mcr,
-// MBI_MASK_HI / MBI_MASK_LO). The opcodes below are IOSF_MBI_CR_READ (0x06) and
-// IOSF_MBI_CR_WRITE (0x07); we spell them literally to keep this TU free of the
-// kernel module header.
+// The protocol tests use CR read/write opcodes 0x06 and 0x07 directly so this
+// translation unit remains independent of the kernel module header.
 
 using namespace jr::iosf;
 
@@ -52,7 +49,7 @@ JR_TEST(iosf_mbi, mcrx_carries_the_high_offset_bits)
 	// 0x1078 -> high part 0x1000 (non-zero: an MCRX write is required).
 	JR_CHECK_EQ(McrxFor(0x1078), 0x1000u);
 
-	// A register within the first 256 bytes needs no extended write.
+	// Low offsets encode a zero MCRX value, which callers must still write.
 	JR_CHECK_EQ(McrxFor(0x00fc), 0x0u);
 	JR_CHECK_EQ(McrxFor(0x00ff), 0x0u);
 

@@ -3,34 +3,13 @@
 // SPDX-FileContributor: Generated with GitHub Copilot
 
 /*
- * Intel IOSF-MBI (On-Chip System Fabric, Message Buffer Interface) bus manager.
+ * Intel IOSF-MBI sideband register access for Bay Trail and Cherry Trail.
  *
- * Sideband register access on BayTrail / CherryTrail Atom SoCs. Other drivers
- * (SDHCI OCP fixup, audio, thermal) borrow it to poke chipset errata registers
- * that have no MMIO aperture.
- *
- * This is a clean-room rewrite, cross-checked against Linux
- * (arch/x86/platform/intel/iosf_mbi.c), NOT a port of the earlier draft. Two
- * things the draft got wrong are fixed here:
- *
- *   1. Initialization ran from free `init_module()` / `uninit_module()`
- *      functions -- a Linux-ism. Haiku never calls those, so the singleton was
- *      never created and B_MODULE_INIT always reported failure (the module was
- *      dead on arrival). The singleton and mandatory hardware discovery now
- *      come from the real std_ops hook.
- *
- *   2. It bound to whichever BayTrail PCI function it saw first (PMC, or even an
- *      SDHCI controller). The message-bus registers (MCR/MDR/MCRX at 0xD0..0xD8)
- *      live ONLY in the SoC transaction router / host bridge config space
- *      (0:0:0). Writing 0xD0 on any other function is not a sideband access --
- *      at best a no-op, at worst poking a real register. We now bind strictly to
- *      the BYT/CHT host bridge.
- *
- * Haiku probes bus_managers (including ACPI) before busses/pci. An ACPI-hosted
- * boot disk can therefore request IOSF before the normal root scan has
- * registered the x86 PCI controller. This module resolves that ordering through
- * formal module dependencies and the x86 driver's normal register_device hook;
- * all configuration traffic still goes through Haiku's PCI bus manager.
+ * MCR, MDR, and MCRX exist only in the SoC transaction router at PCI 0:0.0;
+ * accesses to other functions are invalid. Initialization uses the module
+ * std_ops hook and resolves early ACPI boot ordering through formal
+ * device-manager and x86 PCI-controller dependencies. All configuration
+ * traffic goes through Haiku's PCI bus manager.
  */
 
 #include <common/iosf_mbi.h>
@@ -66,10 +45,7 @@ constexpr char kX86PciControllerModuleName[]
 	= "busses/pci/x86/driver_v1";
 
 
-// The ONLY PCI functions that host the IOSF-MBI message-bus registers: the SoC
-// transaction router (a.k.a. host bridge / "SSA-CUnit"), always at 0:0:0. This
-// list is deliberately narrow -- see the file header for why the PMC and the
-// SDHCI controllers must NOT appear here.
+// Supported transaction routers. IOSF-MBI registers are valid only at 0:0.0.
 const char*
 HostBridgeName(uint16 device)
 {

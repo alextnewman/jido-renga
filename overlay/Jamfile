@@ -4,20 +4,10 @@
 
 SubDir JIDO_RENGA_TOP overlay ;
 
-# Jidō Renga overlay root -- the build-time graft surface.
-#
-# Walked via DeferredSubInclude from the graft file
-# (config/UserBuildConfig.in, installed as HAIKU_OUTPUT_DIR/UserBuildConfig),
-# so every KernelAddon below resolves in the post-src context where PLATFORM
-# is valid.
-#
-# The directory layout mirrors Haiku's device-class categories on purpose:
-# jido-renga is a BUILD-TIME concept only. At runtime these add-ons deploy to
-# their canonical Haiku paths (add-ons/kernel/bus_managers, .../drivers/bin),
-# like Good Driver Citizens.
+# Build-time overlay root, entered through DeferredSubInclude after PLATFORM is
+# available. Directory classes match the add-ons' canonical Haiku runtime paths.
 
-# Shared jido-renga modules first -- leaf drivers may depend on the modules
-# they publish.
+# Shared modules precede consumers.
 SubInclude JIDO_RENGA_TOP overlay bus_managers iosf_mbi ;
 
 # Bus drivers (host controllers).
@@ -27,11 +17,8 @@ SubInclude JIDO_RENGA_TOP overlay busses mmc sdhci_embedded ;
 SubInclude JIDO_RENGA_TOP overlay drivers input cros_ec_keyboard ;
 SubInclude JIDO_RENGA_TOP overlay drivers input i2c_atmel_mxt ;
 
-# --- BSP composition ---------------------------------------------------------
-#
 # A BSP declares two things: the overlay add-ons to ship and the exact paths in
-# haiku.hpkg that it replaces. The policy is intentionally image-time only: no
-# driver attempts to negotiate ownership with a competing driver at runtime.
+# haiku.hpkg that it replaces. Controller ownership is resolved at image time.
 JIDO_RENGA_BSP ?= winky ;
 JIDO_RENGA_BSP_IMAGE_BUS_MANAGERS = ;
 JIDO_RENGA_BSP_IMAGE_BUSSES_MMC = ;
@@ -46,30 +33,18 @@ if $(JIDO_RENGA_BSP) = winky {
 	Exit "Unknown Jido Renga BSP:" $(JIDO_RENGA_BSP) ;
 }
 
-# --- Image integration ------------------------------------------------------
+# These adapters apply BSP additions and omissions while Haiku's package recipe
+# is parsed. Loose add-on targets remain ordinary builds.
 #
-# Graft the built add-ons into a Haiku image so they LOAD at boot -- this is
-# what turns `jam @nightly-anyboot` (or any *-image target) into an anyboot
-# with these drivers present. This deferred overlay runs after the KernelAddon
-# targets exist but before Haiku's package recipe is parsed, so the adapters
-# below can inject BSP policy without patching that recipe. A standalone
-# `jam sdhci_embedded` never requests haiku.hpkg and remains a normal add-on
-# build.
-#
-# BSP add-ons are composed directly into haiku.hpkg. This is required for boot
-# drivers: on a packaged volume stage two replaces its system-directory view
-# with the contents of haiku.hpkg, so loose system/non-packaged modules are not
-# visible until after the kernel has mounted the boot volume. Package rules are
-# still image-time policy; the captive source tree remains untouched.
+# Boot-critical add-ons must live in haiku.hpkg because stage two exposes only
+# that package before the kernel mounts the boot volume.
 #
 # Set JIDO_RENGA_INSTALL_IN_IMAGE = 0 in UserBuildConfig (before the overlay
 # walk) to build the add-ons without composing them into haiku.hpkg.
 JIDO_RENGA_INSTALL_IN_IMAGE ?= 1 ;
 
-# Haiku's package recipe hard-codes the stock SDHCI target. It is parsed after
-# this deferred overlay, but exposes no exclusion hook. Reimplement only its
-# tiny public package adapters so a BSP can omit exact haiku.hpkg paths and
-# their boot-module links; all ordinary package paths retain upstream behavior.
+# Haiku's package recipe exposes no stock-driver exclusion hook. These public
+# package adapters filter exact BSP-owned paths and boot links.
 rule JidoRengaPackageTargets directory : targets
 {
 	local kept = $(targets) ;

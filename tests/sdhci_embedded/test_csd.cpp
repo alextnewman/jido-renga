@@ -116,9 +116,8 @@ JR_TEST(csd, emmc_sector_count)
 
 JR_TEST(csd, emmc_sector_count_zero_is_invalid)
 {
-	// A failed or empty EXT_CSD read leaves SEC_COUNT at 0. We must NOT decode
-	// that into a "valid" 0-sector disk and publish it -- the card-init path
-	// relies on !valid to reject the read.
+	// SEC_COUNT 0 represents an invalid or empty EXT_CSD read, not a publishable
+	// zero-sector disk.
 	uint8_t extCsd[512] = {0};
 	const CardGeometry g = DecodeEmmcSectorCount(extCsd);
 	JR_CHECK(!g.valid);

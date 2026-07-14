@@ -217,7 +217,7 @@ ResponseFlags(ReplyType reply) noexcept
 
 
 // SDHCI routes both data transfers and short-busy responses through the data
-// line. Linux's sdhci_data_line_cmd() applies the same rule before issuing.
+// line, so both command and data inhibit must clear before issue.
 constexpr bool
 RequiresDataLineIdle(bool dataPresent, ReplyType reply) noexcept
 {

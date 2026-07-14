@@ -22,11 +22,8 @@ using jr::test::SubmitOutcome;
 namespace {
 
 
-// The one driver-specific line: the worker publishes a response into the ticket
-// (never into caller storage) and marks it done. The value is a pure function of
-// the epoch so any caller can confirm it received *its own* result. This is the
-// hole the generic WorkerRig calls; everything else -- the mailbox handoff, the
-// completion protocol, the timeout/reclaim dance, the gate -- is the framework's.
+// WorkerRig service callback: publish an epoch-specific response and mark the
+// ticket terminal.
 void
 PublishResponse(Transaction* ticket)
 {
@@ -53,12 +50,8 @@ ResponseMatches(const Transaction* ticket, uint32_t epoch) noexcept
 } // namespace
 
 
-// Deterministic teeth for bug #1, now driven through the generic rig. A worker
-// completes an *earlier, abandoned* command after a new caller has drained and
-// posted; the resulting completion nudge is real, but not for the new caller's
-// ticket. A naive rail returns success on a not-done ticket; the fixed rail keeps
-// waiting for its own IsDone(). This is the exact interleaving the review caught
-// and the pure per-function tests cannot reach.
+// A late completion for an abandoned transaction must not satisfy the next
+// caller's wait.
 JR_TEST(concurrency, stale_completion_nudge_is_not_our_success)
 {
 	SdhciRig rig(PublishResponse);
@@ -94,11 +87,10 @@ JR_TEST(concurrency, stale_completion_nudge_is_not_our_success)
 	rig.WaitCompletedAtLeast(1);
 
 	const bool nudged = rig.WaitCompletion(std::chrono::seconds(1));
-	JR_CHECK(nudged);					// a real completion nudge is present...
-	JR_CHECK(!mine->IsDone());			// ...but it is NOT ours -> naive lies here
+	JR_CHECK(nudged);					// completion belongs to the older ticket
+	JR_CHECK(!mine->IsDone());
 
-	// The fixed rail treats that nudge as a hint and waits. Release the gate for
-	// B and confirm it now completes correctly, with its OWN response.
+	// The submitted ticket becomes complete only after its own service pass.
 	rig.ReleaseNext();
 	rig.WaitCompletedAtLeast(2);
 	JR_CHECK(mine->IsDone());
@@ -108,13 +100,9 @@ JR_TEST(concurrency, stale_completion_nudge_is_not_our_success)
 }
 
 
-// Stress the real ownership/completion protocol under genuine preemption. Many
-// caller threads (serialized by a bus lock, exactly as the engine serializes
-// Execute) drive thousands of commands against one worker, a quarter with a zero
-// budget to hammer the timeout + Reclaim + late-completion path (bug #2
-// territory). Invariants: the fixed rail never reports a false success, every
-// success carries the caller's own response, and -- under ASan -- no ticket is
-// used-after-free or double-freed across the Retain/Reclaim/Release handoff.
+// Exercise timeout, reclaim, and late completion under real thread preemption.
+// Successful submissions must carry their own response and preserve ticket
+// lifetime across Retain/Reclaim/Release.
 JR_TEST(concurrency, stress_caller_worker_rail_under_threads)
 {
 	SdhciRig rig(PublishResponse);

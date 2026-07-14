@@ -15,19 +15,12 @@
 #include "Trace.h"
 #include "Transaction.h"
 
-// SdhciEngine -- the mechanism behind the "meow bus".
-//
-// The engine owns the MMIO register block, the single bus lock (caller
-// serialization only; the worker never takes it), the lock-free mailbox, the
-// completion semaphore, and the worker thread. Callers submit a Cmd; the worker
-// (the "owner") polls the controller and drives each transaction to a terminal
-// verdict using the pure Convergence policy. Interrupts are mere "meows": a
-// lossy condition-variable pulse that only wakes the worker, never touching
-// hardware state. Completion (worker -> caller) travels the other way on a 1:1
-// counting semaphore -- see the two members below.
-//
-// Policy (which bits mean what, when to retry) lives in Convergence.h and is
-// host-tested. This class is only the hands: register pokes and thread plumbing.
+// SdhciEngine is the mechanism behind the meow bus. The interrupt line is a cat:
+// it may meow late, twice, or not at all, and the sound means only "something
+// may have happened." The ISR therefore emits a lossy wake hint without
+// acknowledging or interpreting controller state. The worker alone touches
+// semantic MMIO, polls to convergence, and delivers ordered completion through
+// a separate counting semaphore.
 
 namespace jr::sdhci {
 
@@ -150,16 +143,12 @@ public:
 	// only between transactions (the worker must be idle); card identification
 	// calls it before the very first command.
 	void EmmcHardwareReset();
-	// The heavy bus-recovery hammer exposed for card identification: when a
-	// command leaves the card wedged in an error state (classically CMD8 issued
-	// to an eMMC, which expects a 512-byte EXT_CSD data phase), cut power / clock
-	// / interrupts, let Bay Trail settle, then re-power and re-arm. Callers must
-	// be between transactions.
+	// Destructive recovery cuts power, clock, and interrupts, then resets and
+	// reinitializes the controller. Callers must re-identify the card.
 	void RecoverBus();
 
-	// The "meow": called from interrupt context. Reads raw interrupt status only
-	// to reject empty/floating/unmanaged sources, then emits an unordered pulse
-	// that carries no command meaning. Returns the Haiku interrupt disposition.
+	// Emit one meow from interrupt context. Raw status is read only to reject an
+	// empty, floating, or unmanaged source; the pulse carries no command meaning.
 	int32 HandleInterruptMeow();
 
 	const TraceLabel& Label() const { return fLabel; }
@@ -188,9 +177,7 @@ private:
 	// `force` bypasses the card-present check for soldered eMMC (no detect line).
 	bool _PowerOnBus(bool force);
 	bool _SetBusVoltage();
-	// The heavy recovery hammer: cut interrupts, clock, and power (TerminateBus),
-	// then re-power, re-bring-up, and re-arm interrupts (RestoreAfterReset). Used
-	// when the SD-domain timeout clock freezes or the controller wedges busy.
+	// Destructive reset sequence for an unquiesced or persistently busy bus.
 	void _TerminateBus();
 	void _RestoreAfterReset();
 	// Issue one transaction to the controller. Returns false without issuing if
@@ -225,14 +212,11 @@ private:
 	TraceLabel					fLabel;
 
 	mutex						fBusLock = MUTEX_INITIALIZER("sdhci_emb bus");
-	// fCompletion: worker -> caller, 1:1 and ordered. A counting semaphore is
-	// right here -- a completion must never be lost, and the caller re-checks
-	// the ticket's IsDone() to reject a stale nudge.
+	// Ordered worker-to-caller completion. IsDone() rejects stale signals.
 	sem_id						fCompletion = -1;
-	// fMeowCV: the "meow bus", ISR/caller -> worker. An unordered, LOSSY pulse
-	// (NotifyAll). A counting semaphore would be wrong here: banked pulses would
-	// become phantom rechecks that hammer this fragile bus. A missed pulse is
-	// harmless -- it simply degrades to a timed recheck.
+	// The meow bus: an unordered, deliberately lossy ISR/caller-to-worker wake.
+	// Missed meows degrade to timed polling; duplicate meows coalesce. Counting
+	// them would replay stale sounds as unnecessary controller polls.
 	ConditionVariable			fMeowCV;
 	thread_id					fWorker = -1;
 	volatile bool				fWorkerRunning = false;
@@ -240,10 +224,8 @@ private:
 	TransactionMailbox			fMailbox;		// caller -> worker (lock-free)
 	VirtualControllerState		fVcState;		// worker-local device model
 
-	// The dialect the engine stamps onto each new transaction; set by the
-	// Controller once the card is classified. Per-command policy now travels on
-	// the Transaction itself (see Transaction.h) so nothing here is raced by a
-	// worker still finishing a timed-out command.
+	// The controller sets the dialect after card classification. Each
+	// transaction captures its own command policy.
 	CardDialect					fActiveDialect = CardDialect::Unknown;
 
 	Quirk						fQuirks = Quirk::None;

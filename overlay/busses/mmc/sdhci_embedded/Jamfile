@@ -4,26 +4,20 @@
 
 SubDir JIDO_RENGA_TOP overlay busses mmc sdhci_embedded ;
 
-# Modern C++ kernel add-on: no RTTI in the kernel.
+# Kernel C++ has no RTTI.
 SubDirC++Flags -fno-rtti ;
 
-# Header dirs resolve against the captive Haiku submodule via HAIKU_TOP.
 SubDirSysHdrs $(HAIKU_TOP) headers os drivers ;
-# The IOSF-MBI bus manager's public API is published from the overlay's shared
-# include root and consumed here as <common/iosf_mbi.h> (BayTrail OCP fixup).
+# IOSF-MBI publishes <common/iosf_mbi.h> from the overlay include root.
 SubDirSysHdrs $(JIDO_RENGA_TOP) overlay headers ;
 SubDirHdrs $(HAIKU_TOP) src add-ons kernel bus_managers acpi acpica include ;
 UsePrivateKernelHeaders ;
 UsePrivateHeaders drivers ;
 
-# The eMMC block-I/O path uses the kernel's IOSchedulerSimple + DMAResource; the
-# removable-SD path uses IORequest directly. Reach those private definitions the
-# same way the in-tree mmc_disk driver does.
+# eMMC uses IOSchedulerSimple and DMAResource; removable SD uses IORequest.
 SubDirHdrs $(HAIKU_TOP) src system kernel device_manager ;
 
-# The whole stack is one add-on: a flat folder of clean classes, not a chain of
-# module-glued drivers. Only .cpp translation units are listed; headers are
-# pulled in by inclusion.
+# The controller stack is one kernel add-on.
 if $(TARGET_ARCH) = "x86" || $(TARGET_ARCH) = "x86_64" {
 	KernelAddon sdhci_embedded :
 		sdhci_embedded.cpp

@@ -1,228 +1,151 @@
-```
-━━〘 自動連歌 · JIDŌ RENGA 〙━━━━━━━━━━━━━━
-
-            ██╗██╗██████╗  ██████╗
-            ██║██║██╔══██╗██╔═══██╗
-            ██║██║██║  ██║██║   ██║
-       ██   ██║██║██║  ██║██║   ██║
-       ╚█████╔╝██║██████╔╝╚██████╔╝
-        ╚════╝ ╚═╝╚═════╝  ╚═════╝
-██████╗ ███████╗███╗   ██╗ ██████╗  █████╗
-██╔══██╗██╔════╝████╗  ██║██╔════╝ ██╔══██╗
-██████╔╝█████╗  ██╔██╗ ██║██║  ███╗███████║
-██╔══██╗██╔══╝  ██║╚██╗██║██║   ██║██╔══██║
-██║  ██║███████╗██║ ╚████║╚██████╔╝██║  ██║
-╚═╝  ╚═╝╚══════╝╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═╝
-
-  ⟳──◇──◇──◇   self-moving linked verse — the poem continues
-               itself, stanza after stanza, with no hand.
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-```
-
 # Jidō Renga
 
-**Out-of-tree device drivers for [Haiku](https://www.haiku-os.org/), written by humans and AI together.**
+**Out-of-tree device drivers for [Haiku](https://www.haiku-os.org/), developed
+by humans and AI together.**
 
-Haiku is an open-source operating system that carries the BeOS legacy forward —
-fast, coherent, and unapologetically focused on the personal computer. Jidō Renga
-(自動連歌, *"the poem that writes itself"*) develops modern C++ **kernel drivers**
-for it, so that more hardware runs Haiku well.
+Jidō Renga is a Haiku-based driver project, not a broad fork of Haiku. It keeps
+Haiku and its buildtools as pinned, unmodified submodules, then grafts
+project-owned kernel add-ons into Haiku's build at composition time.
 
-Those drivers live and evolve **outside** the Haiku source tree. Haiku is present
-here only as a **captive git submodule**; this repository grafts its drivers onto
-that submodule at build time without ever modifying it. Think of a vine encircling
-a tree: the tree (Haiku) stands untouched and upstream; the vine (Jidō Renga)
-climbs it, draws from it, and bears its own fruit.
+The name means "automatic linked verse." Each supported machine is one verse:
+a focused board-support package (BSP) with the drivers and image policy needed
+to make that hardware useful.
 
-> Run `tools/banner.sh` for the colored terminal lockup.
+> Contributors and coding agents should read [`AGENTS.md`](AGENTS.md) and the
+> [overlay build skill](skills/jido-renga-overlay-build/SKILL.md) first.
 
-> **Contributing, or using an AI agent here?** Start with [`AGENTS.md`](AGENTS.md)
-> and the [overlay build skill](skills/jido-renga-overlay-build/SKILL.md).
+## Current platform
 
----
+The first BSP targets the Samsung Chromebook 2 `XE500C12`, ChromeOS board
+`winky`, built around Intel Bay Trail-M.
 
-## The first verse
+| Module | Purpose | Hardware |
+|---|---|---|
+| `iosf_mbi` | Shared IOSF sideband access | Bay Trail transaction router |
+| `sdhci_embedded` | eMMC and removable-SD host controller | ACPI `80860F14`, `80860F16` |
+| `cros_ec_keyboard` | 8042-compatible EC keyboard | ACPI `GOOG000A` |
+| `i2c_atmel_mxt` | Atmel maXTouch touchpad | ACPI `ATML0000` |
 
-A renga is written one stanza at a time. Jidō Renga takes each **machine** as a
-verse — one modest computer brought fully to life on Haiku, with new verses added
-for new hardware as the need (or the whim) arises.
+Winky boots Haiku from removable SD, identifies and uses its eMMC, supports
+installation to eMMC, and provides working keyboard and touchpad input.
+The current stock-I2C image composition still needs a final live input
+regression check.
 
-The first verse is the **Samsung Chromebook 2** (11.6″, model `XE500C12`): Chrome OS
-board **`winky`**, an Intel Bay Trail-M laptop — Celeron N2840, 16 GB of eMMC, the
-kind of small plastic 2014 Chromebook the world stopped thinking about years ago.
+The Winky BSP is intentionally exclusive where controllers cannot safely have
+two owners. Its image omits Haiku's generic SDHCI add-on and installs
+`sdhci_embedded` instead. It retains Haiku's stock I2C bus manager and stock
+drivers that do not conflict.
 
-There's no grand thesis behind this first verse. Its author simply had a WINKY
-gathering dust in a closet and wanted to have some fun making it work — and Haiku
-turns out to be a lovely partner for that: a lean, coherent system that happily
-renovates modest old machines into something fast and pleasant to use. Good hardware
-wants to be used; it wants to be useful. Making it work well long after its maker
-moved on is a fine reward on its own; mostly, though, it's just a fun place to build.
+## Relationship with Haiku
 
-Bringing **WINKY** up means teaching Haiku its particular parts — the ChromeOS
-Embedded-Controller keyboard, the Atmel maXTouch trackpad, the Bay Trail SoC
-sideband, and its embedded SDHCI hosts. Winky is an explicit, exclusive BSP:
-where it supplies a replacement controller driver, the composed image omits the
-conflicting upstream add-on rather than allowing both to touch the same hardware.
+Jidō Renga is proudly based on Haiku and uses Haiku's driver APIs, build system,
+package format, and runtime layout. Project add-ons install at canonical Haiku
+paths and do not know that they were built from an overlay.
 
-**Milestone, July 2026:** Winky boots Haiku from SD, identifies and runs its
-eMMC through the ADMA2 path, installs Haiku onto that eMMC at full speed, and
-brings up its keyboard and touchpad. The first verse is now a usable machine,
-not merely a collection of drivers that build.
+The project does not maintain a parallel copy of Haiku. General fixes and
+human-authored improvements that belong in Haiku should be contributed
+upstream. Jidō Renga provides a separate home for its machine-specific and
+AI-assisted driver work while respecting Haiku's contribution policies.
 
----
+At build time:
 
-## Goals
+- `haiku/` and `buildtools/` remain pristine captive submodules.
+- `tools/weave` writes only `<build-dir>/UserBuildConfig`.
+- `overlay/` mirrors Haiku's kernel add-on classes.
+- Jam builds the add-ons with Haiku's own cross-toolchain and package rules.
 
-- **Extend Haiku; don't break it.** Every driver adds hardware support without
-  touching a line of Haiku's own sources. The system stays exactly what upstream
-  shipped — augmented, never forked.
-- **Follow Haiku's lead.** Match its driver patterns and APIs, honor the
-  BeOS-derived sensibilities the project has cultivated for decades, and write to
-  Haiku's [coding guidelines](https://www.haiku-os.org/development/coding-guidelines).
-  A Jidō Renga driver should read like it belongs in the tree it augments.
-- **A human–AI collaboration.** The name says it: a *renga* is linked verse, composed
-  by many hands, each stanza answering the last. Here those hands are humans and AI —
-  people bringing direction, design judgment, and hard-won taste; AI bringing the
-  muscle to research, draft, test, and iterate at pace. It's no token assistance, and
-  no hands-off automation either: an e-bike, not a self-driving car — the motor is
-  real, but a person is always in the saddle, steering. This is a toybox and an
-  experiment as much as a driver set: a place to advance the craft of AI-assisted
-  driver development, and to make old things new again. Because Haiku's own
-  [`AGENTS.md`](https://github.com/haiku/haiku/blob/master/AGENTS.md) asks that
-  AI-assisted work stay out of its tree, Jidō Renga honors that line precisely: every
-  driver is insulated at the driver layer, kept out-of-tree, and clearly its own —
-  never presenting itself as part of Haiku.
-- **Earn it with proof.** AI can produce a great deal of code quickly, and kernel code
-  is unforgiving — so speed is only worth having when the result is *correct*. Proof is
-  a first-class pillar here, not an afterthought bolted on at the end. Drivers carry
-  host-side unit tests, mocks that codify the hardware's *actual* contract (not the
-  datasheet's fiction), and concurrency harnesses that exercise the worker-thread and
-  interrupt handoffs on real threads under sanitizers. A driver's core assumptions live
-  as pure predicates checked in two places — the host tests and, on target, the
-  driver's own assertions — so a wrong assumption fails loudly instead of drifting for
-  months. This is idiomatic Haiku C++ held to a high bar: not generated filler, and not
-  a Linux driver bolted onto a foreign kernel.
+At runtime, only the normal Haiku add-on paths remain.
 
-At runtime none of this shows. Each add-on installs to its canonical Haiku path
-and behaves like any other driver — a good citizen of the system it joins.
+## Build
 
----
-
-## Repository layout
-
-```
-jido-renga/
-├── overlay/            # the build-time graft surface
-│   ├── Jamfile         # walks the overlay (SubInclude of each module)
-│   ├── headers/common/ # Jidō Renga's own public include root
-│   ├── bus_managers/   # shared modules (e.g. iosf_mbi)
-│   ├── busses/         # host controllers (e.g. mmc/sdhci_embedded)
-│   └── drivers/        # leaf drivers (e.g. input/cros_ec_keyboard, input/i2c_atmel_mxt)
-├── config/             # graft template, BSP manifests, and revision.conf
-├── tools/              # weave, haiku-revision, jr-jam, banner.{sh,txt}
-├── skills/             # agent skills (overlay build/extend playbook)
-├── docs/               # development logs + design notes
-└── LICENSES/           # REUSE license texts (MIT)
-```
-
-`haiku/` and `buildtools/` are pinned captive submodules.
-
----
-
-## Building
-
-Jidō Renga follows Haiku's standard **out-of-tree** build model. In short:
+The standard x86_64 setup is:
 
 ```sh
-git submodule update --init                     # fetch the captive
-mkdir generated.x86_64 && cd generated.x86_64   # a throwaway build dir
-../haiku/configure --cross-tools-source ../buildtools --build-cross-tools x86_64
-cd .. && tools/weave generated.x86_64           # install the graft
+git submodule update --init
+mkdir generated.x86_64
+cd generated.x86_64
+../haiku/configure \
+  --cross-tools-source ../buildtools \
+  --build-cross-tools x86_64
+cd ..
+tools/weave generated.x86_64
 cd generated.x86_64
 ../tools/jr-jam -q iosf_mbi sdhci_embedded \
   cros_ec_keyboard i2c_atmel_mxt
 ```
 
-`tools/weave` grafts the overlay by writing one managed block into the build
-dir's `UserBuildConfig`; `tools/jr-jam` presets the derivative revision (below).
-The full mechanics — the Jam-native graft, the host build environment, and the
-recipe for adding a new driver — are in the
-[overlay build skill](skills/jido-renga-overlay-build/SKILL.md).
-
-### Into a bootable image
-
-The line above builds the add-ons as **loose files** under the build dir. To
-fold them into a Haiku **anyboot** image that loads them at boot, ask jam for an
-image profile instead of the individual targets:
+Build a bootable desktop image with:
 
 ```sh
-../tools/jr-jam -q @nightly-anyboot        # -> haiku-nightly-anyboot.iso
+../tools/jr-jam -q @nightly-anyboot
 ```
 
-The overlay composes each BSP add-on directly into `haiku.hpkg` at its canonical
-kernel add-on path. The captive's source tree and package recipe remain
-untouched; the out-of-tree graft adapts Haiku's public package rules while Jam
-constructs the image. The default `winky` BSP omits Haiku's generic
-`busses/mmc/sdhci` add-on so `sdhci_embedded` solely owns the Bay Trail MMC
-controllers. It retains Haiku's stock I2C bus manager and both Atmel and Elan
-input drivers. Set `JIDO_RENGA_BSP = none` in `UserBuildConfig` before the
-overlay walk to build the add-ons without applying a BSP image policy.
+`generated*/` directories are disposable build output and are never committed.
+The first image build is a full Haiku build and may download HaikuPorts
+packages; later builds are incremental.
 
-The Winky BSP also adds its embedded SDHCI controller and IOSF-MBI dependency to
-`haiku.hpkg`'s `add-ons/kernel/boot` set. Packaged Haiku stage two sees only the
-system package before entering the kernel, so keeping each boot link and target
-inside that package is what makes both modules available before ordinary
-device-manager discovery.
+The complete build, extension, and validation procedure is in
+[`skills/jido-renga-overlay-build/SKILL.md`](skills/jido-renga-overlay-build/SKILL.md).
 
-> The first anyboot build is a full Haiku build — it compiles the OS and pulls
-> HaikuPorts packages, so it is long and needs a network. Later builds are
-> incremental. `@minimum-anyboot` yields a smaller image; `@nightly-anyboot` is
-> the usual desktop.
+## Image composition
 
-Set `JIDO_RENGA_INSTALL_IN_IMAGE = 0` in `UserBuildConfig` (before the overlay
-is walked) to opt out and keep building loose add-ons only -- e.g. to copy onto
-a running system's own `non-packaged` tree by hand.
+Loose non-packaged drivers are useful for development, but they are not enough
+for boot-media controllers. Haiku's stage-two loader exposes the root system
+package before ordinary device discovery, so boot-critical JR modules and their
+boot links must be composed into `haiku.hpkg`.
 
----
+That package keeps Haiku's technical package identity because the loader and
+package daemon depend on it. JR identifies the resulting system through its
+derivative revision and BSP composition instead of pretending that an
+independently named root package is interchangeable. Applications such as
+WebPositive remain separate packages; JR does not rebuild or rebrand the Haiku
+desktop catalog.
 
-## Revision model
+Set `JIDO_RENGA_BSP = none` in `UserBuildConfig` before the overlay walk to
+build the add-ons without applying a BSP image policy. Set
+`JIDO_RENGA_INSTALL_IN_IMAGE = 0` to keep them as loose build outputs only.
 
-Haiku stamps a **revision** into `libroot` (surfaced by `uname`/AboutSystem)
-derived from `hrev` git tags, which the captive's GitHub mirror does not carry.
-Rather than fake an upstream `hrev`, Jidō Renga records an honest **derivative**
-identity — `<upstream>+jido-renga-<version>` (e.g. `hrev57937+jido-renga-0.1.0`)
-— composed by `tools/haiku-revision` and delivered by `tools/jr-jam`. See the
-[skill](skills/jido-renga-overlay-build/SKILL.md) for the delivery seam.
+## Repository layout
 
----
+```text
+overlay/    project-owned kernel add-ons and public headers
+config/     graft template, BSP manifests, and revision configuration
+tools/      weave, revision, Jam wrapper, and terminal banner
+tests/      host-side policy, parser, and concurrency tests
+skills/     operational guidance for coding agents
+docs/       current architecture, hardware contracts, and driver references
+LICENSES/   REUSE license texts
+```
 
-## The drivers
+Useful references:
 
-Everything here serves the first verse — the parts that make up WINKY:
+- [`docs/drivers/cros_ec_keyboard.md`](docs/drivers/cros_ec_keyboard.md)
+- [`docs/drivers/i2c_atmel_mxt.md`](docs/drivers/i2c_atmel_mxt.md)
+- [`docs/design/sdhci_embedded.md`](docs/design/sdhci_embedded.md)
+- [`docs/hardware/winky-bay-trail-sdhci.md`](docs/hardware/winky-bay-trail-sdhci.md)
 
-| Module | Class | Binds | Notes |
-|--------|-------|-------|-------|
-| `iosf_mbi` | bus_manager (shared) | — | BayTrail IOSF message-bus sideband. Consumed by other overlay drivers, never referenced outside the overlay. Publishes `<common/iosf_mbi.h>`. |
-| `sdhci_embedded` | busses/mmc | ACPI `80860F14`, `80860F16` | Bay Trail eMMC and SD host driver. WINKY's BSP omits Haiku's generic `sdhci` add-on, so the two stacks never contend for a controller. |
-| `cros_ec_keyboard` | drivers/input | ACPI HID `GOOG000A` | ChromeOS Embedded Controller keyboard (i8042-class). Self-contained. |
-| `i2c_atmel_mxt` | drivers/input | Atmel maXTouch | I²C touchpad (WINKY's trackpad). The exemplar factored C++ driver: an `MxtDevice` owns transport / object-table discovery / worker thread / event ring buffer, with a separate `TouchEngine`. |
+## Engineering approach
 
-Per-driver development logs live in [`docs/development/`](docs/development/), with
-deeper design notes under [`docs/`](docs/).
+The drivers use Haiku's conventions and modern C++ without exceptions or RTTI.
+Hardware-independent policy is separated where practical so it can be tested
+on the host. Hardware contracts, concurrency invariants, and current
+limitations are documented; investigation transcripts and temporary build
+evidence are not part of the repository documentation.
 
----
+The SDHCI driver's interrupt architecture is the
+[**meow bus**](docs/design/sdhci_embedded.md#the-meow-bus): interrupts are
+untrusted wake hints, and only worker-observed controller state determines what
+actually happened.
 
-## Status
+AI does substantial implementation work here, but human direction and review
+remain part of the design. Generated code is expected to meet the same
+correctness, licensing, and maintenance standards as any other kernel code.
 
-Early and experimental. The out-of-tree graft, the derivative-revision model, and
-the build flow are in place, and the drivers above build against a pinned Haiku.
-Expect churn: drivers land as hardware is brought up, and interfaces here are free
-to change until they have earned their keep.
+## Status and license
 
----
+Jidō Renga is experimental board-support software. The Winky BSP is usable, but
+interfaces and implementation details may change as hardware support expands.
 
-## License
-
-MIT — see [`LICENSE`](LICENSE). Licensing metadata follows the
-[REUSE](https://reuse.software/) specification; per-file SPDX tags plus
-`REUSE.toml` and `LICENSES/` cover every committed file.
+The project is MIT-licensed. See [`LICENSE`](LICENSE). Licensing metadata follows
+the [REUSE](https://reuse.software/) specification through per-file SPDX tags,
+`REUSE.toml`, and `LICENSES/`.

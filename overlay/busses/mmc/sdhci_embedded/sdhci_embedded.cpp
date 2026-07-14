@@ -4,7 +4,7 @@
 
 // C-ABI glue between Haiku's device_manager and the embedded SDHCI stack.
 //
-// This is the ONLY file that speaks the module_info dialect; everything below
+// This is the only file that speaks the module_info dialect; everything below
 // it is clean C++. It creates exactly two nodes:
 //
 //   node #1  controller  (this driver_module)   <- binds the ACPI device
@@ -117,8 +117,7 @@ sdhci_embedded_init_driver(device_node* node, void** cookie)
 	if (controller == nullptr)
 		return B_NO_MEMORY;
 
-	// Serialized boot: map, reset, identify the card, publish -- all before we
-	// return, so boot-from-SD wins the RAMDisk race.
+	// Publish synchronously so boot-media discovery precedes the RAMDisk fallback.
 	status_t status = controller->Boot();
 	if (status != B_OK) {
 		JR_ERROR(kModuleTrace, "controller boot failed: %" B_PRId32 "\n", status);

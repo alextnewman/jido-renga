@@ -18,21 +18,14 @@ class Card;
 class Disk;
 
 
-// SdhciController -- device_manager node #1 (our driver_module).
+// device_manager controller node. It owns ACPI resources, the engine,
+// personality, card, and disk for one hardware slot.
 //
-// This is the whole controller collapsed into one object: it maps the ACPI
-// resources (MMIO + IRQ), owns the SdhciEngine, selects the HostPersonality,
-// and holds the single Card and single Disk (container-of-1 -- no slot
-// enumeration; the spec allows many, this hardware has one).
-//
-// Boot discipline (decision: serialized-at-boot, then lazy watcher):
+// Boot is serialized:
 //   1. Map resources, reset, apply personality fixups.
 //   2. Power the bus and *synchronously* identify the card.
 //   3. Publish the Disk node -> devfs, so boot-from-SD wins the RAMDisk race.
 //   4. Only then start the async insert/remove watcher thread.
-//
-// A card yanked mid-boot may be missed; that is acceptable (there is no shell
-// yet, and ejecting your boot disk is on you).
 class SdhciController : public IPlatformControl {
 public:
 	explicit SdhciController(device_node* node);

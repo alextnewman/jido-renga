@@ -2,27 +2,12 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileContributor: Generated with GitHub Copilot
 
-# Jidō Renga — Jam-native out-of-tree graft (template)
+# Jam-native out-of-tree graft template. tools/weave substitutes the repository
+# path and installs this as <HAIKU_OUTPUT_DIR>/UserBuildConfig.
 #
-# Installed as <HAIKU_OUTPUT_DIR>/UserBuildConfig, which Jamrules globs and
-# includes automatically. This is the ONLY file written into the captive
-# Haiku build scope; the submodule source tree itself is never touched.
-#
-# The JIDO_RENGA_TOP placeholder below is substituted with the absolute path
-# to the jido-renga repo root by the setup tooling (tools/weave), e.g.:
-#     JIDO_RENGA_TOP = /path/to/jido-renga ;
-#
-# We only SET the foreign top variable here (Jamrules includes this before the
-# architecture/platform scaffolding exists) and DEFER the overlay walk to the
-# end of the root Jamfile via DeferredSubInclude, where KernelAddon has a valid
-# PLATFORM. See design notes for why a plain SubInclude here silently no-ops.
-#
-# NOTE: HAIKU_REVISION is deliberately NOT set here. Jamrules includes this file
-# (line ~120) AFTER the RemotePackageRepository include (line ~111) that already
-# demands the revision at parse time -- so an override here fires too late and
-# the build dies with "Haiku revision could not be determined." tools/jr-jam
-# exports it before Jam starts, which is the supported early seam. See
-# tools/jr-jam and config/revision.conf.
+# UserBuildConfig is included before PLATFORM exists, so the overlay walk must
+# be deferred until KernelAddon rules are active. HAIKU_REVISION must be set
+# earlier still and is therefore exported by tools/jr-jam.
 
 JIDO_RENGA_TOP = @JIDO_RENGA_TOP@ ;
 

@@ -34,9 +34,8 @@ public:
 	ReplyType	replyType = ReplyType::None;
 	uint16_t	transferMode = 0;
 
-	// Per-command policy and dialect, captured per-transaction so a worker that
-	// is still finishing a previously-abandoned command can never race the
-	// engine state a new caller is concurrently setting up.
+	// Per-command policy and dialect are immutable after publication, preventing
+	// a late worker from observing state prepared for a newer transaction.
 	CommandConstraints	constraints;
 	CardDialect			dialect = CardDialect::Unknown;
 
@@ -141,8 +140,7 @@ public:
 		return __sync_lock_test_and_set(&fSlot, nullptr);
 	}
 
-	// Caller side on timeout: reclaim our ticket iff the worker hasn't taken
-	// it yet. Returns true if we successfully pulled it back.
+	// Reclaim the ticket after timeout only if the worker has not claimed it.
 	bool
 	Reclaim(Transaction* ticket) noexcept
 	{

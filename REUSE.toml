@@ -20,18 +20,8 @@ SPDX-FileCopyrightText = "2026 The Jidō Renga Authors"
 SPDX-License-Identifier = "MIT"
 SPDX-FileContributor = "Generated with GitHub Copilot"
 
-# Per-driver development logs were drafted with Qwen; design records under
-# docs/design/ are authored with GitHub Copilot. Attribution follows the
-# subtree so each doc is credited to the tool that actually wrote it.
 [[annotations]]
-path = ["docs/development/**"]
-precedence = "aggregate"
-SPDX-FileCopyrightText = "2026 The Jidō Renga Authors"
-SPDX-License-Identifier = "MIT"
-SPDX-FileContributor = "Generated with Qwen 3.6"
-
-[[annotations]]
-path = ["docs/design/**", "docs/hardware/**"]
+path = ["docs/drivers/**", "docs/design/**", "docs/hardware/**"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 The Jidō Renga Authors"
 SPDX-License-Identifier = "MIT"

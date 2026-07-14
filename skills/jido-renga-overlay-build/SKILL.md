@@ -125,12 +125,11 @@ Rather than fake an upstream `hrev`, Jidō Renga records an honest **derivative*
 identity, `<upstream>+jido-renga-<version>`:
 
 - `<upstream>` — the pinned captive's label: the recorded `hrev` of the release
-  you pin (`UPSTREAM_REVISION` in `config/revision.conf`), or, unpinned, the
-  captive `HEAD` short commit as `g<sha>`.
+  in `config/revision.conf`, or an unpinned `g<short-commit>` identifier.
 - `<version>` — this overlay's version (`JIDO_RENGA_VERSION`).
 
-`tools/haiku-revision` composes it (e.g. `hrev57937+jido-renga-0.1.0` pinned, or
-`gb5fd959d60+jido-renga-0.1.0` unpinned), kept under Haiku's 128-char limit.
+`tools/haiku-revision` composes the value and keeps it under Haiku's 128-character
+limit.
 
 **Why a wrapper is needed.** jam imports environment variables as Jam variables
 at startup, *before* `Jamrules`. Haiku determines the revision during `Jamrules`
@@ -184,8 +183,28 @@ paths, `HOST_PYTHON`), flags, and targets pass straight through. Export
    `add-ons/kernel/boot` link to its canonical packaged location.
 7. **Build it** with `../tools/jr-jam -q <name>` from the build dir and confirm
    it produces a valid kernel ELF object.
-8. **Document it** with a short note under `docs/development/<name>.md` if the
-   driver has non-obvious hardware behavior.
+8. **Document it** under `docs/drivers/<name>.md` when the driver has a
+   non-obvious hardware contract, architecture, or current limitation.
+
+## Documentation and comment policy
+
+Committed text describes the repository as it exists now:
+
+- `README.md` is the practical human introduction.
+- `docs/` records current architecture, hardware contracts, rationale, and
+  known limitations.
+- `skills/` records durable operational lessons for agents.
+- Git history records previous repository states.
+
+Keep KDL transcripts, build hashes, package checksums, local artifact paths,
+investigation timelines, discarded hypotheses, and temporary comparisons in
+session-local storage. Promote only the durable conclusion into committed docs.
+
+Code comments are reader hints, not a development diary. Retain comments that
+state hardware meaning, units, ownership, concurrency or lifetime invariants,
+and non-obvious safety requirements. Remove comments that narrate debugging,
+compare abandoned implementations, describe who inspired the code, or restate
+the next line.
 
 ## Release validation
 
@@ -224,10 +243,11 @@ For Winky, require all of these:
 - no overlay `i2c_guarded` target or replacement bus manager
 
 When a target is renamed during packaging, extract the canonical package entry
-and compare it with the built target. Record SHA-256 values for the anyboot,
-`haiku.hpkg`, and critical replacement binaries in the hardware validation
-ledger. Build success is not hardware proof: update that ledger only after the
-actual boot, identification, I/O, and device behavior have been observed.
+and compare it with the built target. Keep transient hashes and inspection
+output in session-local storage. Build success is not hardware proof: update
+the relevant hardware or driver document only after actual boot,
+identification, I/O, and device behavior have been observed, and record only
+the resulting current capability or limitation.
 Before staging, inspect `git status` and exclude generated build output,
 research corpora, and dirty captive-submodule worktrees.
 

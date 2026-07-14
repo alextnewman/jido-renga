@@ -10,27 +10,23 @@
 
 #include "framework/jr_concurrency.h"
 
-// A driver-agnostic host model of the Haiku "ISR bottom half": an interrupt (or
-// a timer) nudges a plain worker thread that drains a mailbox of ref-counted
-// tickets and, on completion, nudges the waiting caller. Jidō-renga's rails are
-// all this shape -- a serialized caller front, a lock-free mailbox, one worker,
-// a counting completion nudge -- so we exercise them off-target with real
-// std::thread preemption instead of emulating the kernel.
+// Driver-independent host model of a serialized caller, lock-free mailbox,
+// worker, and counted completion signal. Real threads exercise preemption.
 //
-// Plug your driver in via three type/behaviour holes:
+// Template requirements:
 //
-//   * Ticket   -- your ref-counted work item. Must provide:
+//   * Ticket   -- ref-counted work item. Must provide:
 //                     void Retain();
 //                     void Release();
 //                     bool IsDone() const;      // terminal-state fence
-//                 (your service marks it done however it likes.)
-//   * Mailbox  -- your single-slot handoff. Must provide:
+//                 (the service marks the ticket terminal.)
+//   * Mailbox  -- single-slot handoff. Must provide:
 //                     bool     Post(Ticket*);   // caller publishes
 //                     Ticket*  Claim();         // worker takes (nullptr if none)
 //                     bool     Reclaim(Ticket*);// caller pulls back on timeout
 //                     bool     Empty() const;
-//   * Service  -- std::function<void(Ticket*)>: do the work and mark the ticket
-//                 done. This is the ONE driver-specific line the worker runs.
+//   * Service  -- std::function<void(Ticket*)>: perform the work and mark the
+//                 ticket done.
 //
 // sdhci_embedded's Transaction / TransactionMailbox satisfy this as-is; a new
 // driver either matches the surface or wraps its types in a thin adapter.
@@ -38,9 +34,8 @@
 namespace jr::test {
 
 
-// Signals are hints; state is truth. A Fixed caller believes only its own
-// ticket's IsDone(); a Naive caller trusts the raw completion nudge (which is
-// the shape of bug #1 -- kept so tests can demonstrate the lie).
+// Fixed waits require the submitted ticket to be terminal. Naive waits model the
+// invalid behavior of trusting any completion signal.
 enum class WaitProtocol { Naive, Fixed };
 
 

@@ -225,7 +225,7 @@ i2c_atmel_mxt_init_driver(device_node* node, void** driverCookie)
 	TRACE_ALWAYS("i2c_atmel_mxt: matched node HID=%s, slave_addr=0x%02x\n",
 		hid ? hid : "(null)", slaveAddr);
 
-	// Get I2C bus interface from the i2c/device/v1 parent
+	// The i2c/device/v1 parent provides transport access.
 	device_node* i2cParent = sDeviceManager->get_parent_node(node);
 	i2c_device_interface* i2c;
 	i2c_device i2cCookie;
@@ -233,7 +233,7 @@ i2c_atmel_mxt_init_driver(device_node* node, void** driverCookie)
 		(void**)&i2cCookie);
 	sDeviceManager->put_node(i2cParent);
 
-	// Get ACPI handle from our node (stored by I2C bus manager)
+	// The I2C bus manager stores the ACPI handle on this node.
 	uint64 acpiHandleRaw = 0;
 	sDeviceManager->get_attr_uint64(node, ACPI_DEVICE_HANDLE_ITEM,
 		&acpiHandleRaw, true);
@@ -246,7 +246,6 @@ i2c_atmel_mxt_init_driver(device_node* node, void** driverCookie)
 		return B_NO_MEMORY;
 	}
 
-	// Run full initialization sequence
 	status_t status = mxtDevice->Initialize();
 	if (status != B_OK) {
 		ERROR("failed to initialize MXT device: %s\n", strerror(status));
@@ -274,18 +273,12 @@ i2c_atmel_mxt_register_child_devices(void* cookie)
 	if (device == NULL)
 		return B_OK;
 
-	// As devices can be un- and replugged at will, we cannot
-	// simply rely on a device count. If there is just one
-	// keyboard, this does not mean that it uses the 0 name.
-	// There might have been two keyboards and the one using 0
-	// might have been unplugged. So we just generate names
-	// until we find one that is not currently in use.
+	// Allocate the first free path; hot removal can leave numbering gaps.
 	int32 index = 0;
 	char pathBuffer[B_DEV_NAME_LENGTH];
 	while (true) {
 		sprintf(pathBuffer, "input/touchpad/" DEVICE_PATH_SUFFIX "/%" B_PRId32, index++);
 		if (gDeviceList->FindDevice(pathBuffer) == NULL) {
-			// This name is still free, use it
 			device->SetPublishPath(strdup(pathBuffer));
 			break;
 		}

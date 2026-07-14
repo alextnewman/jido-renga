@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
 // SPDX-License-Identifier: MIT
 // SPDX-FileContributor: Generated with Qwen 3.6
+// SPDX-FileContributor: Generated with GitHub Copilot
 
 //! Driver for Atmel maXTouch touch controllers.
 // Based on Object-Based Protocol (OBP) specification for WINKY Chromebook 2
@@ -22,8 +23,7 @@
 #include "acpi.h"
 
 
-// RAII guard for I2C bus acquisition. Releases on scope exit so that
-// early returns, breaks, or exceptions never leak the bus lock.
+// I2C bus guard that releases the bus on every exit path.
 struct I2cBusGuard {
 	i2c_device_interface*	bus;
 	i2c_device			cookie;
@@ -322,10 +322,7 @@ MxtDevice::Control(uint32 op, void* buffer, size_t length)
 
 			read.event = MS_READ_TOUCHPAD;
 
-			// Read aggregated touch state from ring buffer.
-			// Worker thread drains I2C and appends to the ring;
-			// ReadOrWait() blocks (cancelable) until data is available,
-			// then drains all accumulated samples into one averaged state.
+			// Return one worker-produced state, blocking until the ring has data.
 			mxt_touch_state state;
 			status_t result = fBuffer.ReadOrWait(state);
 			if (result == B_OK) {
@@ -388,10 +385,7 @@ MxtDevice::_MxtInterrupt(void* data)
 int32
 MxtDevice::_MxtInterruptInt()
 {
-	// Level-triggered IRQ (§9.3): the device keeps the line asserted
-	// while messages are queued. We pulse the worker thread; it
-	// drains via I2C until T44 returns 0, at which point the device
-	// releases the line.
+	// A level-triggered IRQ remains asserted until the worker drains T44/T5.
 	fEventCV.NotifyOne();
 	return B_HANDLED_INTERRUPT;
 }
@@ -408,8 +402,7 @@ MxtDevice::_DrainAndAggregate(mxt_touch_state& state)
 {
 	memset(&state, 0, sizeof(state));
 
-	// Acquire the I2C bus and hold it for the entire drain.
-	// RAII guard ensures release on any exit path.
+	// Hold the I2C bus for the complete queue drain.
 	I2cBusGuard guard(fI2C, fI2CCookie);
 	if (guard.Acquire() != B_OK) {
 		ERROR("drain: acquire_bus failed\n");
@@ -542,53 +535,37 @@ MxtDevice::_WorkerThread(void* data)
 int32
 MxtDevice::_WorkerThreadInt()
 {
-	// Track whether we are inside a touch stanza (contacts active).
-	// Used to insert a single zero-contact event on lift — the input
-	// server needs this gesture-end signal to reset its position tracker
-	// and avoid cursor jumps on the next touch.
+	// A stanza-ending zero event resets the input server's position tracker.
 	bool inTouchStanza = false;
 
 	while (!IsRemoved()) {
-		// Wait for ISR pulse. The condvar is unconditional — if we're
-		// already draining, the NotifyOne is harmlessly ignored.
+		// Duplicate ISR wakes may coalesce while the queue is being drained.
 		fEventCV.Wait();
 
-		// Drain all pending T44 cycles. Each cycle produces one
-		// aggregated touch state appended to the ring buffer.
-		// Device keeps IRQ asserted until queue empties (§9.3).
-		// When T44 returns 0, the queue is empty and the IRQ line
-		// will deassert — break back to CV wait (acquiescent).
+		// Drain until T44 reports an empty queue and the IRQ deasserts.
 		do {
 			mxt_touch_state state;
 			status_t result = _DrainAndAggregate(state);
 			if (result == B_BAD_DATA) {
-				// Queue empty — go back to sleep on CV.
 				break;
 			}
 			if (result != B_OK) {
-				// I2C error — back off and retry on next ISR.
 				ERROR("worker: drain error: %s\n", strerror(result));
 				break;
 			}
 
 			if (state.contactCount > 0) {
-				// Contact data — stream it to the ring.
 				fBuffer.Write(state);
 				inTouchStanza = true;
 			} else if (inTouchStanza) {
-				// Touch → no-touch transition: write a single zero-contact
-				// event so the input server resets its movement tracker.
-				// Without this, stale fPreviousX/Y cause a cursor jump on
-				// the next touch.
+				// Emit exactly one stanza-ending zero-contact event.
 				fBuffer.Write(state);
 				inTouchStanza = false;
 			} else if (state.button) {
-				// Button press with no contacts (physical clickpad press
-				// outside of a touch stanza). Stream it so the click is
-				// delivered even when the user presses without touching.
+				// Physical clickpad presses remain valid without contact data.
 				fBuffer.Write(state);
 			}
-			// else: already outside a stanza, skip redundant zeros.
+			// Suppress redundant zero-contact states between stanzas.
 		} while (!IsRemoved());
 	}
 
@@ -771,7 +748,7 @@ MxtDevice::_ParseObjectTable()
 
 	fObjectTable.Initialize(tableData, tableSize);
 
-	// Dump raw object table for debugging
+	// Trace at most the first 48 bytes of the object table.
 	TRACE("Object Table raw (%" B_PRIu32 " bytes): ", (uint32)tableSize);
 	for (uint32 i = 0; i < tableSize && i < 48; i++) {
 		if (i % 12 == 0)
@@ -1040,10 +1017,9 @@ MxtDevice::_WriteEssentialConfig()
 
 	// T9 Ctrl=0x83: enable scan + report + auto mode.
 	// Bits 7:   enable (1)
-	// Bits 4-6: active touches - 1 (000 = 1, matches Windows crostouchpad4 driver)
+	// Bits 4-6: active touches - 1 (000 = 1)
 	// Bits 0-1: report mode (00 = message object)
 	// Bits 2-3: auto/move/press config
-	// The Windows reference driver (crostouchpad4-atmel) writes the same value.
 	// Multi-finger detection comes from the device generating multiple T9
 	// messages per cycle, not from the ActiveTouches field.
 	if (fHasT9 && fT9Address != 0) {
@@ -1072,8 +1048,7 @@ MxtDevice::_WriteEssentialConfig()
 status_t
 MxtDevice::_ApplyDefaultConfig()
 {
-	// ChromeOS UEFI firmware already programs the device. We skip config
-	// download and rely on firmware-provided state.
+	// ChromeOS UEFI firmware supplies the operating configuration.
 	TRACE("_ApplyDefaultConfig: skipping (firmware provides config)\n");
 	return B_OK;
 }
@@ -1142,7 +1117,7 @@ MxtDevice::_ProcessMessage(const uint8* msg, size_t msgSize,
 		return _ParseT100Message(msg, msgSize, state);
 	}
 
-	// T19 GPIO (clickpad button) — handled below if we have a T19
+	// T19 GPIO carries the clickpad button state.
 	if (fT19ReportID != 0 && reportID == fT19ReportID) {
 		// GPIO bits are active-low: a clear bit means pressed
 		if (msgSize >= 2) {
@@ -1385,8 +1360,7 @@ MxtDevice::Initialize()
 
 	// Phase 7: Install interrupt handler
 	if (fIRQ > 0) {
-		// Program IO-APIC for this GSI (install_io_interrupt_handler ignores
-		// trigger/polarity flags, same workaround as cros_ec_keyboard)
+		// install_io_interrupt_handler() does not program trigger/polarity.
 		arch_int_configure_io_interrupt(fIRQ, fIRQFlags);
 
 		status = install_io_interrupt_handler(fIRQ, _MxtInterrupt, this, 0);
@@ -1411,5 +1385,3 @@ MxtDevice::Initialize()
 	TRACE("Initialization complete\n");
 	return B_OK;
 }
-
-

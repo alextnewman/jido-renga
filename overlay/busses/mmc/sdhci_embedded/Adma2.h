@@ -34,9 +34,7 @@ static_assert(sizeof(Adma2Descriptor) == 8, "ADMA2 descriptor must be 8 bytes");
 // Largest byte count a single descriptor can express (16-bit field, 0 == max).
 constexpr uint32_t kAdma2MaxSegmentBytes = 65536;
 
-// Linux exposes at most 128 mapped segments and caps one request at 512 KiB.
-// DMAResource aligns each segment for us, so one descriptor per segment is
-// sufficient when max_segment_size is 65536.
+// One request is limited to 128 descriptors of at most 65536 bytes each.
 constexpr uint32_t kAdma2MaxDescriptors = 128;
 
 

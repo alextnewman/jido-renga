@@ -4,10 +4,8 @@
 
 #include "Disk.h"
 
-// PIO strategy -- intentionally UNUSED. It exists only as a correctness oracle:
-// a dead-simple buffer-port path to cross-check DMA results against during
-// debugging. The factory never selects it; Transfer() refuses to run so it can
-// never be reached by accident on the hot path.
+// Disabled PIO strategy retained as a DMA diagnostic reference. The factory
+// never selects it and Transfer() rejects runtime use.
 
 namespace jr::sdhci {
 
@@ -27,7 +25,6 @@ PioDisk::Restrictions() const
 status_t
 PioDisk::Transfer(off_t, const generic_io_vec*, size_t, bool, size_t&)
 {
-	// Deliberately unimplemented: PIO is a reference path, never a runtime one.
 	return B_NOT_SUPPORTED;
 }
 

@@ -3,19 +3,14 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileContributor: Generated with GitHub Copilot
 
-# haiku-revision — compose the Jidō Renga derivative Haiku revision string.
+# Compose the Jidō Renga derivative Haiku revision string.
 #
 #     <upstream>+jido-renga-<version>
 #
 # <upstream> is, in order of preference:
-#   1. UPSTREAM_REVISION from config/revision.conf (hand-recorded — use this when
-#      pinning to a known release/beta, since the GitHub mirror lacks hrev tags).
-#   2. `git describe` against the captive's hrev tags, if any exist (transformed
-#      the same way Haiku's own determine_haiku_revision does).
-#   3. g<short-sha> of the captive haiku HEAD.
-#
-# The result is a derivative identity: it names the upstream we grafted onto and
-# our overlay version. Kept well under SYSTEM_REVISION_LENGTH (128).
+#   1. UPSTREAM_REVISION from config/revision.conf.
+#   2. An hrev tag reachable from the captive checkout.
+#   3. g<short-commit> for the captive checkout.
 
 set -eu
 
@@ -32,8 +27,7 @@ captive="$JR_TOP/haiku"
 upstream="$UPSTREAM_REVISION"
 
 if [ -z "$upstream" ] && [ -d "$captive" ]; then
-	# Try hrev tags (transform e.g. "hrev57937-12-gabcdef" -> "hrev57937+12"),
-	# matching build/scripts/determine_haiku_revision.
+	# Transform hrev<N>-<distance>-g<id> into hrev<N>+<distance>.
 	desc=$(git -C "$captive" describe --dirty --tags --match='hrev*' --abbrev=1 2>/dev/null || true)
 	if [ -n "$desc" ]; then
 		upstream=$(echo "$desc" | sed 's/-g[0-9a-z]\{1,\}//' | sed 's/-/+/g')

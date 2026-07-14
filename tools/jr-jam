@@ -3,38 +3,19 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileContributor: Generated with GitHub Copilot
 
-# jr-jam — run Haiku's jam with the Jidō Renga derivative revision preset.
-#
-# Why a wrapper: jam imports environment variables as jam variables at STARTUP,
-# before Jamrules runs. Haiku determines the build revision during Jamrules
-# (DefaultBuildProfiles), which is *before* it includes the per-output
-# UserBuildConfig -- so setting HAIKU_REVISION there is too late and the build
-# aborts with "Haiku revision could not be determined" (the captive's GitHub
-# mirror carries no hrev tags, and our submodule .git is a pointer file after
-# absorbgitdirs). Presetting HAIKU_REVISION in the environment is the correct,
-# and Haiku-supported, seam.
-#
-# This wrapper only owns the revision. Everything else -- toolchain include/lib
-# paths, HOST_PYTHON, -q/-j flags, target names -- is inherited from your shell
-# and passed straight through. Run it from your build output directory, exactly
-# where you would run jam:
-#
-#   CPLUS_INCLUDE_PATH=... LIBRARY_PATH=... tools/jr-jam -q -j4 @nightly-anyboot
-#
-# Override the composed value by exporting HAIKU_REVISION yourself first.
+# Run Haiku's jam with the derivative revision present at Jam startup.
+# UserBuildConfig is included too late to set HAIKU_REVISION. All other
+# environment variables, flags, and targets pass through unchanged.
+# A caller-provided HAIKU_REVISION overrides the composed value.
 
 set -eu
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 
-# Compose the derivative revision unless the caller already pinned one.
 : "${HAIKU_REVISION:=$("$script_dir/haiku-revision")}"
 export HAIKU_REVISION
 
-# Haiku caches the value in <output>/build/haiku-revision and does not notice
-# when HAIKU_REVISION alone changes. If a stale value is cached in the current
-# build dir, drop it so ours takes effect (documented in the UserBuildConfig
-# ReadMe). Unchanged value -> left alone, so stable builds don't churn.
+# Haiku does not invalidate this cache when only HAIKU_REVISION changes.
 revfile=build/haiku-revision
 if [ -f "$revfile" ] && [ "$(cat "$revfile" 2>/dev/null)" != "$HAIKU_REVISION" ]; then
 	rm -f "$revfile"

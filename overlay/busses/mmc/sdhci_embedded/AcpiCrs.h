@@ -10,10 +10,8 @@
 //
 // The only translation unit in the stack that speaks ACPICA's ACPI_RESOURCE
 // layout. That type shares its struct tag (`acpi_resource`) with the Haiku-
-// native, lowercase-field one in <private/kernel/acpi.h>, so the two can never
-// be included in the same TU without a redefinition clash. We quarantine the
-// ACPICA side here and hand the rest of the driver a plain POD, so nothing above
-// this file has to care which `acpi.h` won the include race.
+// native type in <private/kernel/acpi.h>; including both in one translation unit
+// causes a redefinition. This boundary exports only plain resource data.
 
 namespace jr::sdhci {
 
@@ -29,9 +27,7 @@ struct AcpiCrsResources {
 };
 
 
-// Walk the _CRS method of `acpiNode` (the ACPI device node -- our controller's
-// parent in the flattened topology) and fill `out`. Returns B_OK only when a
-// usable MMIO window was found; the caller maps it and installs the IRQ.
+// Decode the controller's parent ACPI node. B_OK requires a usable MMIO window.
 status_t AcpiReadCrs(device_node* acpiNode, AcpiCrsResources& out);
 
 // Evaluate Intel's Bay Trail SDHCI _DSM and decode an integer or up-to-32-bit
