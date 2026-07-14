@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
+# SPDX-License-Identifier: MIT
+# SPDX-FileContributor: Generated with GitHub Copilot
+
+name JidoRenga
+vendor "Jidō Renga"
+summary "Jidō Renga system packages for Haiku"
+# Haiku repository priority 0 outranks the official repositories' priority 1.
+priority 0
+baseurl file:///boot/home/config/non-packaged/data/JidoRenga/repository/%HAIKU_PACKAGING_ARCH%
+identifier tag:github.com,2026:alextnewman/jido-renga/repositories/system/%HAIKU_PACKAGING_ARCH%
+architecture %HAIKU_PACKAGING_ARCH%

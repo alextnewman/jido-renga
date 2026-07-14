@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
+# SPDX-License-Identifier: MIT
+# SPDX-FileContributor: Generated with GitHub Copilot
+
+import os
+from pathlib import Path
+import sys
+
+
+def main() -> int:
+    if len(sys.argv) < 5:
+        print(
+            "usage: jr-build-haiku-repository "
+            "<builder> <init-script> <repository> <repo-info> [package ...]",
+            file=sys.stderr,
+        )
+        return 2
+
+    builder, init_script, repository, repo_info, *packages = sys.argv[1:]
+    if Path(repository).name == "Haiku":
+        filtered = [
+            package for package in packages if Path(package).name != "haiku.hpkg"
+        ]
+        if len(packages) - len(filtered) != 1:
+            print(
+                "jr-build-haiku-repository: expected one haiku.hpkg in "
+                "the local Haiku repository",
+                file=sys.stderr,
+            )
+            return 1
+        packages = filtered
+
+    os.execv(
+        builder,
+        [builder, init_script, repository, repo_info, *packages],
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

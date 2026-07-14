@@ -93,6 +93,11 @@ cd generated.x86_64
 #    and applies that BSP's declared upstream omissions without editing captive
 #    sources or package recipes.
 ../tools/jr-jam -q @nightly-anyboot           # -> haiku-nightly-anyboot.iso
+
+# 5. (optional) Build the composed root package or a local repository containing
+#    only that package.
+../tools/jr-jam -q haiku.hpkg
+../tools/jr-jam -q jido-renga-repository
 ```
 
 `generated*/` is throwaway and never committed. Any surrounding Haiku checkout
@@ -138,6 +143,35 @@ setting `HAIKU_REVISION` there is too late. `tools/jr-jam` therefore presets
 `HAIKU_REVISION` in the environment and `exec`s jam; all other env (toolchain
 paths, `HOST_PYTHON`), flags, and targets pass straight through. Export
 `HAIKU_REVISION` yourself to override the composed value.
+
+## System-package metadata and repository
+
+The root package must remain technically named `haiku`: stage two, packagefs,
+and package dependencies rely on that identity. The graft binds
+`<package-info-source>haiku` to a generated build-output file. The
+`tools/jr-package-info` transformer reads Haiku's current captive package-info
+template, changes only summary, description, packager, and vendor, and fails if
+those upstream fields no longer match. This avoids both captive edits and a
+duplicated package manifest.
+
+The distinct Jidō Renga vendor prevents an ordinary package update from silently
+substituting Haiku's differently-vendored root package. The
+`jido-renga-repository` target builds `repositories/JidoRenga` with only the
+composed `haiku.hpkg`. Its priority `0` outranks the official repositories'
+priority `1`; it temporarily invokes Haiku's native repository rule, then
+removes that repository from the image repository list. Official Haiku and
+HaikuPorts repository configuration therefore remains unchanged.
+
+Haiku repository indexes accept only packages matching the repository vendor.
+The graft wraps the native repository action and omits only `haiku.hpkg` from
+the locally composed official Haiku index; the JR-vendor root belongs to
+`JidoRenga`. Refreshing the official channel can still expose Haiku's root
+package, but ordinary updates will not cross the vendor boundary.
+
+Do not treat `pkgman full-sync` as a supported JR update path. Distribution
+upgrade mode may cross vendor boundaries and remove packages to reach a
+solution. Use explicit local package installation or ordinary repository
+updates.
 
 ## How to add a new driver
 

@@ -99,6 +99,13 @@ Build a bootable desktop image with:
 ../tools/jr-jam -q @nightly-anyboot
 ```
 
+Build only the composed system package or its narrow local repository with:
+
+```sh
+../tools/jr-jam -q haiku.hpkg
+../tools/jr-jam -q jido-renga-repository
+```
+
 `generated*/` directories are disposable build output and are never committed.
 The first image build is a full Haiku build and may download HaikuPorts
 packages; later builds are incremental.
@@ -114,11 +121,12 @@ package before ordinary device discovery, so boot-critical JR modules and their
 boot links must be composed into `haiku.hpkg`.
 
 That package keeps Haiku's technical package identity because the loader and
-package daemon depend on it. JR identifies the resulting system through its
-derivative revision and BSP composition instead of pretending that an
-independently named root package is interchangeable. Applications such as
-WebPositive remain separate packages; JR does not rebuild or rebrand the Haiku
-desktop catalog.
+package daemon depend on it. Its metadata identifies Jidō Renga as the
+derivative vendor while preserving Haiku's package name, provides, licenses,
+and dependencies. The optional `JidoRenga` repository contains only this system
+package and is not enabled automatically in composed images. Applications such
+as WebPositive remain separate packages; JR does not rebuild or rebrand the
+Haiku desktop catalog.
 
 Set `JIDO_RENGA_BSP = none` in `UserBuildConfig` before the overlay walk to
 build the add-ons without applying a BSP image policy. Set

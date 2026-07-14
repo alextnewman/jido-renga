@@ -7,6 +7,43 @@ SubDir JIDO_RENGA_TOP overlay ;
 # Build-time overlay root, entered through DeferredSubInclude after PLATFORM is
 # available. Directory classes match the add-ons' canonical Haiku runtime paths.
 
+# Generate the derivative root-package template from the captive template. The
+# strict transformer changes provenance only; package identity and dependencies
+# continue to track the selected Haiku revision.
+actions JidoRengaPackageInfo
+{
+	"$(2[1])" "$(2[2])" > "$(1)"
+}
+
+# A repository index accepts packages from only its declared vendor. The
+# derivative root belongs to JidoRenga, not the locally composed Haiku index.
+JIDO_RENGA_REPOSITORY_WRAPPER
+	= [ FDirName $(JIDO_RENGA_TOP) tools jr-build-haiku-repository ] ;
+
+actions HaikuRepository1
+{
+	"$(HOST_PYTHON)" "$(JIDO_RENGA_REPOSITORY_WRAPPER)" \
+		"$(2[1])" "$(2[2])" "$(1)" "$(2[3-])"
+}
+
+local jidoRengaPackageInfoTool
+	= <jido-renga-build-tool>jr-package-info ;
+SEARCH on $(jidoRengaPackageInfoTool)
+	= [ FDirName $(JIDO_RENGA_TOP) tools ] ;
+
+local upstreamHaikuPackageInfo
+	= <jido-renga-upstream-package-info>haiku ;
+SEARCH on $(upstreamHaikuPackageInfo)
+	= [ FDirName $(HAIKU_PACKAGE_INFOS_DIR) generic ] ;
+
+local derivativeHaikuPackageInfo = <package-info-source>haiku ;
+MakeLocate $(derivativeHaikuPackageInfo)
+	: [ FDirName $(HAIKU_OBJECT_DIR) jido-renga package_infos ] ;
+Depends $(derivativeHaikuPackageInfo)
+	: $(jidoRengaPackageInfoTool) $(upstreamHaikuPackageInfo) ;
+JidoRengaPackageInfo $(derivativeHaikuPackageInfo)
+	: $(jidoRengaPackageInfoTool) $(upstreamHaikuPackageInfo) ;
+
 # Shared modules precede consumers.
 SubInclude JIDO_RENGA_TOP overlay bus_managers iosf_mbi ;
 
@@ -156,3 +193,23 @@ rule AddNewDriversToPackage relativeDirectoryTokens : targets
 			: $(relativeDirectoryTokens) : $(targets) ;
 	}
 }
+
+
+# Build a publishable repository without registering it in composed images.
+# The official Haiku and HaikuPorts repositories remain the image defaults.
+local imageRepositories = $(HAIKU_REPOSITORIES) ;
+local jidoRengaRepository = <repository>JidoRenga ;
+MakeLocate $(jidoRengaRepository)
+	: $(HAIKU_PACKAGE_REPOSITORIES_DIR_$(HAIKU_PACKAGING_ARCH)) ;
+
+local jidoRengaRepositoryInfo
+	= <repository-info-template>jido_renga ;
+SEARCH on $(jidoRengaRepositoryInfo)
+	= [ FDirName $(JIDO_RENGA_TOP) config repository_infos ] ;
+
+HaikuRepository $(jidoRengaRepository)
+	: $(jidoRengaRepositoryInfo) : haiku.hpkg ;
+HAIKU_REPOSITORIES = $(imageRepositories) ;
+
+NotFile jido-renga-repository ;
+Depends jido-renga-repository : $(jidoRengaRepository) ;

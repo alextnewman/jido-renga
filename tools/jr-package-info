@@ -1,0 +1,62 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
+# SPDX-License-Identifier: MIT
+# SPDX-FileContributor: Generated with GitHub Copilot
+
+set -eu
+
+if [ "$#" -ne 1 ]; then
+	echo "usage: jr-package-info <haiku-package-info-template>" >&2
+	exit 2
+fi
+
+awk '
+BEGIN {
+	summary = 0
+	description = 0
+	packager = 0
+	vendor = 0
+}
+
+/^[[:space:]]*summary[[:space:]]+"The Haiku base system"[[:space:]]*$/ {
+	print "summary\t\t\t\"The Haiku base system composed by Jidō Renga\""
+	summary++
+	next
+}
+
+/^[[:space:]]*description[[:space:]]+"The Haiku base system includes all system core software, like[[:space:]]*$/ {
+	if ((getline continuation) <= 0 ||
+		continuation != "boot loader, kernel, the system libraries, servers, and applications.\"") {
+		print "jr-package-info: unexpected Haiku package description" > "/dev/stderr"
+		exit 1
+	}
+	print "description\t\t\"Haiku core software composed with the selected Jidō Renga"
+	print "board-support package and boot-critical drivers.\""
+	description++
+	next
+}
+
+/^[[:space:]]*packager[[:space:]]+"The Haiku build system"[[:space:]]*$/ {
+	print "packager\t\t\"The Jidō Renga build system\""
+	packager++
+	next
+}
+
+/^[[:space:]]*vendor[[:space:]]+"Haiku Project"[[:space:]]*$/ {
+	print "vendor\t\t\t\"Jidō Renga\""
+	vendor++
+	next
+}
+
+{
+	print
+}
+
+END {
+	if (summary != 1 || description != 1 || packager != 1 || vendor != 1) {
+		printf "jr-package-info: package template did not match expected provenance fields\n" \
+			> "/dev/stderr"
+		exit 1
+	}
+}
+' "$1"
