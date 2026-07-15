@@ -9,9 +9,9 @@
 #   * sdhci_embedded  (matcher, command policy, convergence, ADMA2, CSD,
 #                      transactions, personalities)
 #   * iosf_mbi        (mailbox protocol)
-#   * i2c_atmel_mxt   (object-table parser + CRC characterization) -- compiled
-#                     against the minimal kernel-header shims in shims/ so a real
-#                     driver translation unit can run on the host.
+#   * i2c_atmel_mxt   (object-table parser, CRC characterization, touch engine)
+#                     -- compiled against the minimal kernel-header shims in
+#                     shims/ so pure driver logic can run on the host.
 #
 #   make        build and run
 #   make build  compile only
@@ -30,7 +30,8 @@ MXT_DIR := ../overlay/drivers/input/i2c_atmel_mxt
 CORE_SRC := \
 	$(DRIVER_DIR)/Matcher.cpp \
 	$(DRIVER_DIR)/Personality.cpp \
-	$(MXT_DIR)/ObjectTable.cpp
+	$(MXT_DIR)/ObjectTable.cpp \
+	$(MXT_DIR)/TouchEngine.cpp
 
 TEST_SRC := \
 	framework/test_worker_rig.cpp \
@@ -47,6 +48,7 @@ TEST_SRC := \
 	sdhci_embedded/test_staged_request.cpp \
 	iosf_mbi/test_iosf_mbi_protocol.cpp \
 	i2c_atmel_mxt/test_object_table.cpp \
+	i2c_atmel_mxt/test_touch_engine.cpp \
 	sdhci_embedded/test_main.cpp
 
 BIN := jr_tests

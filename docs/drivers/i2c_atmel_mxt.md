@@ -43,41 +43,72 @@ The worker owns message I/O:
 2. read T44 and the first T5 message in one transaction;
 3. read the remaining queued T5 messages;
 4. pass every message to `TouchEngine`;
-5. flush one aggregate touch state into the event ring;
+5. flush the ordered output frames into the event ring;
 6. repeat until T44 reports an empty queue.
 
 This keeps I2C out of interrupt context and leaves the driver asleep when the
 touchpad is idle. The input server blocks on a separate condition variable until
-the ring contains an event.
+the ring contains an event. The empty check and condition-variable wait share
+the ring mutex so a final release frame cannot be stranded by a lost wakeup.
 
 ## Touch state
 
-`TouchEngine` maintains contact state across queue drains instead of treating
-each message batch as an independent sample.
+`TouchEngine` has two deliberately separate responsibilities:
+
+1. maintain authoritative controller contact and button state;
+2. adapt that state into ordered frames that match Haiku's touchpad contract.
+
+T9 and T100 report IDs identify persistent contact slots. DETECT activates or
+updates a slot, while DETECT clear releases it immediately. An absent report ID
+does nothing because a T44 drain contains state changes, not a complete contact
+snapshot.
+
+The selected active slot remains the representative primary contact until it
+lifts. Output coordinates come from that primary rather than a centroid, so
+adding or removing a second finger cannot move the pointer by itself. If the
+primary lifts while another contact remains, the engine emits a zero-contact
+reset followed by a replacement baseline. Haiku therefore starts tracking the
+new primary without interpreting the coordinate change as movement or scroll.
 
 Important Winky behavior:
 
 - T9 does not reliably assert its PRESS flag. A contact becomes active when its
-  report ID first appears.
-- Lift is represented by contact absence in the next drain cycle. Active
-  contacts not refreshed during a cycle are released.
+  report has the DETECT bit set.
+- T9 reports lift with DETECT clear, often alongside RELEASE.
+- Physical depression can release one or both contact slots before the delayed
+  T19 button press arrives. On such a release, the engine may retain a recent
+  two-contact frame as an output-only click candidate. A T19 press within 150 ms
+  uses that frame for Haiku's click-finger classification, but the released
+  controller slots remain released. This lets a physical two-finger press become
+  a right-click without creating ghost contacts or delaying ordinary lifts.
 - T19 reports the physical clickpad button on active-low bit 5. T19 messages are
   change-only, so the last button value persists across drain cycles.
 - T9 and T100 coordinates are clamped to the discovered hardware range before
   the board orientation transform is applied.
 
-The engine aggregates active contacts into a centroid, average pressure, and
-finger mask. A two-contact lift with bounded movement is emitted in the form
-expected by Haiku's click-finger emulator for a right click.
+The engine reports the active-slot bitmap through `fingers` and the primary
+contact's coordinates and pressure. Haiku's input server remains responsible for
+two-finger scrolling and physical click-finger policy.
 
-The worker emits one zero-contact event when a touch stanza ends. That event is
-required so the input server clears its previous position before the next touch;
-redundant idle zeros are suppressed.
+One T44 drain can require more than one Haiku frame. Primary replacement,
+multi-finger button release, and multiple T19 edges are queued in controller
+order. The worker emits required zero-contact resets and suppresses only
+redundant idle zeros.
+
+Physical button state changes are emitted even when no contacts remain. This
+ensures a click released after both fingers lift cannot leave the input server
+replaying the prior pressed state. An incomplete I2C drain similarly resets the
+touch engine and emits a zero-contact frame rather than retaining uncertain
+contacts. A full output queue is reported as an error only after the remaining
+hardware messages have been drained, preventing an asserted interrupt from
+wedging the device.
 
 ## Current support
 
-The driver is validated on Winky for pointer movement, physical clickpad input,
-multi-contact reporting, and two-finger tap right-click behavior.
+The authoritative-slot and ordered-frame implementation is validated on Winky
+for smooth pointer movement, physical clickpad input, two-finger scrolling, and
+physical two-finger right-click without cursor jumps or loss of interaction.
+The controller lifecycle is also covered by host-side message-sequence tests.
 
 Current limitations:
 

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
 // SPDX-License-Identifier: MIT
 // SPDX-FileContributor: Generated with Qwen 3.6
+// SPDX-FileContributor: Generated with GitHub Copilot
 #ifndef _I2C_ATMEL_MXT_DEVICE_H
 #define _I2C_ATMEL_MXT_DEVICE_H
 
@@ -12,10 +13,7 @@
 #include <lock.h>
 
 #include "ObjectTable.h"
-
-
-// Forward declaration (TouchEngine.h includes this header for mxt_touch_state)
-class TouchEngine;
+#include "TouchEngine.h"
 
 #define TRANSFER_BUFFER_SIZE	128
 #define MXT_MSG_SIZE			64
@@ -53,14 +51,6 @@ class TouchEngine;
 #define MXT_T9_PRESS	(1 << 6)
 #define MXT_T9_DETECT		(1 << 7)
 
-// T100 (Multi-Touch) contact types
-#define MXT_T100_TYPE_FINGER			1
-#define MXT_T100_TYPE_PASSIVE_STYLUS	2
-#define MXT_T100_TYPE_HOVER_FINGER	4
-#define MXT_T100_TYPE_GLOVE			5
-#define MXT_T100_TYPE_LARGE			6
-
-
 // Single contact data extracted from a T9 or T100 message
 struct mxt_contact {
 	uint16	x;
@@ -72,28 +62,14 @@ struct mxt_contact {
 };
 
 
-// Aggregated touch state from all contacts in one message queue drain
-struct mxt_touch_state {
-	int			contactCount;
-	uint16		x;				// centroid X
-	uint16		y;				// centroid Y
-	uint8		pressure;			// avg area
-	bool		button;				// any press/detect
-	uint8		fingers;			// active contact count
-};
-
-
-// SPSC ring buffer. MutexLocker protects all buffer access.
-// Read() is non-blocking — returns B_TIMED_OUT if empty.
-// ReadOrWait() wraps Read: tries once, waits on CV if empty, retries.
+// SPSC ring buffer. MutexLocker protects all buffer access and makes the empty
+// check plus condition-variable wait atomic with respect to writers.
 #define MXT_RING_CAPACITY	16
 
 class MxtRingBuffer {
 public:
 								MxtRingBuffer();
-
 			void				Write(const mxt_touch_state& state);
-			status_t		Read(mxt_touch_state& state);
 			status_t		ReadOrWait(mxt_touch_state& state);
 
 private:
@@ -162,7 +138,7 @@ private:
 
 			// Message queue — read and aggregate
 			status_t			_DrainInitMessages();
-			status_t			_DrainAndAggregate(mxt_touch_state& state);
+			status_t			_DrainAndAggregate(mxt_touch_batch& batch);
 			status_t			_ProcessMessage(const uint8* msg, size_t msgSize,
 									mxt_touch_state& state);
 			status_t			_ParseT9Message(const uint8* msg, size_t msgSize,

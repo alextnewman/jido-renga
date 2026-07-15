@@ -124,37 +124,18 @@ MxtRingBuffer::Write(const mxt_touch_state& state)
 
 
 status_t
-MxtRingBuffer::Read(mxt_touch_state& state)
-{
-	MutexLocker lock(&fMutex);
-
-	if (fReadPos == fWritePos)
-		return B_TIMED_OUT;
-
-	// Return one sample in FIFO order. With T7 active set to 8 ms
-	// (125 Hz), the device produces events at the same rate the input
-	// server consumes them — one sample per poll, no backlog.
-	state = fSamples[fReadPos];
-	fReadPos = (fReadPos + 1) % MXT_RING_CAPACITY;
-
-	return B_OK;
-}
-
-
-status_t
 MxtRingBuffer::ReadOrWait(mxt_touch_state& state)
 {
-	// Try non-blocking read first (mutex inside Read).
-	status_t result = Read(state);
-	if (result == B_OK)
-		return result;
+	MutexLocker lock(&fMutex);
+	while (fReadPos == fWritePos) {
+		status_t result = fDataCV.Wait(&fMutex);
+		if (result != B_OK)
+			return result;
+	}
 
-	// Ring was empty — endless cancelable wait for writer notification.
-	// CV uses its own internal lock, no mutex needed here.
-	fDataCV.Wait();
-
-	// Notification received — try read again under mutex.
-	return Read(state);
+	state = fSamples[fReadPos];
+	fReadPos = (fReadPos + 1) % MXT_RING_CAPACITY;
+	return B_OK;
 }
 
 MxtDevice::MxtDevice(device_node* parent, i2c_device_interface* i2c,
@@ -256,16 +237,12 @@ _StateToMovement(const mxt_touch_state& state, touchpad_movement* info)
 	info->yPosition = state.y;
 	info->zPressure = state.pressure;
 
-	// Button mapping: the engine sets state.button for both physical T19 GPIO
-	// presses and two-finger tap gestures. The input server's
-	// _ClickFingerButtonEmulator converts buttons + finger count into the
-	// correct button identity (left, right, middle).
+	// The engine reports the physical T19 GPIO state. The input server combines
+	// it with the finger count to apply the user's click-finger preference.
 	if (state.button)
 		info->buttons = 1;
 
-	// Finger bitmask: preserved directly from engine output.
-	// The engine sets fingers = 0x03 on two-finger tap lift events so the
-	// input server emulator can classify the gesture as a right click.
+	// Finger bitmask: preserved directly from the persistent contact table.
 	info->fingers = state.fingers;
 
 	// fingerWidth: legacy Synaptics convention used as fallback finger count.
@@ -393,14 +370,14 @@ MxtDevice::_MxtInterruptInt()
 
 // ----------------------------------------------------------------#
 // Drain one T44 cycle: read count + messages, feed touch engine
-// Returns B_OK with state populated (may be empty if queue drained).
+// Returns B_OK with ordered Haiku-facing frames populated.
 // Called from worker thread context (NOT ISR).
 // ----------------------------------------------------------------#
 
 status_t
-MxtDevice::_DrainAndAggregate(mxt_touch_state& state)
+MxtDevice::_DrainAndAggregate(mxt_touch_batch& batch)
 {
-	memset(&state, 0, sizeof(state));
+	memset(&batch, 0, sizeof(batch));
 
 	// Hold the I2C bus for the complete queue drain.
 	I2cBusGuard guard(fI2C, fI2CCookie);
@@ -442,47 +419,63 @@ MxtDevice::_DrainAndAggregate(mxt_touch_state& state)
 	if (count >= 0xFF) {
 		// Overflow — hardware dropped old messages. Nothing useful this cycle.
 		ERROR("drain: T44 count=0xFF (overflow)\n");
-		return B_BAD_DATA;
+		return B_BUFFER_OVERFLOW;
 	}
 
 	TRACE("drain: T44 count=%u, msgSize=%" B_PRIuSIZE "\n", count, readSize);
 
 	// Feed all messages through the touch engine for stateful processing.
-	// The engine tracks individual contacts, persistent button state,
-	// and classifies gestures (move, tap, two-finger tap).
+	// The engine retains individual contacts between T44 batches and preserves
+	// the physical button state; Haiku's input server owns gesture policy.
 	if (fTouchEngine != NULL) {
+		bigtime_t timestamp = system_time();
 		// Process first message (already in countMsg[1..msgSize])
-		fTouchEngine->ProcessMessage(countMsg + 1, fT5MsgSize,
+		status_t engineStatus = fTouchEngine->ProcessMessage(countMsg + 1,
+			fT5MsgSize,
 			fT9ReportIDMin, fT9ReportIDMax,
 			fT100ReportIDMin, fT100ReportIDMax,
-			fT19ReportID, fHasT9, fHasT100);
+			fT19ReportID, fHasT9, fHasT100, timestamp);
 
 		// Read remaining messages (device auto-increments pointer)
 		uint8 msgBuf[MXT_MSG_SIZE];
 		for (uint8 i = 1; i < count; i++) {
 			status = fI2C->exec_command(fI2CCookie, I2C_OP_READ_STOP,
 				NULL, 0, msgBuf, fT5MsgSize);
-			if (status == B_OK)
-				fTouchEngine->ProcessMessage(msgBuf, fT5MsgSize,
+			if (status != B_OK) {
+				ERROR("drain: T5 message %u read failed: %s\n", i,
+					strerror(status));
+				return status;
+			}
+			if (engineStatus == B_OK) {
+				engineStatus = fTouchEngine->ProcessMessage(msgBuf, fT5MsgSize,
 					fT9ReportIDMin, fT9ReportIDMax,
 					fT100ReportIDMin, fT100ReportIDMax,
-					fT19ReportID, fHasT9, fHasT100);
+					fT19ReportID, fHasT9, fHasT100, timestamp);
+			}
 		}
+		if (engineStatus != B_OK)
+			return engineStatus;
 
-		// Flush engine state into one aggregated touch state
-		fTouchEngine->Flush(&state);
-		TRACE("drain: engine flush contacts=%d, btn=%d, fingers=0x%02x\n",
-			state.contactCount, state.button, state.fingers);
+		status = fTouchEngine->Flush(&batch);
+		if (status != B_OK)
+			return status;
+		TRACE("drain: engine flush frames=%u\n", batch.count);
 	} else {
 		// Fallback: legacy aggregate path (no gesture engine)
+		mxt_touch_state state;
+		memset(&state, 0, sizeof(state));
 		_ProcessMessage(countMsg + 1, fT5MsgSize, state);
 
 		uint8 msgBuf[MXT_MSG_SIZE];
 		for (uint8 i = 1; i < count; i++) {
 			status = fI2C->exec_command(fI2CCookie, I2C_OP_READ_STOP,
 				NULL, 0, msgBuf, fT5MsgSize);
-			if (status == B_OK)
-				_ProcessMessage(msgBuf, fT5MsgSize, state);
+			if (status != B_OK) {
+				ERROR("drain: T5 message %u read failed: %s\n", i,
+					strerror(status));
+				return status;
+			}
+			_ProcessMessage(msgBuf, fT5MsgSize, state);
 		}
 
 		if (state.contactCount > 0) {
@@ -491,6 +484,8 @@ MxtDevice::_DrainAndAggregate(mxt_touch_state& state)
 			state.pressure /= state.contactCount;
 			state.fingers = (uint8)((1u << MIN(state.contactCount, 32)) - 1);
 		}
+		batch.count = 1;
+		batch.frames[0] = state;
 	}
 
 	// Apply orientation transform (spec Section 11.1), then convert to
@@ -498,7 +493,10 @@ MxtDevice::_DrainAndAggregate(mxt_touch_state& state)
 	// display hinge).  Because the touchpad sits below the keyboard, the
 	// device's Y=0 is at the screen bottom --- so we flip Y after the
 	// orientation transform to get display coordinates.
-	if (state.contactCount > 0 || state.fingers != 0) {
+	for (uint8 i = 0; i < batch.count; i++) {
+		mxt_touch_state& state = batch.frames[i];
+		if (state.contactCount == 0 && state.fingers == 0)
+			continue;
 		if (fHasT9) {
 			if (fT9Orientation & 0x01) {
 				uint16 tmp = state.x;
@@ -537,6 +535,7 @@ MxtDevice::_WorkerThreadInt()
 {
 	// A stanza-ending zero event resets the input server's position tracker.
 	bool inTouchStanza = false;
+	bool buttonWasPressed = false;
 
 	while (!IsRemoved()) {
 		// Duplicate ISR wakes may coalesce while the queue is being drained.
@@ -544,26 +543,40 @@ MxtDevice::_WorkerThreadInt()
 
 		// Drain until T44 reports an empty queue and the IRQ deasserts.
 		do {
-			mxt_touch_state state;
-			status_t result = _DrainAndAggregate(state);
+			mxt_touch_batch batch;
+			status_t result = _DrainAndAggregate(batch);
 			if (result == B_BAD_DATA) {
 				break;
 			}
 			if (result != B_OK) {
 				ERROR("worker: drain error: %s\n", strerror(result));
+				if (fTouchEngine != NULL)
+					fTouchEngine->Reset();
+				if (inTouchStanza || buttonWasPressed) {
+					mxt_touch_state resetState;
+					memset(&resetState, 0, sizeof(resetState));
+					fBuffer.Write(resetState);
+				}
+				inTouchStanza = false;
+				buttonWasPressed = false;
 				break;
 			}
 
-			if (state.contactCount > 0) {
-				fBuffer.Write(state);
-				inTouchStanza = true;
-			} else if (inTouchStanza) {
-				// Emit exactly one stanza-ending zero-contact event.
-				fBuffer.Write(state);
-				inTouchStanza = false;
-			} else if (state.button) {
-				// Physical clickpad presses remain valid without contact data.
-				fBuffer.Write(state);
+			for (uint8 i = 0; i < batch.count; i++) {
+				const mxt_touch_state& state = batch.frames[i];
+				bool buttonChanged = state.button != buttonWasPressed;
+				if (state.contactCount > 0) {
+					fBuffer.Write(state);
+					inTouchStanza = true;
+				} else if (inTouchStanza) {
+					// Emit exactly one stanza-ending zero-contact event.
+					fBuffer.Write(state);
+					inTouchStanza = false;
+				} else if (buttonChanged) {
+					// Preserve button-only edges after contacts have lifted.
+					fBuffer.Write(state);
+				}
+				buttonWasPressed = state.button;
 			}
 			// Suppress redundant zero-contact states between stanzas.
 		} while (!IsRemoved());

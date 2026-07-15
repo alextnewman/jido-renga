@@ -22,6 +22,7 @@ typedef int			int32;
 typedef long long		int64;
 
 typedef int			status_t;
+typedef int64			bigtime_t;
 
 #ifndef NULL
 #define NULL 0
@@ -35,6 +36,7 @@ enum {
 	B_NO_INIT	= (int)0x80000003,
 	B_BAD_VALUE	= (int)0x80000005,
 	B_BAD_DATA	= (int)0x8000000a,
+	B_BUFFER_OVERFLOW = (int)0x8000000b,
 };
 
 // printf length modifiers (Haiku spells these via <inttypes.h>-style macros).

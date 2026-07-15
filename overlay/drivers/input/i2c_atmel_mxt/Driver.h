@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
 // SPDX-License-Identifier: MIT
 // SPDX-FileContributor: Generated with Qwen 3.6
+// SPDX-FileContributor: Generated with GitHub Copilot
 #ifndef _I2C_ATMEL_MXT_DRIVER_H
 #define _I2C_ATMEL_MXT_DRIVER_H
 
@@ -22,10 +23,16 @@ extern DeviceList *gDeviceList;
 
 
 //#define TRACE_I2C_ATMEL_MXT
+//#define TRACE_I2C_ATMEL_MXT_TOUCH
 #ifdef TRACE_I2C_ATMEL_MXT
 #	define TRACE(x...) dprintf(DRIVER_NAME ": " x)
 #else
 #	define TRACE(x...)
+#endif
+#ifdef TRACE_I2C_ATMEL_MXT_TOUCH
+#	define TOUCH_TRACE(x...) dprintf(DRIVER_NAME ": touch: " x)
+#else
+#	define TOUCH_TRACE(x...)
 #endif
 #define ERROR(x...) dprintf(DRIVER_NAME ": " x)
 #define TRACE_ALWAYS(x...)	dprintf(DRIVER_NAME ": " x)
