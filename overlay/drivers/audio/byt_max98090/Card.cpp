@@ -30,6 +30,7 @@
 
 extern device_manager_info* gDeviceManager;
 extern pci_module_info* gPci;
+extern gpio::module_info* gGpio;
 
 
 namespace jr::byt_audio {
@@ -294,7 +295,6 @@ Card::Card()
 	fHeadphoneMuted(false),
 	fHeadphonePresent(false),
 	fMicrophonePresent(false),
-	fGpio(nullptr),
 	fIramArea(B_BAD_VALUE),
 	fDramArea(B_BAD_VALUE),
 	fShimArea(B_BAD_VALUE),
@@ -1019,35 +1019,17 @@ Card::_InitializeJackDetection()
 		return B_NO_INIT;
 	}
 
-	gpio::module_info* gpio = fGpio;
-	bool acquiredModule = false;
-	if (gpio == nullptr) {
-		status_t status = get_module(B_GPIO_MODULE_NAME,
-			reinterpret_cast<::module_info**>(&gpio));
-		if (status != B_OK) {
-			mutex_unlock(&fJackLock);
-			return status;
-		}
-		acquiredModule = true;
-	}
-
 	gpio::Pin headphone;
-	status_t status = headphone.AcquireAcpi(gpio, codecNode, 0, 0);
+	status_t status = headphone.AcquireAcpi(gGpio, codecNode, 0, 0);
 	if (status != B_OK) {
-		if (acquiredModule)
-			put_module(B_GPIO_MODULE_NAME);
 		mutex_unlock(&fJackLock);
 		return status;
 	}
 
-	fGpio = gpio;
 	status = headphone.Watch({gpio::Edge::Both, kJackDebounce},
 		&_HeadphoneEvent, this);
 	if (status != B_OK) {
 		headphone.Reset();
-		fGpio = nullptr;
-		if (acquiredModule)
-			put_module(B_GPIO_MODULE_NAME);
 		mutex_unlock(&fJackLock);
 		return status;
 	}
@@ -1056,15 +1038,12 @@ Card::_InitializeJackDetection()
 	status = headphone.Read(headphoneLevel);
 	if (status != B_OK) {
 		headphone.Reset();
-		fGpio = nullptr;
-		if (acquiredModule)
-			put_module(B_GPIO_MODULE_NAME);
 		mutex_unlock(&fJackLock);
 		return status;
 	}
 	fHeadphoneDetect = std::move(headphone);
 	gpio::Pin microphone;
-	status_t microphoneStatus = microphone.AcquireAcpi(gpio, codecNode, 1, 0);
+	status_t microphoneStatus = microphone.AcquireAcpi(gGpio, codecNode, 1, 0);
 	gpio::Level microphoneLevel = gpio::Level::High;
 	if (microphoneStatus == B_OK) {
 		microphoneStatus = microphone.Watch(
@@ -1101,11 +1080,7 @@ Card::_TeardownJackDetection()
 	mutex_lock(&fJackLock);
 	fHeadphoneDetect.Reset();
 	fMicrophoneDetect.Reset();
-	gpio::module_info* gpio = fGpio;
-	fGpio = nullptr;
 	mutex_unlock(&fJackLock);
-	if (gpio != nullptr)
-		put_module(B_GPIO_MODULE_NAME);
 }
 
 

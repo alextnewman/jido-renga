@@ -67,11 +67,11 @@ SubInclude JIDO_RENGA_TOP overlay bus_managers gpio ;
 SubInclude JIDO_RENGA_TOP overlay bus_managers iosf_mbi ;
 
 # Bus drivers (host controllers).
-SubInclude JIDO_RENGA_TOP overlay busses gpio byt_gpio ;
 SubInclude JIDO_RENGA_TOP overlay busses mmc sdhci_embedded ;
 
 # Leaf drivers.
 SubInclude JIDO_RENGA_TOP overlay drivers audio byt_max98090 ;
+SubInclude JIDO_RENGA_TOP overlay drivers gpio byt_gpio ;
 SubInclude JIDO_RENGA_TOP overlay drivers input cros_ec_keyboard ;
 SubInclude JIDO_RENGA_TOP overlay drivers input i2c_atmel_mxt ;
 
@@ -79,9 +79,9 @@ SubInclude JIDO_RENGA_TOP overlay drivers input i2c_atmel_mxt ;
 # haiku.hpkg that it replaces. Controller ownership is resolved at image time.
 JIDO_RENGA_BSP_IMAGE_BUS_MANAGERS = ;
 JIDO_RENGA_BSP_IMAGE_I2C_BUS_MANAGER = ;
-JIDO_RENGA_BSP_IMAGE_BUSSES_GPIO = ;
 JIDO_RENGA_BSP_IMAGE_BUSSES_MMC = ;
 JIDO_RENGA_BSP_IMAGE_DRIVERS_AUDIO = ;
+JIDO_RENGA_BSP_IMAGE_DRIVERS_GPIO = ;
 JIDO_RENGA_BSP_IMAGE_DRIVERS_INPUT = ;
 JIDO_RENGA_BSP_BOOT_MODULE_TARGETS = ;
 JIDO_RENGA_BSP_OMIT_HAIKU_PACKAGE_FILES = ;
@@ -122,10 +122,10 @@ rule JidoRengaPackageTargets directory : targets
 		local directoryPath = [ FDirName $(directory) ] ;
 		if $(directoryPath) = add-ons/kernel/bus_managers {
 			additions = $(JIDO_RENGA_BSP_IMAGE_BUS_MANAGERS) ;
-		} else if $(directoryPath) = add-ons/kernel/busses/gpio {
-			additions = $(JIDO_RENGA_BSP_IMAGE_BUSSES_GPIO) ;
 		} else if $(directoryPath) = add-ons/kernel/busses/mmc {
 			additions = $(JIDO_RENGA_BSP_IMAGE_BUSSES_MMC) ;
+		} else if $(directoryPath) = add-ons/kernel/drivers/gpio {
+			additions = $(JIDO_RENGA_BSP_IMAGE_DRIVERS_GPIO) ;
 		}
 
 		for target in $(additions) {
@@ -179,9 +179,9 @@ rule JidoRengaAddBspPackageFiles
 	}
 	JIDO_RENGA_BSP_PACKAGE_FILES_ADDED on $(package) = 1 ;
 
-	if $(JIDO_RENGA_BSP_IMAGE_BUSSES_GPIO) {
-		AddFilesToContainer $(package) : add-ons kernel busses gpio
-			: $(JIDO_RENGA_BSP_IMAGE_BUSSES_GPIO) ;
+	if $(JIDO_RENGA_BSP_IMAGE_DRIVERS_GPIO) {
+		AddFilesToContainer $(package) : add-ons kernel drivers gpio
+			: $(JIDO_RENGA_BSP_IMAGE_DRIVERS_GPIO) ;
 	}
 	AddFilesToContainer $(package) : data firmware byt_max98090
 		: $(JIDO_RENGA_SST_FIRMWARE) ;

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # SPDX-FileContributor: Generated with GitHub Copilot
 
-SubDir JIDO_RENGA_TOP overlay busses gpio byt_gpio ;
+SubDir JIDO_RENGA_TOP overlay drivers gpio byt_gpio ;
 
 SubDirC++Flags -fno-rtti ;
 SubDirSysHdrs $(JIDO_RENGA_TOP) overlay headers ;

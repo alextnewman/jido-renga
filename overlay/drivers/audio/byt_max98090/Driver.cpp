@@ -18,6 +18,7 @@
 
 device_manager_info* gDeviceManager = nullptr;
 pci_module_info* gPci = nullptr;
+gpio::module_info* gGpio = nullptr;
 
 
 namespace jr::byt_audio {
@@ -407,6 +408,7 @@ module_dependency module_dependencies[] = {
 	{B_DEVICE_MANAGER_MODULE_NAME, reinterpret_cast<module_info**>(
 		&gDeviceManager)},
 	{B_PCI_MODULE_NAME, reinterpret_cast<module_info**>(&gPci)},
+	{B_GPIO_MODULE_NAME, reinterpret_cast<module_info**>(&gGpio)},
 	{}
 };
 

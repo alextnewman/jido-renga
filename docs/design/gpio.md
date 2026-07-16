@@ -55,7 +55,10 @@ pins before dropping the GPIO module.
 
 ## Bay Trail controller
 
-`byt_gpio` binds ACPI HID `INT33FC` or `INT33B2` with UIDs 1 through 3:
+`byt_gpio` is installed at `add-ons/kernel/drivers/gpio/byt_gpio` and binds
+ACPI HID `INT33FC` or `INT33B2` with UIDs 1 through 3. It is a controller
+driver, not a child-enumerating bus: Haiku's generic ACPI probe searches the
+`drivers` class but does not search a `busses/gpio` class.
 
 | UID | Community | Pins | Shared GSI |
 |---|---|---:|---:|

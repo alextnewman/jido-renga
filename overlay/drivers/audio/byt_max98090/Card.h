@@ -110,7 +110,6 @@ private:
 	bool					fHeadphoneMuted;
 	bool					fHeadphonePresent;
 	bool					fMicrophonePresent;
-	gpio::module_info*		fGpio;
 	gpio::Pin				fHeadphoneDetect;
 	gpio::Pin				fMicrophoneDetect;
 

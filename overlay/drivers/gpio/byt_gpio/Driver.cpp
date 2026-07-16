@@ -24,7 +24,7 @@ gpio::module_info* gGpio = nullptr;
 namespace {
 
 constexpr const char* kControllerModule
-	= "busses/gpio/byt_gpio/driver_v1";
+	= "drivers/gpio/byt_gpio/driver_v1";
 
 
 bool
