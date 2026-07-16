@@ -10,6 +10,8 @@
 #include <lock.h>
 #include <hmulti_audio.h>
 
+#include <common/Gpio.h>
+
 
 namespace jr::byt_audio {
 
@@ -20,7 +22,8 @@ public:
 
 	status_t AttachLpe(device_node* acpiNode);
 	void DetachLpe();
-	status_t AttachCodec(i2c_device_interface* interface, i2c_device cookie);
+	status_t AttachCodec(device_node* codecNode,
+		i2c_device_interface* interface, i2c_device cookie);
 	void DetachCodec(i2c_device cookie);
 
 	bool Ready();
@@ -38,6 +41,12 @@ private:
 	status_t _WriteCodec(uint8 reg, uint8 value);
 	status_t _ReadCodec(uint8 reg, uint8& value);
 	status_t _SetCodecVolume(uint8 volume, bool muted);
+	status_t _SetHeadphoneVolume(uint8 volume, bool muted);
+	status_t _InitializeJackDetection();
+	void _TeardownJackDetection();
+	status_t _ApplyJackState(bool headphonePresent, bool microphonePresent);
+	static void _HeadphoneEvent(void* context, const gpio::Event& event);
+	static void _MicrophoneEvent(void* context, const gpio::Event& event);
 	void _UnmapLpe();
 
 	status_t _GetDescription(multi_description* description);
@@ -81,6 +90,8 @@ private:
 	status_t _FreeStream();
 
 	mutex					fLock;
+	mutex					fCodecLock;
+	mutex					fJackLock;
 	mutex					fStreamLock;
 	mutex					fIpcLock;
 	bool					fLpePresent;
@@ -91,9 +102,17 @@ private:
 
 	i2c_device_interface*	fI2c;
 	i2c_device				fI2cCookie;
+	device_node*			fCodecNode;
 	uint8					fCodecRevision;
 	uint8					fVolume;
 	bool					fMuted;
+	uint8					fHeadphoneVolume;
+	bool					fHeadphoneMuted;
+	bool					fHeadphonePresent;
+	bool					fMicrophonePresent;
+	gpio::module_info*		fGpio;
+	gpio::Pin				fHeadphoneDetect;
+	gpio::Pin				fMicrophoneDetect;
 
 	area_id					fIramArea;
 	area_id					fDramArea;

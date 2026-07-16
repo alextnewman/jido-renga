@@ -22,6 +22,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <utility>
 #include <vm/vm.h>
 
 #include "acpi.h"
@@ -89,6 +90,15 @@ constexpr const char* kRequiredFirmwarePath
 constexpr int32 kMixGroupId = 1000;
 constexpr int32 kMixVolumeId = 1001;
 constexpr int32 kMixMuteId = 1002;
+constexpr int32 kMixHeadphoneGroupId = 1010;
+constexpr int32 kMixHeadphoneVolumeId = 1011;
+constexpr int32 kMixHeadphoneMuteId = 1012;
+constexpr int32 kMixRouteId = 1020;
+constexpr int32 kMixRouteSpeakerId = 1021;
+constexpr int32 kMixRouteHeadphoneId = 1022;
+constexpr uint32 kMixRouteSpeaker = 0;
+constexpr uint32 kMixRouteHeadphone = 1;
+constexpr bigtime_t kJackDebounce = 200000;
 
 
 void
@@ -276,9 +286,15 @@ Card::Card()
 	fOpenCount(0),
 	fI2c(nullptr),
 	fI2cCookie(nullptr),
+	fCodecNode(nullptr),
 	fCodecRevision(0),
 	fVolume(max98090::kDefaultSpeakerVolume),
 	fMuted(false),
+	fHeadphoneVolume(max98090::kDefaultHeadphoneVolume),
+	fHeadphoneMuted(false),
+	fHeadphonePresent(false),
+	fMicrophonePresent(false),
+	fGpio(nullptr),
 	fIramArea(B_BAD_VALUE),
 	fDramArea(B_BAD_VALUE),
 	fShimArea(B_BAD_VALUE),
@@ -310,6 +326,8 @@ Card::Card()
 	fLastHardwareCounter(0)
 {
 	mutex_init(&fLock, "BYT MAX98090 card");
+	mutex_init(&fCodecLock, "BYT MAX98090 codec");
+	mutex_init(&fJackLock, "BYT MAX98090 jack");
 	mutex_init(&fStreamLock, "BYT MAX98090 stream");
 	mutex_init(&fIpcLock, "BYT MAX98090 IPC");
 	memset(&fPmcInfo, 0, sizeof(fPmcInfo));
@@ -318,6 +336,7 @@ Card::Card()
 
 Card::~Card()
 {
+	_TeardownJackDetection();
 	const status_t stopStatus = _ForceStop();
 	if (stopStatus != B_OK) {
 		ERROR("stream teardown during destruction failed: %s; "
@@ -332,6 +351,8 @@ Card::~Card()
 	}
 	mutex_destroy(&fIpcLock);
 	mutex_destroy(&fStreamLock);
+	mutex_destroy(&fJackLock);
+	mutex_destroy(&fCodecLock);
 	mutex_destroy(&fLock);
 }
 
@@ -385,9 +406,10 @@ Card::DetachLpe()
 
 
 status_t
-Card::AttachCodec(i2c_device_interface* interface, i2c_device cookie)
+Card::AttachCodec(device_node* codecNode, i2c_device_interface* interface,
+	i2c_device cookie)
 {
-	if (interface == nullptr || cookie == nullptr)
+	if (codecNode == nullptr || interface == nullptr || cookie == nullptr)
 		return B_BAD_VALUE;
 
 	mutex_lock(&fLock);
@@ -398,6 +420,7 @@ Card::AttachCodec(i2c_device_interface* interface, i2c_device cookie)
 	fCodecPresent = true;
 	fI2c = interface;
 	fI2cCookie = cookie;
+	fCodecNode = codecNode;
 	const bool canInitialize = fPmcRegisters != nullptr;
 	mutex_unlock(&fLock);
 
@@ -428,6 +451,7 @@ Card::DetachCodec(i2c_device cookie)
 	if (!matches)
 		return;
 
+	_TeardownJackDetection();
 	const status_t status = _ForceStop();
 	if (status != B_OK) {
 		ERROR("stream teardown during codec detach failed: %s\n",
@@ -438,6 +462,7 @@ Card::DetachCodec(i2c_device cookie)
 	if (fI2cCookie == cookie) {
 		fI2c = nullptr;
 		fI2cCookie = nullptr;
+		fCodecNode = nullptr;
 	}
 	mutex_unlock(&fLock);
 }
@@ -462,11 +487,16 @@ Card::Open()
 			"ready; firmware path is %s\n", kRequiredFirmwarePath);
 		return B_DEV_NOT_READY;
 	}
+	const status_t jackStatus = _InitializeJackDetection();
+	if (jackStatus != B_OK) {
+		TRACE("jack detection remains unavailable: %s\n",
+			strerror(jackStatus));
+	}
 	mutex_lock(&fLock);
 	fOpenCount++;
 	const int32 openCount = fOpenCount;
 	mutex_unlock(&fLock);
-	TRACE("opened fixed 48 kHz stereo speaker device (open count %" B_PRId32
+	TRACE("opened fixed 48 kHz stereo output device (open count %" B_PRId32
 		")\n", openCount);
 	return B_OK;
 }
@@ -853,13 +883,18 @@ Card::_ReadCodec(uint8 reg, uint8& value)
 status_t
 Card::_InitializeCodec()
 {
+	mutex_lock(&fCodecLock);
 	status_t status = _WriteCodec(max98090::kSoftwareReset, max98090::kReset);
-	if (status != B_OK)
+	if (status != B_OK) {
+		mutex_unlock(&fCodecLock);
 		return status;
+	}
 	snooze(20000);
 	status = _ReadCodec(max98090::kRevision, fCodecRevision);
-	if (status != B_OK)
+	if (status != B_OK) {
+		mutex_unlock(&fCodecLock);
 		return status;
+	}
 
 	const struct {
 		uint8 reg;
@@ -877,6 +912,13 @@ Card::_InitializeCodec()
 		{max98090::kFilterConfiguration,
 			max98090::kFilterMusicPlaybackDcBlock},
 		{max98090::kDaiPlaybackLevel, max98090::kDaiPlaybackUnmutedUnity},
+		{max98090::kHeadphoneControl, 0},
+		{max98090::kLeftHeadphoneVolume,
+			static_cast<uint8>(max98090::kDefaultHeadphoneVolume
+				| max98090::kHeadphoneMute)},
+		{max98090::kRightHeadphoneVolume,
+			static_cast<uint8>(max98090::kDefaultHeadphoneVolume
+				| max98090::kHeadphoneMute)},
 		{max98090::kLeftSpeakerMixer,
 			max98090::kLeftDacToLeftSpeaker},
 		{max98090::kRightSpeakerMixer,
@@ -891,12 +933,22 @@ Card::_InitializeCodec()
 	};
 	for (size_t i = 0; i < B_COUNT_OF(settings); i++) {
 		status = _WriteCodec(settings[i].reg, settings[i].value);
-		if (status != B_OK)
+		if (status != B_OK) {
+			mutex_unlock(&fCodecLock);
 			return status;
+		}
 	}
-	TRACE("MAX98090 revision 0x%02x initialized for 48 kHz I2S "
-		"speaker playback; codec IRQ and jack GPIO handling are deferred\n",
+	fHeadphonePresent = false;
+	fMicrophonePresent = false;
+	mutex_unlock(&fCodecLock);
+
+	TRACE("MAX98090 revision 0x%02x initialized for 48 kHz I2S playback\n",
 		fCodecRevision);
+	const status_t jackStatus = _InitializeJackDetection();
+	if (jackStatus != B_OK) {
+		TRACE("codec ready without jack detection: %s; it will be retried "
+			"when opened\n", strerror(jackStatus));
+	}
 	return B_OK;
 }
 
@@ -906,17 +958,249 @@ Card::_SetCodecVolume(uint8 volume, bool muted)
 {
 	if (volume > max98090::kSpeakerVolumeMaximum)
 		volume = max98090::kSpeakerVolumeMaximum;
+	mutex_lock(&fCodecLock);
 	const uint8 value = (max98090::kSpeakerVolumeRawMinimum + volume)
-		| (muted ? max98090::kSpeakerMute : 0);
+		| ((muted || fHeadphonePresent) ? max98090::kSpeakerMute : 0);
 	status_t status = _WriteCodec(max98090::kLeftSpeakerVolume, value);
-	if (status != B_OK)
+	if (status != B_OK) {
+		mutex_unlock(&fCodecLock);
 		return status;
+	}
 	status = _WriteCodec(max98090::kRightSpeakerVolume, value);
-	if (status != B_OK)
+	if (status != B_OK) {
+		mutex_unlock(&fCodecLock);
 		return status;
+	}
 	fVolume = volume;
 	fMuted = muted;
+	mutex_unlock(&fCodecLock);
 	return B_OK;
+}
+
+
+status_t
+Card::_SetHeadphoneVolume(uint8 volume, bool muted)
+{
+	if (volume > max98090::kHeadphoneVolumeMaximum)
+		volume = max98090::kHeadphoneVolumeMaximum;
+	mutex_lock(&fCodecLock);
+	const uint8 value = volume
+		| ((muted || !fHeadphonePresent) ? max98090::kHeadphoneMute : 0);
+	status_t status = _WriteCodec(max98090::kLeftHeadphoneVolume, value);
+	if (status != B_OK) {
+		mutex_unlock(&fCodecLock);
+		return status;
+	}
+	status = _WriteCodec(max98090::kRightHeadphoneVolume, value);
+	if (status != B_OK) {
+		mutex_unlock(&fCodecLock);
+		return status;
+	}
+	fHeadphoneVolume = volume;
+	fHeadphoneMuted = muted;
+	mutex_unlock(&fCodecLock);
+	return B_OK;
+}
+
+
+status_t
+Card::_InitializeJackDetection()
+{
+	mutex_lock(&fJackLock);
+	if (fHeadphoneDetect.IsValid()) {
+		mutex_unlock(&fJackLock);
+		return B_OK;
+	}
+	mutex_lock(&fLock);
+	device_node* codecNode = fCodecPresent ? fCodecNode : nullptr;
+	mutex_unlock(&fLock);
+	if (codecNode == nullptr) {
+		mutex_unlock(&fJackLock);
+		return B_NO_INIT;
+	}
+
+	gpio::module_info* gpio = fGpio;
+	bool acquiredModule = false;
+	if (gpio == nullptr) {
+		status_t status = get_module(B_GPIO_MODULE_NAME,
+			reinterpret_cast<::module_info**>(&gpio));
+		if (status != B_OK) {
+			mutex_unlock(&fJackLock);
+			return status;
+		}
+		acquiredModule = true;
+	}
+
+	gpio::Pin headphone;
+	status_t status = headphone.AcquireAcpi(gpio, codecNode, 0, 0);
+	if (status != B_OK) {
+		if (acquiredModule)
+			put_module(B_GPIO_MODULE_NAME);
+		mutex_unlock(&fJackLock);
+		return status;
+	}
+
+	fGpio = gpio;
+	status = headphone.Watch({gpio::Edge::Both, kJackDebounce},
+		&_HeadphoneEvent, this);
+	if (status != B_OK) {
+		headphone.Reset();
+		fGpio = nullptr;
+		if (acquiredModule)
+			put_module(B_GPIO_MODULE_NAME);
+		mutex_unlock(&fJackLock);
+		return status;
+	}
+
+	gpio::Level headphoneLevel;
+	status = headphone.Read(headphoneLevel);
+	if (status != B_OK) {
+		headphone.Reset();
+		fGpio = nullptr;
+		if (acquiredModule)
+			put_module(B_GPIO_MODULE_NAME);
+		mutex_unlock(&fJackLock);
+		return status;
+	}
+	fHeadphoneDetect = std::move(headphone);
+	gpio::Pin microphone;
+	status_t microphoneStatus = microphone.AcquireAcpi(gpio, codecNode, 1, 0);
+	gpio::Level microphoneLevel = gpio::Level::High;
+	if (microphoneStatus == B_OK) {
+		microphoneStatus = microphone.Watch(
+			{gpio::Edge::Both, kJackDebounce}, &_MicrophoneEvent, this);
+	}
+	if (microphoneStatus == B_OK)
+		microphoneStatus = microphone.Read(microphoneLevel);
+	if (microphoneStatus == B_OK) {
+		fMicrophoneDetect = std::move(microphone);
+	} else {
+		microphone.Reset();
+		TRACE("microphone-presence GPIO unavailable: %s\n",
+			strerror(microphoneStatus));
+	}
+	mutex_unlock(&fJackLock);
+
+	const bool headphonePresent = headphoneLevel == gpio::Level::High;
+	const bool microphonePresent = microphoneLevel == gpio::Level::Low;
+	status = _ApplyJackState(headphonePresent, microphonePresent);
+	if (status != B_OK) {
+		_TeardownJackDetection();
+		return status;
+	}
+	TRACE("jack GPIOs active: headphone=%s microphone=%s, 200 ms debounce\n",
+		headphonePresent ? "present" : "absent",
+		microphonePresent ? "present" : "absent");
+	return B_OK;
+}
+
+
+void
+Card::_TeardownJackDetection()
+{
+	mutex_lock(&fJackLock);
+	fHeadphoneDetect.Reset();
+	fMicrophoneDetect.Reset();
+	gpio::module_info* gpio = fGpio;
+	fGpio = nullptr;
+	mutex_unlock(&fJackLock);
+	if (gpio != nullptr)
+		put_module(B_GPIO_MODULE_NAME);
+}
+
+
+status_t
+Card::_ApplyJackState(bool headphonePresent, bool microphonePresent)
+{
+	mutex_lock(&fCodecLock);
+	if (fI2c == nullptr) {
+		mutex_unlock(&fCodecLock);
+		return B_NO_INIT;
+	}
+	if (headphonePresent == fHeadphonePresent
+		&& microphonePresent == fMicrophonePresent) {
+		mutex_unlock(&fCodecLock);
+		return B_OK;
+	}
+
+	const uint8 headphoneValue = fHeadphoneVolume
+		| ((!headphonePresent || fHeadphoneMuted)
+			? max98090::kHeadphoneMute : 0);
+	const uint8 speakerValue = (max98090::kSpeakerVolumeRawMinimum + fVolume)
+		| ((headphonePresent || fMuted) ? max98090::kSpeakerMute : 0);
+	status_t status;
+	if (headphonePresent) {
+		status = _WriteCodec(max98090::kLeftSpeakerVolume, speakerValue);
+		if (status == B_OK)
+			status = _WriteCodec(max98090::kRightSpeakerVolume, speakerValue);
+		if (status == B_OK) {
+			status = _WriteCodec(max98090::kOutputEnable,
+				max98090::kDacAndHeadphoneEnable);
+		}
+		if (status == B_OK) {
+			status = _WriteCodec(max98090::kLeftHeadphoneVolume,
+				headphoneValue);
+		}
+		if (status == B_OK) {
+			status = _WriteCodec(max98090::kRightHeadphoneVolume,
+				headphoneValue);
+		}
+	} else {
+		status = _WriteCodec(max98090::kLeftHeadphoneVolume, headphoneValue);
+		if (status == B_OK) {
+			status = _WriteCodec(max98090::kRightHeadphoneVolume,
+				headphoneValue);
+		}
+		if (status == B_OK) {
+			status = _WriteCodec(max98090::kOutputEnable,
+				max98090::kDacAndSpeakerEnable);
+		}
+		if (status == B_OK)
+			status = _WriteCodec(max98090::kLeftSpeakerVolume, speakerValue);
+		if (status == B_OK)
+			status = _WriteCodec(max98090::kRightSpeakerVolume, speakerValue);
+	}
+	if (status == B_OK) {
+		fHeadphonePresent = headphonePresent;
+		fMicrophonePresent = microphonePresent;
+	}
+	mutex_unlock(&fCodecLock);
+
+	if (status == B_OK) {
+		EVENT("jack state: headphones %s, microphone %s; routing playback "
+			"to %s\n", headphonePresent ? "present" : "absent",
+			microphonePresent ? "present" : "absent",
+			headphonePresent ? "headphones" : "speakers");
+	} else {
+		ERROR("failed to apply jack state: %s\n", strerror(status));
+	}
+	return status;
+}
+
+
+void
+Card::_HeadphoneEvent(void* context, const gpio::Event& event)
+{
+	Card* card = static_cast<Card*>(context);
+	bool microphonePresent;
+	mutex_lock(&card->fCodecLock);
+	microphonePresent = card->fMicrophonePresent;
+	mutex_unlock(&card->fCodecLock);
+	card->_ApplyJackState(event.level == gpio::Level::High,
+		microphonePresent);
+}
+
+
+void
+Card::_MicrophoneEvent(void* context, const gpio::Event& event)
+{
+	Card* card = static_cast<Card*>(context);
+	bool headphonePresent;
+	mutex_lock(&card->fCodecLock);
+	headphonePresent = card->fHeadphonePresent;
+	mutex_unlock(&card->fCodecLock);
+	card->_ApplyJackState(headphonePresent,
+		event.level == gpio::Level::Low);
 }
 
 
@@ -1047,9 +1331,9 @@ Card::_SetGlobalFormat(multi_format_info* format)
 status_t
 Card::_ListMixControls(multi_mix_control_info* controls)
 {
-	if (controls->control_count < 3)
+	if (controls->control_count < 9)
 		return B_BUFFER_OVERFLOW;
-	multi_mix_control list[3] = {};
+	multi_mix_control list[9] = {};
 	list[0].id = kMixGroupId;
 	list[0].flags = B_MULTI_MIX_GROUP;
 	list[0].string = S_OUTPUT;
@@ -1065,9 +1349,35 @@ Card::_ListMixControls(multi_mix_control_info* controls)
 	list[2].parent = kMixGroupId;
 	list[2].flags = B_MULTI_MIX_ENABLE;
 	list[2].string = S_MUTE;
+	list[3].id = kMixHeadphoneGroupId;
+	list[3].flags = B_MULTI_MIX_GROUP;
+	list[3].string = S_OUTPUT;
+	strlcpy(list[3].name, "Headphones", sizeof(list[3].name));
+	list[4].id = kMixHeadphoneVolumeId;
+	list[4].parent = kMixHeadphoneGroupId;
+	list[4].flags = B_MULTI_MIX_GAIN;
+	list[4].string = S_VOLUME;
+	list[4].gain.min_gain = 0;
+	list[4].gain.max_gain = max98090::kHeadphoneVolumeMaximum;
+	list[4].gain.granularity = 1;
+	list[5].id = kMixHeadphoneMuteId;
+	list[5].parent = kMixHeadphoneGroupId;
+	list[5].flags = B_MULTI_MIX_ENABLE;
+	list[5].string = S_MUTE;
+	list[6].id = kMixRouteId;
+	list[6].flags = B_MULTI_MIX_MUX;
+	strlcpy(list[6].name, "Active output", sizeof(list[6].name));
+	list[7].id = kMixRouteSpeakerId;
+	list[7].parent = kMixRouteId;
+	list[7].flags = B_MULTI_MIX_MUX_VALUE;
+	strlcpy(list[7].name, "Speaker", sizeof(list[7].name));
+	list[8].id = kMixRouteHeadphoneId;
+	list[8].parent = kMixRouteId;
+	list[8].flags = B_MULTI_MIX_MUX_VALUE;
+	strlcpy(list[8].name, "Headphones", sizeof(list[8].name));
 	if (user_memcpy(controls->controls, list, sizeof(list)) != B_OK)
 		return B_BAD_ADDRESS;
-	controls->control_count = 3;
+	controls->control_count = 9;
 	return B_OK;
 }
 
@@ -1075,14 +1385,29 @@ Card::_ListMixControls(multi_mix_control_info* controls)
 status_t
 Card::_GetMix(multi_mix_value_info* values)
 {
+	mutex_lock(&fCodecLock);
+	const uint8 speakerVolume = fVolume;
+	const bool speakerMuted = fMuted;
+	const uint8 headphoneVolume = fHeadphoneVolume;
+	const bool headphoneMuted = fHeadphoneMuted;
+	const bool headphonePresent = fHeadphonePresent;
+	mutex_unlock(&fCodecLock);
+
 	for (int32 i = 0; i < values->item_count; i++) {
 		multi_mix_value value;
 		if (user_memcpy(&value, values->values + i, sizeof(value)) != B_OK)
 			return B_BAD_ADDRESS;
 		if (value.id == kMixVolumeId)
-			value.gain = fVolume;
+			value.gain = speakerVolume;
 		else if (value.id == kMixMuteId)
-			value.enable = fMuted;
+			value.enable = speakerMuted;
+		else if (value.id == kMixHeadphoneVolumeId)
+			value.gain = headphoneVolume;
+		else if (value.id == kMixHeadphoneMuteId)
+			value.enable = headphoneMuted;
+		else if (value.id == kMixRouteId)
+			value.mux = headphonePresent
+				? kMixRouteHeadphone : kMixRouteSpeaker;
 		else
 			return B_BAD_VALUE;
 		if (user_memcpy(values->values + i, &value, sizeof(value)) != B_OK)
@@ -1095,8 +1420,16 @@ Card::_GetMix(multi_mix_value_info* values)
 status_t
 Card::_SetMix(multi_mix_value_info* values)
 {
-	uint8 volume = fVolume;
-	bool muted = fMuted;
+	mutex_lock(&fCodecLock);
+	uint8 speakerVolume = fVolume;
+	bool speakerMuted = fMuted;
+	uint8 headphoneVolume = fHeadphoneVolume;
+	bool headphoneMuted = fHeadphoneMuted;
+	const bool headphonePresent = fHeadphonePresent;
+	mutex_unlock(&fCodecLock);
+
+	bool setSpeaker = false;
+	bool setHeadphone = false;
 	for (int32 i = 0; i < values->item_count; i++) {
 		multi_mix_value value;
 		if (user_memcpy(&value, values->values + i, sizeof(value)) != B_OK)
@@ -1106,14 +1439,38 @@ Card::_SetMix(multi_mix_value_info* values)
 				|| value.gain > max98090::kSpeakerVolumeMaximum) {
 				return B_BAD_VALUE;
 			}
-			volume = static_cast<uint8>(value.gain);
+			speakerVolume = static_cast<uint8>(value.gain);
+			setSpeaker = true;
 		} else if (value.id == kMixMuteId) {
-			muted = value.enable;
+			speakerMuted = value.enable;
+			setSpeaker = true;
+		} else if (value.id == kMixHeadphoneVolumeId) {
+			if (value.gain < 0
+				|| value.gain > max98090::kHeadphoneVolumeMaximum) {
+				return B_BAD_VALUE;
+			}
+			headphoneVolume = static_cast<uint8>(value.gain);
+			setHeadphone = true;
+		} else if (value.id == kMixHeadphoneMuteId) {
+			headphoneMuted = value.enable;
+			setHeadphone = true;
+		} else if (value.id == kMixRouteId) {
+			const uint32 activeRoute = headphonePresent
+				? kMixRouteHeadphone : kMixRouteSpeaker;
+			if (value.mux != activeRoute)
+				return B_NOT_ALLOWED;
 		} else {
 			return B_BAD_VALUE;
 		}
 	}
-	return _SetCodecVolume(volume, muted);
+	if (setSpeaker) {
+		const status_t status = _SetCodecVolume(speakerVolume, speakerMuted);
+		if (status != B_OK)
+			return status;
+	}
+	if (setHeadphone)
+		return _SetHeadphoneVolume(headphoneVolume, headphoneMuted);
+	return B_OK;
 }
 
 

@@ -326,6 +326,9 @@ JR_TEST(byt_codec, full_register_playback_program_is_exact)
 	JR_CHECK_EQ(kIoConfiguration, (uint8_t)0x25);
 	JR_CHECK_EQ(kFilterConfiguration, (uint8_t)0x26);
 	JR_CHECK_EQ(kDaiPlaybackLevel, (uint8_t)0x27);
+	JR_CHECK_EQ(kHeadphoneControl, (uint8_t)0x2b);
+	JR_CHECK_EQ(kLeftHeadphoneVolume, (uint8_t)0x2c);
+	JR_CHECK_EQ(kRightHeadphoneVolume, (uint8_t)0x2d);
 	JR_CHECK_EQ(kLeftSpeakerMixer, (uint8_t)0x2e);
 	JR_CHECK_EQ(kRightSpeakerMixer, (uint8_t)0x2f);
 	JR_CHECK_EQ(kSpeakerControl, (uint8_t)0x30);
@@ -350,6 +353,9 @@ JR_TEST(byt_codec, full_register_playback_program_is_exact)
 	JR_CHECK_EQ(kDefaultSpeakerRegisterValue, (uint8_t)0x22);
 	JR_CHECK_EQ(kSpeakerControlValue, (uint8_t)0x00);
 	JR_CHECK_EQ(kDacAndSpeakerEnable, (uint8_t)0x33);
+	JR_CHECK_EQ(kDacAndHeadphoneEnable, (uint8_t)0xc3);
+	JR_CHECK_EQ(kDefaultHeadphoneVolume, (uint8_t)0x1a);
+	JR_CHECK_EQ(kHeadphoneMute, (uint8_t)0x80);
 	JR_CHECK_EQ(kShutdownRelease, (uint8_t)0x80);
 }
 

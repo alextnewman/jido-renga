@@ -62,7 +62,15 @@ Intel SST DSP to the MAX98090 speaker codec:
   PCM 48 kHz stereo S16_LE, timestamp address 0xff34484c);
 - starts, drops, and frees the DSP stream on demand;
 - implements `B_MULTI_BUFFER_EXCHANGE` with period-elapsed polling, firmware
-  timestamp reading, and Haiku HDA-compatible buffer cycle derivation.
+  timestamp reading, and Haiku HDA-compatible buffer cycle derivation;
+- acquires the codec's two ACPI GPIO resources through the common GPIO service,
+  subscribes to both edges with 200 ms debounce, and reads the initial levels;
+- treats SCORE pin 14 as active-high headphone presence and pin 15 as
+  active-low microphone presence;
+- mutes the old MAX98090 path before switching `OUTPUT_ENABLE`, then unmutes
+  the selected speaker or headphone path;
+- exposes separate speaker/headphone volume and mute controls plus a
+  GPIO-driven active-output mixer selector.
 
 **IPC/period servicing is currently polling-based** with all host interrupts
 masked. The driver polls SHIM registers whenever waiting for DSP responses or
@@ -78,10 +86,11 @@ configuration, stream start, period exchange, and audible playback through its
 internal speakers. The successful allocation reply is the firmware's short
 zero-result form with no mailbox body.
 
-Headphone-jack detection and output switching remain unimplemented. Inserting
-headphones currently leaves the internal speakers active and does not change
-the mixer because the driver neither handles the MAX98090 jack/codec interrupt
-nor exposes a headphone route or jack state.
+Headphone-jack detection and output switching are implemented but not yet
+validated on Winky hardware. The path uses the Bay Trail SCORE community's
+shared GSI 49 rather than MAX98090 IRQ 67. Insertion selects HPL/HPR and mutes
+SPL/SPR; removal restores the internal speakers. Microphone presence is tracked
+for future capture support, but the driver still publishes no input channels.
 
 ## MRFLD IPC protocol
 
@@ -209,7 +218,10 @@ mute bits remain clear. Logical left/right mixer volume 3 is inverted over
 0..3, so `SPK_CONTROL` `0x30` receives `0x00`. The speaker mixers receive
 `0x01` and `0x02`, `FILTER_CONFIG` `0x26` receives Music mode plus playback DC
 blocking (`0xa0`), and `OUTPUT_ENABLE` `0x3f` enables DACL, DACR, SPL, and SPR
-(`0x33`). `DEVICE_SHUTDOWN` `0x45 = 0x80` is written last.
+((`0x33`). Headphone control remains on the direct-DAC path, registers
+`0x2c`/`0x2d` start at raw volume `0x1a` with their mute bits set, and
+`DEVICE_SHUTDOWN` `0x45 = 0x80` is written last. Jack insertion changes
+`OUTPUT_ENABLE` to DACL, DACR, HPL, and HPR (`0xc3`) after muting the speakers.
 
 The codec is ACPI child `\_SB.PCI0.I2C2`, HID `193C9890`, at 7-bit I2C address
 `0x10` and 400 kHz. The captured boot maps that controller to Haiku I2C bus 1
@@ -218,12 +230,13 @@ also describes level-triggered, active-low IRQ 67 and GPSC GPIO pins 14 and 15.
 Haiku currently limits IO-APIC use to IRQ 63, so IRQ 67 is unusable and this
 playback milestone intentionally neither requires nor installs it.
 
-LPE `_CRS` appends those GPIOs as jack/microphone indices 0/1 plus a GPSS GPIO
-interrupt on pin 28. Codec IRQ, jack detection, microphone sensing, and those
-GPIO paths are explicitly deferred. The separate LPE IPC2HOST IRQ 29 is usable;
-the current playback implementation records it but masks host interrupts and
-polls the IPC register, avoiding an unhandled IRQ until stream IPC has a proper
-interrupt path.
+The codec and LPE `_CRS` tables both describe those GPIOs as
+jack/microphone indices 0/1. The native GPIO service resolves the codec
+resources to SCORE, where live Linux evidence identifies child IRQs for
+`BYT-GPIO 14 hp` and `BYT-GPIO 15 mic` behind shared controller GSI 49. The
+separate LPE IPC2HOST IRQ 29 is usable; the current playback implementation
+records it but masks host interrupts and polls the IPC register, avoiding an
+unhandled IRQ until stream IPC has a proper interrupt path.
 
 Coreboot exposes a 2 MiB LPE BAR0, 4 KiB PCI-configuration BAR1, and 1 MiB
 firmware/IMR BAR2. Winky reserves BAR2 at physical `0x20000000`; on C0 and
@@ -246,10 +259,11 @@ both drivers: `byt_max98090` owns the internal SST/MAX98090 path, while Haiku's
 HDA driver remains available for potential HDMI audio.
 
 The SST driver deliberately presents a small Haiku-native facade rather than
-the Linux control graph: one fixed 48 kHz, 16-bit stereo speaker endpoint plus
-speaker volume and mute. DSP cells, switch matrices, SSP controls, and codec
+the Linux control graph: one fixed 48 kHz, 16-bit stereo endpoint, separate
+speaker/headphone volume and mute controls, and an automatically selected
+active-output route. DSP cells, switch matrices, SSP controls, and raw codec
 register controls remain private implementation details; no UCM-style
-userspace policy is required for the speaker route.
+userspace policy is required.
 
 The captured Winky boot log confirms Haiku detects and reserves the
 `8086:0f04` HDA controller independently, and separately enumerates the I2C
@@ -270,7 +284,8 @@ show:
 3. external firmware path selected;
 4. `SST firmware init-complete received`;
 5. MAX98090 revision and fixed playback format;
-6. `/dev/audio/hmulti/byt_max98090/0` published.
+6. jack GPIO initial state and 200 ms debounce;
+7. `/dev/audio/hmulti/byt_max98090/0` published.
 
 Missing firmware logs the required path. Firmware parser failures name the
 failed validation class. An open before both halves are ready logs the readiness

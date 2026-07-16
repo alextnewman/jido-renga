@@ -20,6 +20,7 @@
 CXX ?= c++
 CXXFLAGS := -std=c++17 -Wall -Wextra -Wshadow -O1 -g -pthread \
 	-I. -I../overlay/headers -I../overlay/busses/mmc/sdhci_embedded \
+	-I../overlay/busses/gpio/byt_gpio \
 	-I../overlay/bus_managers/iosf_mbi \
 	-Ishims -I../overlay/drivers/input/i2c_atmel_mxt \
 	-I../overlay/drivers/audio/byt_max98090
@@ -53,6 +54,7 @@ TEST_SRC := \
 	i2c_atmel_mxt/test_object_table.cpp \
 	i2c_atmel_mxt/test_touch_engine.cpp \
 	byt_max98090/test_firmware.cpp \
+	byt_gpio/test_baytrail_gpio.cpp \
 	sdhci_embedded/test_main.cpp
 
 BIN := jr_tests

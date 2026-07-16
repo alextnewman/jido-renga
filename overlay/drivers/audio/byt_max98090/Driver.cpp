@@ -37,6 +37,7 @@ struct LpeCookie {
 
 struct CodecCookie {
 	i2c_device cookie;
+	device_node* node;
 };
 
 
@@ -212,19 +213,23 @@ CodecInit(device_node* node, void** cookie)
 	status_t status = gDeviceManager->get_driver(parent,
 		reinterpret_cast<driver_module_info**>(&interface),
 		reinterpret_cast<void**>(&i2cCookie));
-	gDeviceManager->put_node(parent);
 	if (status != B_OK) {
 		ERROR("failed to acquire I2C transport: %s\n", strerror(status));
+		gDeviceManager->put_node(parent);
 		return status;
 	}
 
 	CodecCookie* context = new(std::nothrow) CodecCookie;
-	if (context == nullptr)
+	if (context == nullptr) {
+		gDeviceManager->put_node(parent);
 		return B_NO_MEMORY;
+	}
 	context->cookie = i2cCookie;
-	status = gCard->AttachCodec(interface, i2cCookie);
+	context->node = parent;
+	status = gCard->AttachCodec(parent, interface, i2cCookie);
 	if (status != B_OK) {
 		ERROR("codec attachment failed: %s\n", strerror(status));
+		gDeviceManager->put_node(parent);
 		delete context;
 		return status;
 	}
@@ -238,6 +243,7 @@ CodecUninit(void* cookie)
 {
 	CodecCookie* context = static_cast<CodecCookie*>(cookie);
 	gCard->DetachCodec(context->cookie);
+	gDeviceManager->put_node(context->node);
 	delete context;
 }
 

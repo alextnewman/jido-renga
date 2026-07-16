@@ -20,6 +20,9 @@ constexpr uint8_t kTdmFormat = 0x24;
 constexpr uint8_t kIoConfiguration = 0x25;
 constexpr uint8_t kFilterConfiguration = 0x26;
 constexpr uint8_t kDaiPlaybackLevel = 0x27;
+constexpr uint8_t kHeadphoneControl = 0x2b;
+constexpr uint8_t kLeftHeadphoneVolume = 0x2c;
+constexpr uint8_t kRightHeadphoneVolume = 0x2d;
 constexpr uint8_t kLeftSpeakerMixer = 0x2e;
 constexpr uint8_t kRightSpeakerMixer = 0x2f;
 constexpr uint8_t kSpeakerControl = 0x30;
@@ -42,13 +45,20 @@ constexpr uint8_t kLeftDacToLeftSpeaker = 1u << 0;
 constexpr uint8_t kRightDacToRightSpeaker = 1u << 1;
 constexpr uint8_t kLeftDacEnable = 1u << 0;
 constexpr uint8_t kRightDacEnable = 1u << 1;
+constexpr uint8_t kLeftHeadphoneEnable = 1u << 6;
+constexpr uint8_t kRightHeadphoneEnable = 1u << 7;
 constexpr uint8_t kLeftSpeakerEnable = 1u << 4;
 constexpr uint8_t kRightSpeakerEnable = 1u << 5;
 constexpr uint8_t kDacAndSpeakerEnable = kLeftDacEnable | kRightDacEnable
 	| kLeftSpeakerEnable | kRightSpeakerEnable;
+constexpr uint8_t kDacAndHeadphoneEnable = kLeftDacEnable | kRightDacEnable
+	| kLeftHeadphoneEnable | kRightHeadphoneEnable;
 constexpr uint8_t kShutdownRelease = 1u << 7;
+constexpr uint8_t kHeadphoneMute = 1u << 7;
 constexpr uint8_t kSpeakerMute = 1u << 7;
 
+constexpr uint8_t kHeadphoneVolumeMaximum = 31;
+constexpr uint8_t kDefaultHeadphoneVolume = 26;
 constexpr uint8_t kSpeakerVolumeRawMinimum = 24;
 constexpr uint8_t kSpeakerVolumeMaximum = 39;
 constexpr uint8_t kDefaultSpeakerVolume = 10;

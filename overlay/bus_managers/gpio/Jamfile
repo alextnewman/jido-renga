@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
+# SPDX-License-Identifier: MIT
+# SPDX-FileContributor: Generated with GitHub Copilot
+
+SubDir JIDO_RENGA_TOP overlay bus_managers gpio ;
+
+SubDirC++Flags -fno-rtti ;
+SubDirSysHdrs $(JIDO_RENGA_TOP) overlay headers ;
+SubDirSysHdrs $(HAIKU_TOP) headers os drivers ;
+SubDirHdrs $(HAIKU_TOP) src add-ons kernel bus_managers acpi acpica include ;
+UsePrivateKernelHeaders ;
+
+KernelAddon gpio :
+	GpioBus.cpp
+	;

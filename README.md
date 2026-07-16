@@ -42,6 +42,8 @@ The first BSP targets the Samsung Chromebook 2 `XE500C12`, ChromeOS board
 
 | Module | Purpose | Hardware |
 |---|---|---|
+| `gpio` | Typed GPIO ownership and ACPI connection service | Firmware-described GPIO consumers |
+| `byt_gpio` | Interrupt-driven GPIO controller | Bay Trail `INT33FC`/`INT33B2` |
 | `iosf_mbi` | Shared IOSF sideband access | Bay Trail transaction router |
 | `sdhci_embedded` | eMMC and removable-SD host controller | ACPI `80860F14`, `80860F16` |
 | `cros_ec_keyboard` | 8042-compatible EC keyboard | ACPI `GOOG000A` |
@@ -56,7 +58,8 @@ allocation/start/stop/free, and `B_MULTI_BUFFER_EXCHANGE` with period-elapsed
 polling and firmware timestamp reading. IPC/period servicing is currently
 polling-based; IRQ-driven handling is a future refinement. Internal-speaker
 playback is validated on Winky hardware. Headphone-jack detection and routing
-are not yet implemented, so the current mixer remains speaker-only.
+now use SCORE GPIO interrupts with 200 ms debounce and automatic MAX98090
+speaker/headphone switching; that new path awaits hardware validation.
 
 The Winky BSP is intentionally exclusive where controllers cannot safely have
 two owners. Its image omits Haiku's generic SDHCI add-on in favor of
@@ -99,7 +102,7 @@ cd generated.x86_64
 cd ..
 tools/weave generated.x86_64
 cd generated.x86_64
-../tools/jr-jam -q i2c_guarded iosf_mbi sdhci_embedded \
+../tools/jr-jam -q gpio byt_gpio i2c_guarded iosf_mbi sdhci_embedded \
   cros_ec_keyboard i2c_atmel_mxt byt_max98090
 ```
 
@@ -169,6 +172,7 @@ Useful references:
 - [`docs/drivers/cros_ec_keyboard.md`](docs/drivers/cros_ec_keyboard.md)
 - [`docs/drivers/i2c_atmel_mxt.md`](docs/drivers/i2c_atmel_mxt.md)
 - [`docs/drivers/byt_max98090.md`](docs/drivers/byt_max98090.md)
+- [`docs/design/gpio.md`](docs/design/gpio.md)
 - [`docs/design/sdhci_embedded.md`](docs/design/sdhci_embedded.md)
 - [`docs/hardware/winky-bay-trail-sdhci.md`](docs/hardware/winky-bay-trail-sdhci.md)
 

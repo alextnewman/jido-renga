@@ -13,9 +13,11 @@ JIDO_RENGA_BSP_OMIT_HAIKU_BOOT_MODULE_TARGETS += sdhci ;
 # The image lists are grouped by Haiku's canonical kernel add-on directories.
 # Future BSPs can declare their own lists without changing overlay/Jamfile.
 JIDO_RENGA_BSP_IMAGE_BUS_MANAGERS +=
+	gpio
 	iosf_mbi
 	;
 JIDO_RENGA_BSP_IMAGE_I2C_BUS_MANAGER = i2c_guarded ;
+JIDO_RENGA_BSP_IMAGE_BUSSES_GPIO += byt_gpio ;
 JIDO_RENGA_BSP_IMAGE_BUSSES_MMC += sdhci_embedded ;
 JIDO_RENGA_BSP_IMAGE_DRIVERS_AUDIO += byt_max98090 ;
 JIDO_RENGA_BSP_IMAGE_DRIVERS_INPUT +=
@@ -27,6 +29,8 @@ JIDO_RENGA_BSP_IMAGE_DRIVERS_INPUT +=
 # The embedded controller hosts boot media, and its IOSF-MBI dependency must be
 # present in that package's boot-module set before device discovery starts.
 JIDO_RENGA_BSP_BOOT_MODULE_TARGETS +=
+	gpio
+	byt_gpio
 	iosf_mbi
 	sdhci_embedded
 	;
