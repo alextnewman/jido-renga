@@ -12,6 +12,8 @@
 
 #include <common/Gpio.h>
 
+#include "PlatformProfile.h"
+
 
 namespace jr::byt_audio {
 
@@ -20,9 +22,9 @@ public:
 	Card();
 	~Card();
 
-	status_t AttachLpe(device_node* acpiNode);
+	status_t AttachLpe(const PlatformProfile* profile, device_node* acpiNode);
 	void DetachLpe();
-	status_t AttachCodec(device_node* codecNode,
+	status_t AttachCodec(const PlatformProfile* profile, device_node* codecNode,
 		i2c_device_interface* interface, i2c_device cookie);
 	void DetachCodec(i2c_device cookie);
 
@@ -94,6 +96,7 @@ private:
 	mutex					fJackLock;
 	mutex					fStreamLock;
 	mutex					fIpcLock;
+	const PlatformProfile*	fProfile;
 	bool					fLpePresent;
 	bool					fCodecPresent;
 	status_t				fLpeStatus;

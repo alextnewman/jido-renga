@@ -35,7 +35,8 @@ CORE_SRC := \
 	$(DRIVER_DIR)/Personality.cpp \
 	$(MXT_DIR)/ObjectTable.cpp \
 	$(MXT_DIR)/TouchEngine.cpp \
-	$(BYT_AUDIO_DIR)/Firmware.cpp
+	$(BYT_AUDIO_DIR)/Firmware.cpp \
+	$(BYT_AUDIO_DIR)/PlatformProfile.cpp
 
 TEST_SRC := \
 	framework/test_worker_rig.cpp \

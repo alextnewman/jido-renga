@@ -9,24 +9,9 @@
 
 namespace jr::byt_audio {
 
-constexpr uint16_t kSbaVirtualBusStart = 85;
-constexpr uint16_t kSbaConfigureSsp = 117;
-constexpr uint16_t kSbaSetSspSlotMap = 130;
-constexpr uint16_t kPlaybackSetupCommandPrefix[] = {
-	kSbaVirtualBusStart,
-	kSbaConfigureSsp,
-	kSbaSetSspSlotMap,
-};
-constexpr uint16_t kSspCodecSelection = 3;
-constexpr uint16_t kSspSwitchOn = 3;
-constexpr uint16_t kTaskSba = 1;
-constexpr uint16_t kTaskMmx = 3;
-constexpr uint16_t kPlaybackStreamId = 1;
-constexpr uint16_t kPlaybackPipeId = 0x90;
 constexpr int16_t kGainZeroDb = 0;
 
 constexpr size_t kMrfldAllocationSize = 100;
-constexpr uint32_t kWinkyMailboxLpeAddress = 0xff344000;
 constexpr uint32_t kMrfldTimestampBase = 0x800;
 constexpr uint32_t kMrfldTimestampStride = 76;
 constexpr uint32_t kPlaybackFrameQuantum = 48;
@@ -121,47 +106,6 @@ struct SstMrfldAllocation {
 #pragma pack(pop)
 
 
-constexpr SstDspHeader
-WinkyVirtualBusStart()
-{
-	return {0xffff, 0xffff, kSbaVirtualBusStart, 0};
-}
-
-
-constexpr SstSspCommand
-WinkySspConfiguration()
-{
-	return {
-		{0xffff, 0xffff, kSbaConfigureSsp,
-			sizeof(SstSspCommand) - sizeof(SstDspHeader)},
-		kSspCodecSelection,
-		kSspSwitchOn,
-		static_cast<uint16_t>(16 | (2 << 6)),
-		0xff03,
-		0xff03,
-		3,
-		1,
-		16,
-		0x0101
-	};
-}
-
-
-constexpr SstSspSlotMapCommand
-WinkySspSlotMap()
-{
-	return {
-		{0xffff, 0xffff, kSbaSetSspSlotMap,
-			sizeof(SstSspSlotMapCommand) - sizeof(SstDspHeader)},
-		kSbaSetSspSlotMap,
-		18,
-		kSspCodecSelection,
-		{0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80},
-		{0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80}
-	};
-}
-
-
 static_assert(sizeof(SstDspHeader) == 8);
 static_assert(sizeof(SstSspCommand) == 26);
 static_assert(sizeof(SstSspSlotMapCommand) == 30);
@@ -171,8 +115,5 @@ static_assert(offsetof(SstMrfldAllocation, ringBuffers) == 4);
 static_assert(offsetof(SstMrfldAllocation, fragmentSizeBytes) == 68);
 static_assert(offsetof(SstMrfldAllocation, timestampAddress) == 72);
 static_assert(offsetof(SstMrfldAllocation, codecParameters) == 76);
-static_assert(kPlaybackSetupCommandPrefix[0] == kSbaVirtualBusStart
-	&& kPlaybackSetupCommandPrefix[1] == kSbaConfigureSsp
-	&& kPlaybackSetupCommandPrefix[2] == kSbaSetSspSlotMap);
 
 } // namespace jr::byt_audio

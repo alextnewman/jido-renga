@@ -5,6 +5,7 @@
 #include "Card.h"
 #include "Debug.h"
 #include "ModuleNames.h"
+#include "PlatformProfile.h"
 
 #include <ACPI.h>
 #include <PCI.h>
@@ -25,9 +26,8 @@ namespace jr::byt_audio {
 
 namespace {
 
-constexpr const char* kLpeHid = "80860F28";
-constexpr const char* kCodecHid = "193C9890";
 constexpr const char* kPublishPath = "audio/hmulti/byt_max98090/0";
+constexpr const char* kProfileAttribute = "byt_max98090/profile";
 
 mutex sModuleLock = MUTEX_INITIALIZER("BYT MAX98090 module");
 int32 sModuleReferences = 0;
@@ -42,19 +42,56 @@ struct CodecCookie {
 };
 
 
-const char*
-MatchingAcpiId(device_node* node, const char* expected)
+const PlatformProfile*
+MatchLpeNode(device_node* node)
 {
 	const char* id = nullptr;
 	if (gDeviceManager->get_attr_string(node, ACPI_DEVICE_HID_ITEM, &id,
-			false) == B_OK && id != nullptr && strcmp(id, expected) == 0) {
-		return id;
+			false) == B_OK) {
+		const PlatformProfile* profile = MatchLpeProfile(id);
+		if (profile != nullptr)
+			return profile;
 	}
 	if (gDeviceManager->get_attr_string(node, ACPI_DEVICE_CID_ITEM, &id,
-			false) == B_OK && id != nullptr && strcmp(id, expected) == 0) {
-		return id;
+			false) == B_OK)
+		return MatchLpeProfile(id);
+	return nullptr;
+}
+
+
+const PlatformProfile*
+MatchCodecNode(device_node* node)
+{
+	uint16 address = 0;
+	if (gDeviceManager->get_attr_uint16(node, I2C_DEVICE_SLAVE_ADDR_ITEM,
+			&address, false) != B_OK) {
+		return nullptr;
+	}
+
+	const char* id = nullptr;
+	if (gDeviceManager->get_attr_string(node, ACPI_DEVICE_HID_ITEM, &id,
+			false) == B_OK) {
+		const PlatformProfile* profile = MatchCodecProfile(id, address);
+		if (profile != nullptr)
+			return profile;
+	}
+	if (gDeviceManager->get_attr_string(node, ACPI_DEVICE_CID_ITEM, &id,
+			false) == B_OK) {
+		return MatchCodecProfile(id, address);
 	}
 	return nullptr;
+}
+
+
+const PlatformProfile*
+ProfileFromDriverNode(device_node* node)
+{
+	const char* id = nullptr;
+	if (gDeviceManager->get_attr_string(node, kProfileAttribute, &id, false)
+			!= B_OK) {
+		return nullptr;
+	}
+	return FindPlatformProfile(id);
 }
 
 
@@ -73,13 +110,13 @@ LpeSupport(device_node* parent)
 		return 0.0f;
 	}
 
-	const char* id = MatchingAcpiId(parent, kLpeHid);
-	if (id == nullptr)
+	const PlatformProfile* profile = MatchLpeNode(parent);
+	if (profile == nullptr)
 		return 0.0f;
 
 	const char* path = nullptr;
 	gDeviceManager->get_attr_string(parent, ACPI_DEVICE_PATH_ITEM, &path, false);
-	TRACE("matched LPE ACPI node: id=%s path=%s\n", id,
+	TRACE("matched %s LPE profile at %s\n", profile->id,
 		path != nullptr ? path : "(unavailable)");
 	return 0.9f;
 }
@@ -88,9 +125,13 @@ LpeSupport(device_node* parent)
 status_t
 LpeRegister(device_node* parent)
 {
+	const PlatformProfile* profile = MatchLpeNode(parent);
+	if (profile == nullptr)
+		return B_BAD_VALUE;
 	device_attr attributes[] = {
 		{B_DEVICE_PRETTY_NAME, B_STRING_TYPE,
 			{.string = "Intel Bay Trail SST audio"}},
+		{kProfileAttribute, B_STRING_TYPE, {.string = profile->id}},
 		{nullptr}
 	};
 	const status_t status = gDeviceManager->register_node(parent,
@@ -112,13 +153,18 @@ LpeInit(device_node* node, void** cookie)
 	if (context == nullptr)
 		return B_NO_MEMORY;
 	context->node = node;
+	const PlatformProfile* profile = ProfileFromDriverNode(node);
+	if (profile == nullptr) {
+		delete context;
+		return B_BAD_DATA;
+	}
 
 	device_node* parent = gDeviceManager->get_parent_node(node);
 	if (parent == nullptr) {
 		delete context;
 		return B_BAD_VALUE;
 	}
-	const status_t status = gCard->AttachLpe(parent);
+	const status_t status = gCard->AttachLpe(profile, parent);
 	gDeviceManager->put_node(parent);
 	if (status != B_OK) {
 		ERROR("LPE attachment failed: %s\n", strerror(status));
@@ -164,20 +210,15 @@ CodecSupport(device_node* parent)
 		return 0.0f;
 	}
 
-	const char* id = MatchingAcpiId(parent, kCodecHid);
-	if (id == nullptr)
+	const PlatformProfile* profile = MatchCodecNode(parent);
+	if (profile == nullptr)
 		return 0.0f;
 
 	uint16 address = 0;
-	const status_t addressStatus = gDeviceManager->get_attr_uint16(parent,
-		I2C_DEVICE_SLAVE_ADDR_ITEM, &address, false);
-	if (addressStatus == B_OK) {
-		TRACE("matched MAX98090 I2C node: id=%s address=0x%02x\n", id,
-			address);
-	} else {
-		TRACE("matched MAX98090 I2C node: id=%s address unavailable: %s\n",
-			id, strerror(addressStatus));
-	}
+	gDeviceManager->get_attr_uint16(parent, I2C_DEVICE_SLAVE_ADDR_ITEM,
+		&address, false);
+	TRACE("matched %s MAX98090 profile at I2C address 0x%02x\n",
+		profile->id, address);
 	return 0.9f;
 }
 
@@ -185,9 +226,13 @@ CodecSupport(device_node* parent)
 status_t
 CodecRegister(device_node* parent)
 {
+	const PlatformProfile* profile = MatchCodecNode(parent);
+	if (profile == nullptr)
+		return B_BAD_VALUE;
 	device_attr attributes[] = {
 		{B_DEVICE_PRETTY_NAME, B_STRING_TYPE,
 			{.string = "MAX98090 audio codec"}},
+		{kProfileAttribute, B_STRING_TYPE, {.string = profile->id}},
 		{nullptr}
 	};
 	const status_t status = gDeviceManager->register_node(parent,
@@ -205,6 +250,9 @@ status_t
 CodecInit(device_node* node, void** cookie)
 {
 	TRACE("initializing MAX98090 codec driver node\n");
+	const PlatformProfile* profile = ProfileFromDriverNode(node);
+	if (profile == nullptr)
+		return B_BAD_DATA;
 	device_node* parent = gDeviceManager->get_parent_node(node);
 	if (parent == nullptr)
 		return B_BAD_VALUE;
@@ -227,7 +275,7 @@ CodecInit(device_node* node, void** cookie)
 	}
 	context->cookie = i2cCookie;
 	context->node = parent;
-	status = gCard->AttachCodec(parent, interface, i2cCookie);
+	status = gCard->AttachCodec(profile, parent, interface, i2cCookie);
 	if (status != B_OK) {
 		ERROR("codec attachment failed: %s\n", strerror(status));
 		gDeviceManager->put_node(parent);
@@ -324,8 +372,9 @@ StdOps(int32 op, ...)
 					status = B_NO_MEMORY;
 					break;
 				}
-				TRACE("module loaded; probing ACPI HID %s and I2C HID %s\n",
-					kLpeHid, kCodecHid);
+				TRACE("module loaded with %" B_PRIuSIZE
+					" configured platform profile(s)\n",
+					PlatformProfileCount());
 			}
 			sModuleReferences++;
 			break;

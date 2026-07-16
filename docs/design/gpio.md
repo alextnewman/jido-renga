@@ -106,5 +106,6 @@ both-edge subscriptions with 200 ms software debounce.
 
 Host policy tests cover community maps, register offsets, mux quirks, trigger
 encoding, direction, and pull strength. Cross-build validation covers the GPIO
-bus manager, `byt_gpio`, and its `byt_max98090` consumer. Physical edge
-delivery and jack insertion/removal still require Winky hardware validation.
+bus manager, `byt_gpio`, and its `byt_max98090` consumer. Winky hardware
+validation confirms reliable physical edge delivery and speaker/headphone
+switching on both jack insertion and removal.

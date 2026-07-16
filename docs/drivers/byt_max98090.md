@@ -6,8 +6,10 @@ SPDX-FileContributor: Generated with GitHub Copilot
 
 # Bay Trail SST + MAX98090 audio
 
-`byt_max98090` is the Winky audio-card add-on for the Samsung Chromebook 2
-XE500C12. It binds two independently enumerated devices:
+`byt_max98090` is the Bay Trail SST/MAX98090 audio-card add-on. It selects an
+immutable platform profile while probing its two independently enumerated
+devices. Winky, the Samsung Chromebook 2 XE500C12, is currently the sole
+configured profile:
 
 - Intel Bay Trail SST/LPE DSP, ACPI HID `80860F28`;
 - MAX98090 codec, I2C ACPI HID `193C9890`.
@@ -79,6 +81,20 @@ period-elapsed notifications. IRQ-driven IPC handling is a future refinement.
 Audible internal-speaker playback is validated on Winky hardware. The driver
 does not publish capture channels.
 
+## Platform profiles
+
+The driver remains one focused BYT/MAX98090 implementation. Platform profiles
+are load-time configuration records, not alternate backends or a Linux-style
+machine-driver layer. Probing matches the LPE and codec ACPI identities plus the
+codec I2C address, stores the selected profile ID on both driver nodes, and
+rejects attachments from different profiles.
+
+The Winky profile contains the existing hardware contract: firmware paths, PMC
+clock programming, ACPI resource indices and expected IMR/IRQ values, SST task,
+stream, pipe, mailbox, SSP and PCM parameters, and jack GPIO wiring. Playback,
+GPIO handling, IPC, codec programming, and `multi_audio` behavior are otherwise
+unchanged. Winky is the only registered and hardware-validated profile.
+
 ## Hardware status
 
 On 2026-07-16, Winky completed firmware boot, stream allocation, DSP route
@@ -86,11 +102,12 @@ configuration, stream start, period exchange, and audible playback through its
 internal speakers. The successful allocation reply is the firmware's short
 zero-result form with no mailbox body.
 
-Headphone-jack detection and output switching are implemented but not yet
-validated on Winky hardware. The path uses the Bay Trail SCORE community's
-shared GSI 49 rather than MAX98090 IRQ 67. Insertion selects HPL/HPR and mutes
-SPL/SPR; removal restores the internal speakers. Microphone presence is tracked
-for future capture support, but the driver still publishes no input channels.
+Headphone-jack detection and output switching are hardware-validated and
+reliable in both directions on Winky. The path uses the Bay Trail SCORE
+community's shared GSI 49 rather than MAX98090 IRQ 67. Insertion selects HPL/HPR
+and mutes SPL/SPR; removal restores the internal speakers. Microphone presence
+is tracked for future capture support, but the driver still publishes no input
+channels.
 
 ## MRFLD IPC protocol
 

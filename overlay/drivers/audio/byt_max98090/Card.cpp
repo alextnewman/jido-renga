@@ -53,10 +53,6 @@ constexpr size_t kMailboxImrBase = 0;
 constexpr size_t kMailboxImrSize = 4;
 constexpr size_t kMailboxReceiveOffset = 0x400;
 constexpr size_t kMailboxChannelSize = 0x400;
-constexpr uint32 kIpcIrqIndex = 5;
-constexpr uint32 kWinkyIpcIrq = 29;
-constexpr phys_addr_t kWinkyImrBase = 0x20000000;
-constexpr size_t kWinkyImrSize = 0x100000;
 
 constexpr size_t kShimCsr = 0x00;
 constexpr size_t kShimIsrx = 0x18;
@@ -72,22 +68,6 @@ constexpr uint32 kIpcPollInterval = 200;
 constexpr bigtime_t kExchangeTimeout = 500000;
 constexpr bigtime_t kExchangeFailureBackoff = 100000;
 
-constexpr uint16 kIntelVendor = 0x8086;
-constexpr uint16 kBayTrailPmc = 0x0f1c;
-constexpr uint16 kPmcBarOffset = 0x44;
-constexpr uint32 kPmcBarMask = 0xfffffe00;
-constexpr size_t kPmcMapSize = 0x100;
-constexpr size_t kPlatformClock0 = 0x60;
-constexpr uint32 kPlatformClockControlMask = 0x3;
-constexpr uint32 kPlatformClockFrequencyMask = 0x4;
-constexpr uint32 kPlatformClockForceOn = 0x1;
-constexpr uint32 kPlatformClock19M2 = 0x4;
-
-constexpr const char* kFirmwareSubpath
-	= "/firmware/byt_max98090/fw_sst_0f28.bin";
-constexpr const char* kRequiredFirmwarePath
-	= "/boot/system/non-packaged/data/firmware/byt_max98090/fw_sst_0f28.bin";
-
 constexpr int32 kMixGroupId = 1000;
 constexpr int32 kMixVolumeId = 1001;
 constexpr int32 kMixMuteId = 1002;
@@ -99,7 +79,8 @@ constexpr int32 kMixRouteSpeakerId = 1021;
 constexpr int32 kMixRouteHeadphoneId = 1022;
 constexpr uint32 kMixRouteSpeaker = 0;
 constexpr uint32 kMixRouteHeadphone = 1;
-constexpr bigtime_t kJackDebounce = 200000;
+constexpr uint32 kMaximumMemoryResources = 8;
+constexpr uint32 kMaximumIrqResources = 16;
 
 
 void
@@ -124,27 +105,26 @@ TraceAllocationBody(const SstMrfldAllocation& allocation)
 
 
 struct AcpiResources {
-	phys_addr_t	lpeBase = 0;
-	size_t		lpeSize = 0;
-	phys_addr_t	ddrBase = 0;
-	size_t		ddrSize = 0;
-	uint32		irq = 0;
-	uint32		memoryIndex = 0;
-	uint32		irqIndex = 0;
+	struct Memory {
+		phys_addr_t	base = 0;
+		size_t		size = 0;
+	};
+
+	Memory	memory[kMaximumMemoryResources];
+	uint32	memoryCount = 0;
+	uint32	irq[kMaximumIrqResources] = {};
+	uint32	irqCount = 0;
 };
 
 
 void
 RecordMemory(AcpiResources* resources, phys_addr_t base, size_t size)
 {
-	if (resources->memoryIndex == 0) {
-		resources->lpeBase = base;
-		resources->lpeSize = size;
-	} else if (resources->memoryIndex == 2) {
-		resources->ddrBase = base;
-		resources->ddrSize = size;
+	if (resources->memoryCount < kMaximumMemoryResources) {
+		resources->memory[resources->memoryCount].base = base;
+		resources->memory[resources->memoryCount].size = size;
 	}
-	resources->memoryIndex++;
+	resources->memoryCount++;
 }
 
 
@@ -177,14 +157,20 @@ ReadResources(ACPI_RESOURCE* resource, void* context)
 			break;
 		case ACPI_RESOURCE_TYPE_IRQ:
 			for (uint8 i = 0; i < resource->Data.Irq.InterruptCount; i++) {
-				if (resources->irqIndex++ == kIpcIrqIndex)
-					resources->irq = resource->Data.Irq.Interrupts[i];
+				if (resources->irqCount < kMaximumIrqResources) {
+					resources->irq[resources->irqCount]
+						= resource->Data.Irq.Interrupts[i];
+				}
+				resources->irqCount++;
 			}
 			break;
 		case ACPI_RESOURCE_TYPE_EXTENDED_IRQ:
 			for (uint8 i = 0; i < resource->Data.ExtendedIrq.InterruptCount; i++) {
-				if (resources->irqIndex++ == kIpcIrqIndex)
-					resources->irq = resource->Data.ExtendedIrq.Interrupts[i];
+				if (resources->irqCount < kMaximumIrqResources) {
+					resources->irq[resources->irqCount]
+						= resource->Data.ExtendedIrq.Interrupts[i];
+				}
+				resources->irqCount++;
 			}
 			break;
 		default:
@@ -259,6 +245,14 @@ CopyFirmwareBlock(const FirmwareBlock& block, void* context)
 }
 
 
+bool
+IsAsserted(gpio::Level level, bool activeLow)
+{
+	return activeLow
+		? level == gpio::Level::Low : level == gpio::Level::High;
+}
+
+
 area_id
 MapRegisters(const char* name, phys_addr_t base, size_t size,
 	volatile uint8** address)
@@ -280,6 +274,7 @@ Card* gCard = nullptr;
 
 Card::Card()
 	:
+	fProfile(nullptr),
 	fLpePresent(false),
 	fCodecPresent(false),
 	fLpeStatus(B_NO_INIT),
@@ -343,6 +338,10 @@ Card::~Card()
 			"preserving the DMA area\n", strerror(stopStatus));
 	}
 	_UnmapLpe();
+	mutex_lock(&fLock);
+	if (!fCodecPresent)
+		fProfile = nullptr;
+	mutex_unlock(&fLock);
 	if (fPmcArea >= B_OK)
 		delete_area(fPmcArea);
 	if (fPmcReserved) {
@@ -358,13 +357,16 @@ Card::~Card()
 
 
 status_t
-Card::AttachLpe(device_node* acpiNode)
+Card::AttachLpe(const PlatformProfile* profile, device_node* acpiNode)
 {
+	if (profile == nullptr || acpiNode == nullptr)
+		return B_BAD_VALUE;
 	mutex_lock(&fLock);
-	if (fLpePresent) {
+	if (fLpePresent || (fProfile != nullptr && fProfile != profile)) {
 		mutex_unlock(&fLock);
 		return B_BUSY;
 	}
+	fProfile = profile;
 	fLpePresent = true;
 	mutex_unlock(&fLock);
 
@@ -406,17 +408,20 @@ Card::DetachLpe()
 
 
 status_t
-Card::AttachCodec(device_node* codecNode, i2c_device_interface* interface,
-	i2c_device cookie)
+Card::AttachCodec(const PlatformProfile* profile, device_node* codecNode,
+	i2c_device_interface* interface, i2c_device cookie)
 {
-	if (codecNode == nullptr || interface == nullptr || cookie == nullptr)
+	if (profile == nullptr || codecNode == nullptr || interface == nullptr
+		|| cookie == nullptr) {
 		return B_BAD_VALUE;
+	}
 
 	mutex_lock(&fLock);
-	if (fCodecPresent) {
+	if (fCodecPresent || (fProfile != nullptr && fProfile != profile)) {
 		mutex_unlock(&fLock);
 		return B_BUSY;
 	}
+	fProfile = profile;
 	fCodecPresent = true;
 	fI2c = interface;
 	fI2cCookie = cookie;
@@ -463,6 +468,8 @@ Card::DetachCodec(i2c_device cookie)
 		fI2c = nullptr;
 		fI2cCookie = nullptr;
 		fCodecNode = nullptr;
+		if (!fLpePresent)
+			fProfile = nullptr;
 	}
 	mutex_unlock(&fLock);
 }
@@ -484,7 +491,8 @@ Card::Open()
 {
 	if (!Ready()) {
 		TRACE("open rejected: LPE firmware and MAX98090 are not both "
-			"ready; firmware path is %s\n", kRequiredFirmwarePath);
+			"ready; firmware path is %s\n",
+			fProfile != nullptr ? fProfile->requiredFirmwarePath : "(none)");
 		return B_DEV_NOT_READY;
 	}
 	const status_t jackStatus = _InitializeJackDetection();
@@ -536,16 +544,21 @@ Card::_EnablePlatformClock()
 {
 	if (fPmcRegisters != nullptr)
 		return B_OK;
+	if (fProfile == nullptr)
+		return B_NO_INIT;
+	const PlatformClockProfile& clockProfile = fProfile->clock;
 
 	for (long index = 0; gPci->get_nth_pci_info(index, &fPmcInfo) == B_OK;
 			index++) {
-		if (fPmcInfo.vendor_id == kIntelVendor
-			&& fPmcInfo.device_id == kBayTrailPmc) {
+		if (fPmcInfo.vendor_id == clockProfile.pciVendorId
+			&& fPmcInfo.device_id == clockProfile.pciDeviceId) {
 			break;
 		}
 	}
-	if (fPmcInfo.vendor_id != kIntelVendor || fPmcInfo.device_id != kBayTrailPmc) {
-		ERROR("Intel Bay Trail PMC 8086:0f1c not found\n");
+	if (fPmcInfo.vendor_id != clockProfile.pciVendorId
+		|| fPmcInfo.device_id != clockProfile.pciDeviceId) {
+		ERROR("%s clock provider %04x:%04x not found\n", fProfile->id,
+			clockProfile.pciVendorId, clockProfile.pciDeviceId);
 		return B_ENTRY_NOT_FOUND;
 	}
 
@@ -556,21 +569,20 @@ Card::_EnablePlatformClock()
 	fPmcReserved = true;
 
 	const uint32 bar = gPci->read_pci_config(fPmcInfo.bus, fPmcInfo.device,
-		fPmcInfo.function, kPmcBarOffset, 4) & kPmcBarMask;
+		fPmcInfo.function, clockProfile.barOffset, 4) & clockProfile.barMask;
 	if (bar == 0)
 		return B_BAD_DATA;
-	fPmcArea = MapRegisters("BYT PMC", bar, kPmcMapSize, &fPmcRegisters);
+	fPmcArea = MapRegisters("BYT PMC", bar, clockProfile.mapSize,
+		&fPmcRegisters);
 	if (fPmcArea < B_OK)
 		return fPmcArea;
 
 	volatile uint32* clock = reinterpret_cast<volatile uint32*>(
-		fPmcRegisters + kPlatformClock0);
+		fPmcRegisters + clockProfile.registerOffset);
 	const uint32 oldValue = *clock;
-	*clock = (oldValue
-			& ~(kPlatformClockControlMask | kPlatformClockFrequencyMask))
-		| kPlatformClockForceOn | kPlatformClock19M2;
-	TRACE("PMC PLT_CLK_0 enabled at 19.2 MHz (0x%08" B_PRIx32
-		" -> 0x%08" B_PRIx32 ")\n", oldValue, *clock);
+	*clock = (oldValue & ~clockProfile.clearMask) | clockProfile.setBits;
+	TRACE("%s enabled (0x%08" B_PRIx32 " -> 0x%08" B_PRIx32 ")\n",
+		clockProfile.description, oldValue, *clock);
 	return B_OK;
 }
 
@@ -591,42 +603,69 @@ Card::_MapLpeResources(device_node* acpiNode)
 		ReadResources, &resources);
 	if (status != B_OK)
 		return status;
-	if (resources.lpeBase == 0 || resources.lpeSize < kRequiredLpeSize) {
-		ERROR("ACPI memory resource 0 is missing or too small\n");
+	if (fProfile == nullptr)
+		return B_NO_INIT;
+	const LpeResourceProfile& resourceProfile = fProfile->resources;
+	if (resourceProfile.lpeMemoryIndex >= resources.memoryCount
+		|| resourceProfile.lpeMemoryIndex >= kMaximumMemoryResources) {
+		ERROR("%s LPE memory resource %" B_PRIu32 " is missing\n",
+			fProfile->id, resourceProfile.lpeMemoryIndex);
 		return B_BAD_DATA;
 	}
-	if (resources.irqIndex <= kIpcIrqIndex
-		|| resources.irq != kWinkyIpcIrq) {
-		ERROR("ACPI IPC IRQ resource 5 is missing or unexpected "
+	if (resourceProfile.imrMemoryIndex >= resources.memoryCount
+		|| resourceProfile.imrMemoryIndex >= kMaximumMemoryResources) {
+		ERROR("%s IMR memory resource %" B_PRIu32 " is missing\n",
+			fProfile->id, resourceProfile.imrMemoryIndex);
+		return B_BAD_DATA;
+	}
+	const AcpiResources::Memory& lpe
+		= resources.memory[resourceProfile.lpeMemoryIndex];
+	const AcpiResources::Memory& imr
+		= resources.memory[resourceProfile.imrMemoryIndex];
+	if (lpe.base == 0 || lpe.size < kRequiredLpeSize) {
+		ERROR("%s LPE memory resource %" B_PRIu32
+			" is missing or too small\n", fProfile->id,
+			resourceProfile.lpeMemoryIndex);
+		return B_BAD_DATA;
+	}
+	if (resourceProfile.ipcIrqIndex >= resources.irqCount
+		|| resourceProfile.ipcIrqIndex >= kMaximumIrqResources
+		|| resources.irq[resourceProfile.ipcIrqIndex]
+			!= resourceProfile.expectedIpcIrq) {
+		const uint32 irq = resourceProfile.ipcIrqIndex < resources.irqCount
+				&& resourceProfile.ipcIrqIndex < kMaximumIrqResources
+			? resources.irq[resourceProfile.ipcIrqIndex] : 0;
+		ERROR("%s ACPI IPC IRQ resource %" B_PRIu32
+			" is missing or unexpected "
 			"(count=%" B_PRIu32 ", IRQ=%" B_PRIu32 ")\n",
-			resources.irqIndex, resources.irq);
+			fProfile->id, resourceProfile.ipcIrqIndex, resources.irqCount, irq);
 		return B_BAD_DATA;
 	}
-	if (resources.ddrBase != kWinkyImrBase
-		|| resources.ddrSize != kWinkyImrSize) {
-		ERROR("ACPI IMR resource 2 is unexpected (base=0x%"
+	if (imr.base != resourceProfile.expectedImrBase
+		|| imr.size != resourceProfile.expectedImrSize) {
+		ERROR("%s ACPI IMR resource %" B_PRIu32
+			" is unexpected (base=0x%"
 			B_PRIxPHYSADDR ", size=0x%" B_PRIxSIZE ")\n",
-			resources.ddrBase, resources.ddrSize);
+			fProfile->id, resourceProfile.imrMemoryIndex, imr.base, imr.size);
 		return B_BAD_DATA;
 	}
-	fIpcIrq = resources.irq;
-	fDdrSize = resources.ddrSize;
+	fIpcIrq = resources.irq[resourceProfile.ipcIrqIndex];
+	fDdrSize = imr.size;
 
-	fIramArea = MapRegisters("BYT SST IRAM", resources.lpeBase + kIramOffset,
+	fIramArea = MapRegisters("BYT SST IRAM", lpe.base + kIramOffset,
 		kIramSize, &fIram);
-	fDramArea = MapRegisters("BYT SST DRAM", resources.lpeBase + kDramOffset,
+	fDramArea = MapRegisters("BYT SST DRAM", lpe.base + kDramOffset,
 		kDramSize, &fDram);
-	fShimArea = MapRegisters("BYT SST SHIM", resources.lpeBase + kShimOffset,
+	fShimArea = MapRegisters("BYT SST SHIM", lpe.base + kShimOffset,
 		kShimSize, &fShim);
 	fMailboxArea = MapRegisters("BYT SST mailbox",
-		resources.lpeBase + kMailboxOffset, kMailboxSize, &fMailbox);
+		lpe.base + kMailboxOffset, kMailboxSize, &fMailbox);
 	if (fIramArea < B_OK || fDramArea < B_OK || fShimArea < B_OK
 		|| fMailboxArea < B_OK) {
 		return B_ERROR;
 	}
 
-	fDdrArea = MapRegisters("BYT SST IMR", resources.ddrBase,
-		resources.ddrSize, &fDdr);
+	fDdrArea = MapRegisters("BYT SST IMR", imr.base, imr.size, &fDdr);
 	if (fDdrArea < B_OK)
 		return fDdrArea;
 
@@ -634,16 +673,18 @@ Card::_MapLpeResources(device_node* acpiNode)
 		fMailbox + kMailboxImrBase);
 	const uint32 configuredImrSize = *reinterpret_cast<volatile uint32*>(
 		fMailbox + kMailboxImrSize);
-	if (configuredImrBase != resources.ddrBase
-		|| configuredImrSize != resources.ddrSize) {
+	if (configuredImrBase != imr.base || configuredImrSize != imr.size) {
 		ERROR("coreboot IMR mailbox configuration is unexpected "
 			"(base=0x%08" B_PRIx32 ", size=0x%08" B_PRIx32 ")\n",
 			configuredImrBase, configuredImrSize);
 		return B_BAD_DATA;
 	}
-	TRACE("mapped LPE resource 0 at 0x%" B_PRIxPHYSADDR
-		", IMR resource 2 at 0x%" B_PRIxPHYSADDR ", IPC IRQ index 5=%" B_PRIu32
-		"\n", resources.lpeBase, resources.ddrBase, fIpcIrq);
+	TRACE("%s mapped LPE resource %" B_PRIu32 " at 0x%" B_PRIxPHYSADDR
+		", IMR resource %" B_PRIu32 " at 0x%" B_PRIxPHYSADDR
+		", IPC IRQ index %" B_PRIu32 "=%" B_PRIu32 "\n", fProfile->id,
+		resourceProfile.lpeMemoryIndex, lpe.base,
+		resourceProfile.imrMemoryIndex, imr.base,
+		resourceProfile.ipcIrqIndex, fIpcIrq);
 	return B_OK;
 }
 
@@ -663,7 +704,7 @@ Card::_LoadFirmwareFile(uint8** data, size_t* size)
 	for (size_t i = 0; i < B_COUNT_OF(directories); i++) {
 		if (find_directory(directories[i], -1, false, path, sizeof(path)) != B_OK)
 			continue;
-		strlcat(path, kFirmwareSubpath, sizeof(path));
+		strlcat(path, fProfile->firmwareSubpath, sizeof(path));
 		fd = open(path, O_RDONLY);
 		if (fd >= 0) {
 			TRACE("loading external SST firmware from %s\n", path);
@@ -672,7 +713,7 @@ Card::_LoadFirmwareFile(uint8** data, size_t* size)
 	}
 	if (fd < 0) {
 		ERROR("required external firmware is missing: %s\n",
-			kRequiredFirmwarePath);
+			fProfile->requiredFirmwarePath);
 		return B_ENTRY_NOT_FOUND;
 	}
 
@@ -743,10 +784,12 @@ Card::_LoadAndStartFirmware()
 		fDram + kDramFirmwareDdrBase);
 	volatile uint32* firmwareFeatures = reinterpret_cast<volatile uint32*>(
 		fDram + kDramFirmwareFeatures);
-	*firmwareDdrBase = static_cast<uint32>(kWinkyImrBase);
+	*firmwareDdrBase = static_cast<uint32>(
+		fProfile->resources.expectedImrBase);
 	*firmwareFeatures = kDramFirmwareBssReset;
 	memory_write_barrier();
-	if (*firmwareDdrBase != static_cast<uint32>(kWinkyImrBase)
+	if (*firmwareDdrBase != static_cast<uint32>(
+			fProfile->resources.expectedImrBase)
 		|| *firmwareFeatures != kDramFirmwareBssReset) {
 		ERROR("SST DCCM firmware configuration did not read back "
 			"(IMR=0x%08" B_PRIx32 ", features=0x%08" B_PRIx32 ")\n",
@@ -1018,15 +1061,17 @@ Card::_InitializeJackDetection()
 		mutex_unlock(&fJackLock);
 		return B_NO_INIT;
 	}
+	const JackProfile& jack = fProfile->jack;
 
 	gpio::Pin headphone;
-	status_t status = headphone.AcquireAcpi(gGpio, codecNode, 0, 0);
+	status_t status = headphone.AcquireAcpi(gGpio, codecNode,
+		jack.headphoneResourceIndex, 0);
 	if (status != B_OK) {
 		mutex_unlock(&fJackLock);
 		return status;
 	}
 
-	status = headphone.Watch({gpio::Edge::Both, kJackDebounce},
+	status = headphone.Watch({gpio::Edge::Both, jack.debounce},
 		&_HeadphoneEvent, this);
 	if (status != B_OK) {
 		headphone.Reset();
@@ -1043,11 +1088,12 @@ Card::_InitializeJackDetection()
 	}
 	fHeadphoneDetect = std::move(headphone);
 	gpio::Pin microphone;
-	status_t microphoneStatus = microphone.AcquireAcpi(gGpio, codecNode, 1, 0);
+	status_t microphoneStatus = microphone.AcquireAcpi(gGpio, codecNode,
+		jack.microphoneResourceIndex, 0);
 	gpio::Level microphoneLevel = gpio::Level::High;
 	if (microphoneStatus == B_OK) {
 		microphoneStatus = microphone.Watch(
-			{gpio::Edge::Both, kJackDebounce}, &_MicrophoneEvent, this);
+			{gpio::Edge::Both, jack.debounce}, &_MicrophoneEvent, this);
 	}
 	if (microphoneStatus == B_OK)
 		microphoneStatus = microphone.Read(microphoneLevel);
@@ -1060,16 +1106,19 @@ Card::_InitializeJackDetection()
 	}
 	mutex_unlock(&fJackLock);
 
-	const bool headphonePresent = headphoneLevel == gpio::Level::High;
-	const bool microphonePresent = microphoneLevel == gpio::Level::Low;
+	const bool headphonePresent = IsAsserted(headphoneLevel,
+		jack.headphoneActiveLow);
+	const bool microphonePresent = IsAsserted(microphoneLevel,
+		jack.microphoneActiveLow);
 	status = _ApplyJackState(headphonePresent, microphonePresent);
 	if (status != B_OK) {
 		_TeardownJackDetection();
 		return status;
 	}
-	TRACE("jack GPIOs active: headphone=%s microphone=%s, 200 ms debounce\n",
+	TRACE("%s jack GPIOs active: headphone=%s microphone=%s, %"
+		B_PRId64 " us debounce\n", fProfile->id,
 		headphonePresent ? "present" : "absent",
-		microphonePresent ? "present" : "absent");
+		microphonePresent ? "present" : "absent", jack.debounce);
 	return B_OK;
 }
 
@@ -1161,7 +1210,8 @@ Card::_HeadphoneEvent(void* context, const gpio::Event& event)
 	mutex_lock(&card->fCodecLock);
 	microphonePresent = card->fMicrophonePresent;
 	mutex_unlock(&card->fCodecLock);
-	card->_ApplyJackState(event.level == gpio::Level::High,
+	card->_ApplyJackState(IsAsserted(event.level,
+			card->fProfile->jack.headphoneActiveLow),
 		microphonePresent);
 }
 
@@ -1175,7 +1225,7 @@ Card::_MicrophoneEvent(void* context, const gpio::Event& event)
 	headphonePresent = card->fHeadphonePresent;
 	mutex_unlock(&card->fCodecLock);
 	card->_ApplyJackState(headphonePresent,
-		event.level == gpio::Level::Low);
+		IsAsserted(event.level, card->fProfile->jack.microphoneActiveLow));
 }
 
 
@@ -1211,7 +1261,7 @@ Card::_GetDescription(multi_description* description)
 	};
 	description->interface_version = B_CURRENT_INTERFACE_VERSION;
 	description->interface_minimum = B_CURRENT_INTERFACE_VERSION;
-	strlcpy(description->friendly_name, "Bay Trail MAX98090",
+	strlcpy(description->friendly_name, fProfile->friendlyName,
 		sizeof(description->friendly_name));
 	strlcpy(description->vendor_info, "Intel / Maxim",
 		sizeof(description->vendor_info));
@@ -1591,10 +1641,10 @@ Card::_IpcReceive(uint8 expectedMessage, uint8 expectedDriverId,
 			const uint16 command = payload[4]
 				| static_cast<uint16>(payload[5]) << 8;
 			if (command == kMrfldPeriodElapsed
-				&& pipeId == kPlaybackPipeId) {
+				&& pipeId == fProfile->playback.pipeId) {
 				atomic_add(&fPeriodElapsedCount, 1);
 			} else if (command == kMrfldBufferUnderrun
-				&& pipeId == kPlaybackPipeId) {
+				&& pipeId == fProfile->playback.pipeId) {
 				ERROR("DSP reported playback buffer underrun\n");
 				atomic_set(&fPlaybackFault, B_IO_ERROR);
 			} else {
@@ -1785,17 +1835,18 @@ Card::_PreparePlaybackHardware()
 		return B_OK;
 	if (fRouteFault != B_OK)
 		return fRouteFault;
+	const SstPlaybackProfile& playback = fProfile->playback;
 
 	// 0. SBA virtual-bus start (cmd 85)
-	const SstDspHeader vbStart = WinkyVirtualBusStart();
-	status_t status = _IpcSendByteStream(kIpcCmd, kTaskSba,
+	const SstDspHeader& vbStart = playback.virtualBusStart;
+	status_t status = _IpcSendByteStream(kIpcCmd, playback.sbaTaskId,
 		&vbStart, sizeof(vbStart), true);
 	if (status != B_OK)
 		return _FailPlaybackRoute("VB start", status);
 
 	// 1. SSP configure (cmd 117)
-	const SstSspCommand ssp = WinkySspConfiguration();
-	status = _IpcSendByteStream(kIpcCmd, kTaskSba,
+	const SstSspCommand& ssp = playback.sspConfiguration;
+	status = _IpcSendByteStream(kIpcCmd, playback.sbaTaskId,
 		&ssp, sizeof(ssp), true);
 	if (status != B_OK)
 		return _FailPlaybackRoute("SSP configure", status);
@@ -1814,17 +1865,18 @@ Card::_ConfigurePlaybackRoute()
 		return fRouteFault;
 	if (!fHardwareConfigured || fStreamState != kStreamAllocated)
 		return B_NOT_ALLOWED;
+	const SstPlaybackProfile& playback = fProfile->playback;
 
 	// 2. SSP slot map (cmd 130) — sent as SET_PARAMS
-	const SstSspSlotMapCommand slotMap = WinkySspSlotMap();
-	status_t status = _IpcSendByteStream(kIpcSetParams, kTaskSba,
+	const SstSspSlotMapCommand& slotMap = playback.sspSlotMap;
+	status_t status = _IpcSendByteStream(kIpcSetParams, playback.sbaTaskId,
 		&slotMap, sizeof(slotMap), true);
 	if (status != B_OK)
 		return _FailPlaybackRoute("SSP slot map", status);
 
 	// 3. MMX media1 gain 0 dB — sent as SET_PARAMS
 	const SstGainCommand media1Gain = MakeMedia1Gain0dB();
-	status = _IpcSendByteStream(kIpcSetParams, kTaskMmx,
+	status = _IpcSendByteStream(kIpcSetParams, playback.mmxTaskId,
 		&media1Gain, sizeof(media1Gain), true);
 	if (status != B_OK)
 		return _FailPlaybackRoute("media1 gain", status);
@@ -1833,28 +1885,28 @@ Card::_ConfigurePlaybackRoute()
 	const SstSwmCommand mmxSwm = MakeMedia1ToMedia0Swm();
 	const uint16 mmxSwmSize = static_cast<uint16>(
 		sizeof(SstByteStreamDspHeader) + mmxSwm.header.length);
-	status = _IpcSendByteStream(kIpcCmd, kTaskMmx,
+	status = _IpcSendByteStream(kIpcCmd, playback.mmxTaskId,
 		&mmxSwm, mmxSwmSize, true);
 	if (status != B_OK)
 		return _FailPlaybackRoute("MMX SWM", status);
 
 	// 5. MMX enable media0 path
 	const SstMediaPathCommand media0Path = MakeMedia0PathEnable();
-	status = _IpcSendByteStream(kIpcCmd, kTaskMmx,
+	status = _IpcSendByteStream(kIpcCmd, playback.mmxTaskId,
 		&media0Path, sizeof(media0Path), true);
 	if (status != B_OK)
 		return _FailPlaybackRoute("media0 path enable", status);
 
 	// 6. SBA enable pcm0 input
 	const SstMediaPathCommand pcm0In = MakePcm0InputEnable();
-	status = _IpcSendByteStream(kIpcCmd, kTaskSba,
+	status = _IpcSendByteStream(kIpcCmd, playback.sbaTaskId,
 		&pcm0In, sizeof(pcm0In), true);
 	if (status != B_OK)
 		return _FailPlaybackRoute("pcm0 input enable", status);
 
 	// 7. SBA gain pcm0 input 0 dB — sent as SET_PARAMS
 	const SstGainCommand pcm0Gain = MakePcm0InputGain0dB();
-	status = _IpcSendByteStream(kIpcSetParams, kTaskSba,
+	status = _IpcSendByteStream(kIpcSetParams, playback.sbaTaskId,
 		&pcm0Gain, sizeof(pcm0Gain), true);
 	if (status != B_OK)
 		return _FailPlaybackRoute("pcm0 gain", status);
@@ -1863,14 +1915,14 @@ Card::_ConfigurePlaybackRoute()
 	const SstSwmCommand sbaSwm = MakePcm0ToCodecOut0Swm();
 	const uint16 sbaSwmSize = static_cast<uint16>(
 		sizeof(SstByteStreamDspHeader) + sbaSwm.header.length);
-	status = _IpcSendByteStream(kIpcCmd, kTaskSba,
+	status = _IpcSendByteStream(kIpcCmd, playback.sbaTaskId,
 		&sbaSwm, sbaSwmSize, true);
 	if (status != B_OK)
 		return _FailPlaybackRoute("SBA SWM", status);
 
 	// 9. SBA gain codec_out0 0 dB — sent as SET_PARAMS
 	const SstGainCommand codecOut0Gain = MakeCodecOut0Gain0dB();
-	status = _IpcSendByteStream(kIpcSetParams, kTaskSba,
+	status = _IpcSendByteStream(kIpcSetParams, playback.sbaTaskId,
 		&codecOut0Gain, sizeof(codecOut0Gain), true);
 	if (status != B_OK)
 		return _FailPlaybackRoute("codec_out0 gain", status);
@@ -1902,20 +1954,22 @@ Card::_AllocateStream()
 		return B_NO_INIT;
 	if (fAllocationFault != B_OK)
 		return fAllocationFault;
+	const SstPlaybackProfile& playback = fProfile->playback;
 
 	const uint32 periodBytes = fPeriodFrames * 4;
 	const uint32 totalBytes = periodBytes * static_cast<uint32>(fPeriodCount);
-	const uint32 tsAddress = MrfldTimestampAddress(kWinkyMailboxLpeAddress,
-		kPlaybackStreamId);
+	const uint32 tsAddress = MrfldTimestampAddress(playback.mailboxLpeAddress,
+		playback.streamId);
 
-	const SstMrfldAllocation alloc = BuildWinkyAllocation(
+	const SstMrfldAllocation alloc = BuildAllocation(playback.pcm,
 		static_cast<uint32>(fPlaybackPhysical), totalBytes, periodBytes,
 		tsAddress);
 	TRACE("allocation request: hardware=%s route=%s task=%u pipe=0x%02x "
 		"ring=0x%08" B_PRIx32 "+%" B_PRIu32 " fragment=%" B_PRIu32
 		" timestamp=0x%08" B_PRIx32 "\n",
 		fHardwareConfigured ? "VB+SSP ready" : "not ready",
-		fRouteConfigured ? "ready" : "pending", kTaskMmx, kPlaybackPipeId,
+		fRouteConfigured ? "ready" : "pending", playback.mmxTaskId,
+		playback.pipeId,
 		alloc.ringBuffers[0].address, alloc.ringBuffers[0].size,
 		alloc.fragmentSizeBytes, alloc.timestampAddress);
 	TraceAllocationBody(alloc);
@@ -1923,7 +1977,7 @@ Card::_AllocateStream()
 	for (uint32 attempt = 0; attempt < 2; attempt++) {
 		uint8 response[kMailboxChannelSize] = {};
 		uint32 responseSize = 0;
-		status_t status = _IpcSendAllocate(kTaskMmx, kPlaybackPipeId,
+		status_t status = _IpcSendAllocate(playback.mmxTaskId, playback.pipeId,
 			&alloc, sizeof(alloc), response, sizeof(response), &responseSize);
 		if (status != B_OK) {
 			return _FailStreamAllocation(status);
@@ -1939,9 +1993,9 @@ Card::_AllocateStream()
 			break;
 		if (ShouldRecoverStaleAllocation(result, attempt)) {
 			TRACE("freeing stale DSP allocation for pipe 0x%02x\n",
-				kPlaybackPipeId);
-			status = _IpcSendStreamCommand(kMrfldFreeStream, kTaskMmx,
-				kPlaybackPipeId, true);
+				playback.pipeId);
+			status = _IpcSendStreamCommand(kMrfldFreeStream,
+				playback.mmxTaskId, playback.pipeId, true);
 			if (status != B_OK) {
 				ERROR("stale stream cleanup failed: %s\n",
 					strerror(status));
@@ -1958,9 +2012,9 @@ Card::_AllocateStream()
 	fPeriodElapsedCount = 0;
 	fPlaybackFault = B_OK;
 	fLastHardwareCounter = ReadTimestampU64(fMailbox,
-		MrfldTimestampOffset(kPlaybackStreamId) + 8);
+		MrfldTimestampOffset(playback.streamId) + 8);
 	TRACE("stream allocated: pipe 0x%02x, ts 0x%08" B_PRIx32 "\n",
-		kPlaybackPipeId, tsAddress);
+		playback.pipeId, tsAddress);
 	return B_OK;
 }
 
@@ -1981,8 +2035,9 @@ Card::_StartStream()
 	if (fStreamState != kStreamAllocated)
 		return B_NOT_ALLOWED;
 
-	status_t status = _IpcSendStreamCommand(kMrfldStartStream, kTaskMmx,
-		kPlaybackPipeId, false);
+	const SstPlaybackProfile& playback = fProfile->playback;
+	status_t status = _IpcSendStreamCommand(kMrfldStartStream,
+		playback.mmxTaskId, playback.pipeId, false);
 	if (status != B_OK)
 		return status;
 
@@ -2003,9 +2058,11 @@ Card::_StopStream()
 		fStreamState = kStreamStopping;
 
 	status_t dropStatus = B_OK;
+	const SstPlaybackProfile& playback = fProfile->playback;
 	if (sendDrop) {
-		dropStatus = _IpcSendStreamCommand(kMrfldDropStream, kTaskMmx,
-			kPlaybackPipeId, false);
+		dropStatus = _IpcSendStreamCommand(kMrfldDropStream,
+			playback.mmxTaskId,
+			playback.pipeId, false);
 		if (dropStatus != B_OK) {
 			ERROR("stream drop failed: %s\n",
 				strerror(dropStatus));
@@ -2013,7 +2070,7 @@ Card::_StopStream()
 	}
 
 	const status_t freeStatus = _IpcSendStreamCommand(kMrfldFreeStream,
-		kTaskMmx, kPlaybackPipeId, true);
+		playback.mmxTaskId, playback.pipeId, true);
 	if (freeStatus != B_OK) {
 		ERROR("stream free failed: %s\n", strerror(freeStatus));
 		return freeStatus;
@@ -2150,7 +2207,7 @@ Card::_BufferExchange(multi_buffer_info* info)
 			goto fail;
 
 		hardwareCounter = ReadTimestampU64(fMailbox,
-			MrfldTimestampOffset(kPlaybackStreamId) + 8);
+			MrfldTimestampOffset(fProfile->playback.streamId) + 8);
 		if (hardwareCounter < fLastHardwareCounter) {
 			ERROR("DSP hardware counter regressed from 0x%016"
 				B_PRIx64 " to 0x%016" B_PRIx64 "\n",

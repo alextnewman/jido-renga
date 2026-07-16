@@ -7,6 +7,7 @@
 // playback path. No Haiku kernel dependencies; all functions are pure.
 
 #include "Ipc.h"
+#include "PlatformProfile.h"
 #include "SstProtocol.h"
 
 #include <stddef.h>
@@ -111,7 +112,7 @@ constexpr uint16_t kPathOn = 1;
 // ---------------------------------------------------------------------------
 // Playback command sequence builder
 //
-// The Winky playback path requires these commands in order:
+// The BYT/MAX98090 playback path requires these commands in order:
 //   0. SBA virtual-bus start (cmd 85) — already in SstProtocol.h
 //   1. SSP configure (cmd 117) — already in SstProtocol.h
 //   2. SSP slot map (cmd 130) — already in SstProtocol.h
@@ -275,14 +276,14 @@ MakeCodecOut0Gain0dB()
 // Allocation body builder
 // ---------------------------------------------------------------------------
 
-// Build the exact 100-byte SstMrfldAllocation for Winky playback.
+// Build the exact 100-byte SstMrfldAllocation for a configured profile.
 inline SstMrfldAllocation
-BuildWinkyAllocation(uint32_t ringPhysical, uint32_t ringBytes,
-	uint32_t periodBytes, uint32_t timestampAddress)
+BuildAllocation(const PcmStreamProfile& pcm, uint32_t ringPhysical,
+	uint32_t ringBytes, uint32_t periodBytes, uint32_t timestampAddress)
 {
 	SstMrfldAllocation alloc = {};
-	alloc.codecType = 1;	// SST_CODEC_TYPE_PCM
-	alloc.operation = 0;	// STREAM_OPS_PLAYBACK
+	alloc.codecType = pcm.codecType;
+	alloc.operation = pcm.operation;
 	alloc.scatterGatherCount = 1;
 	alloc.ringBuffers[0].address = ringPhysical;
 	alloc.ringBuffers[0].size = ringBytes;
@@ -292,20 +293,15 @@ BuildWinkyAllocation(uint32_t ringPhysical, uint32_t ringBytes,
 	// Codec parameters: snd_pcm_params (16 bytes within 24-byte field)
 	// Layout: num_chan(u8), pcm_wd_sz(u8), use_offload_path(u8), rsvd(u8),
 	//         sfreq(u32), channel_map[8]
-	alloc.codecParameters[0] = 2;	// num_chan = stereo
-	alloc.codecParameters[1] = 16;	// pcm_wd_sz = 16-bit
+	alloc.codecParameters[0] = pcm.channels;
+	alloc.codecParameters[1] = pcm.sampleBits;
 	alloc.codecParameters[2] = 0;	// use_offload_path = 0
 	alloc.codecParameters[3] = 0;	// reserved
-	// sfreq = 48000 = 0x0000bb80 LE
-	alloc.codecParameters[4] = 0x80;
-	alloc.codecParameters[5] = 0xbb;
-	alloc.codecParameters[6] = 0x00;
-	alloc.codecParameters[7] = 0x00;
-	// channel_map: 0, 1, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff
-	alloc.codecParameters[8] = 0;
-	alloc.codecParameters[9] = 1;
-	for (size_t i = 10; i < 16; i++)
-		alloc.codecParameters[i] = 0xff;
+	alloc.codecParameters[4] = static_cast<uint8_t>(pcm.sampleRate);
+	alloc.codecParameters[5] = static_cast<uint8_t>(pcm.sampleRate >> 8);
+	alloc.codecParameters[6] = static_cast<uint8_t>(pcm.sampleRate >> 16);
+	alloc.codecParameters[7] = static_cast<uint8_t>(pcm.sampleRate >> 24);
+	memcpy(alloc.codecParameters + 8, pcm.channelMap, sizeof(pcm.channelMap));
 
 	return alloc;
 }

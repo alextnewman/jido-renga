@@ -252,13 +252,44 @@ JR_TEST(byt_boot, preserves_the_mrfld_reset_start_sequence)
 }
 
 
-JR_TEST(byt_ipc, fixes_winky_ssp_and_stream_contract)
+JR_TEST(byt_profile, winky_ssp_and_stream_contract_is_explicit)
 {
-	const SstDspHeader start = WinkyVirtualBusStart();
+	const PlatformProfile& profile = kWinkyProfile;
+	JR_CHECK_EQ(PlatformProfileCount(), (size_t)1);
+	JR_CHECK_EQ(FindPlatformProfile("winky"), &profile);
+	JR_CHECK_EQ(MatchLpeProfile("80860F28"), &profile);
+	JR_CHECK_EQ(MatchCodecProfile("193C9890", 0x10), &profile);
+	JR_CHECK_EQ(MatchCodecProfile("193C9890", 0x11),
+		(const PlatformProfile*)nullptr);
+	JR_CHECK_EQ(std::strcmp(profile.friendlyName, "Bay Trail MAX98090"), 0);
+	JR_CHECK_EQ(profile.codecI2cAddress, (uint16_t)0x10);
+	JR_CHECK_EQ(std::strcmp(profile.firmwareSubpath,
+		"/firmware/byt_max98090/fw_sst_0f28.bin"), 0);
+	JR_CHECK_EQ(profile.clock.pciVendorId, (uint16_t)0x8086);
+	JR_CHECK_EQ(profile.clock.pciDeviceId, (uint16_t)0x0f1c);
+	JR_CHECK_EQ(profile.clock.barOffset, (uint16_t)0x44);
+	JR_CHECK_EQ(profile.clock.barMask, (uint32_t)0xfffffe00);
+	JR_CHECK_EQ(profile.clock.mapSize, (uint32_t)0x100);
+	JR_CHECK_EQ(profile.clock.registerOffset, (uint32_t)0x60);
+	JR_CHECK_EQ(profile.clock.clearMask, (uint32_t)0x7);
+	JR_CHECK_EQ(profile.clock.setBits, (uint32_t)0x5);
+	JR_CHECK_EQ(profile.resources.lpeMemoryIndex, (uint32_t)0);
+	JR_CHECK_EQ(profile.resources.imrMemoryIndex, (uint32_t)2);
+	JR_CHECK_EQ(profile.resources.ipcIrqIndex, (uint32_t)5);
+	JR_CHECK_EQ(profile.resources.expectedIpcIrq, (uint32_t)29);
+	JR_CHECK_EQ(profile.resources.expectedImrBase, (uint64_t)0x20000000);
+	JR_CHECK_EQ(profile.resources.expectedImrSize, (uint64_t)0x100000);
+	JR_CHECK_EQ(profile.jack.headphoneResourceIndex, (uint32_t)0);
+	JR_CHECK_EQ(profile.jack.microphoneResourceIndex, (uint32_t)1);
+	JR_CHECK(!profile.jack.headphoneActiveLow);
+	JR_CHECK(profile.jack.microphoneActiveLow);
+	JR_CHECK_EQ(profile.jack.debounce, (int64_t)200000);
+
+	const SstDspHeader& start = profile.playback.virtualBusStart;
 	JR_CHECK_EQ(start.commandId, (uint16_t)85);
 	JR_CHECK_EQ(start.length, (uint16_t)0);
 
-	const SstSspCommand ssp = WinkySspConfiguration();
+	const SstSspCommand& ssp = profile.playback.sspConfiguration;
 	JR_CHECK_EQ(ssp.header.commandId, (uint16_t)117);
 	JR_CHECK_EQ(ssp.header.length, (uint16_t)18);
 	JR_CHECK_EQ(ssp.selection, (uint16_t)3);
@@ -273,7 +304,7 @@ JR_TEST(byt_ipc, fixes_winky_ssp_and_stream_contract)
 	JR_CHECK_EQ(ssp.polarity, (uint16_t)1);
 	JR_CHECK_EQ(ssp.frameSyncWidth, (uint16_t)16);
 	JR_CHECK_EQ(ssp.protocolAndStartDelay, (uint16_t)0x0101);
-	const SstSspSlotMapCommand slotMap = WinkySspSlotMap();
+	const SstSspSlotMapCommand& slotMap = profile.playback.sspSlotMap;
 	JR_CHECK_EQ(slotMap.header.commandId, (uint16_t)130);
 	JR_CHECK_EQ(slotMap.header.length, (uint16_t)22);
 	JR_CHECK_EQ(slotMap.parameterId, (uint16_t)130);
@@ -283,18 +314,15 @@ JR_TEST(byt_ipc, fixes_winky_ssp_and_stream_contract)
 		JR_CHECK_EQ(slotMap.receiveSlots[i], (uint8_t)(1u << i));
 		JR_CHECK_EQ(slotMap.transmitSlots[i], (uint8_t)(1u << i));
 	}
-	JR_CHECK_EQ(kPlaybackSetupCommandPrefix[0], (uint16_t)85);
-	JR_CHECK_EQ(kPlaybackSetupCommandPrefix[1], (uint16_t)117);
-	JR_CHECK_EQ(kPlaybackSetupCommandPrefix[2], (uint16_t)130);
-	JR_CHECK_EQ(kTaskMmx, (uint16_t)3);
-	JR_CHECK_EQ(kTaskSba, (uint16_t)1);
+	JR_CHECK_EQ(profile.playback.mmxTaskId, (uint8_t)3);
+	JR_CHECK_EQ(profile.playback.sbaTaskId, (uint8_t)1);
 	JR_CHECK_EQ(kGainZeroDb, (int16_t)0);
-	JR_CHECK_EQ(kPlaybackStreamId, (uint16_t)1);
-	JR_CHECK_EQ(kPlaybackPipeId, (uint16_t)0x90);
+	JR_CHECK_EQ(profile.playback.streamId, (uint8_t)1);
+	JR_CHECK_EQ(profile.playback.pipeId, (uint8_t)0x90);
 	JR_CHECK_EQ(kMrfldAllocationSize, (size_t)100);
 	JR_CHECK_EQ(kMrfldTimestampStride, (uint32_t)76);
 	JR_CHECK_EQ(MrfldTimestampOffset(1), (uint32_t)(0x800 + 76));
-	JR_CHECK_EQ(MrfldTimestampAddress(kWinkyMailboxLpeAddress, 1),
+	JR_CHECK_EQ(MrfldTimestampAddress(profile.playback.mailboxLpeAddress, 1),
 		(uint32_t)0xff34484c);
 	JR_CHECK_EQ(offsetof(SstMrfldAllocation, ringBuffers), (size_t)4);
 	JR_CHECK_EQ(offsetof(SstMrfldAllocation, fragmentSizeBytes), (size_t)68);
@@ -366,8 +394,8 @@ JR_TEST(byt_codec, full_register_playback_program_is_exact)
 
 JR_TEST(byt_playback, exact_allocation_body_100_bytes)
 {
-	const auto alloc = BuildWinkyAllocation(0x10000000, 15360, 3840,
-		0xff34484c);
+	const auto alloc = BuildAllocation(kWinkyProfile.playback.pcm,
+		0x10000000, 15360, 3840, 0xff34484c);
 	JR_CHECK_EQ(sizeof(alloc), (size_t)100);
 	JR_CHECK_EQ(alloc.codecType, (uint16_t)1);
 	JR_CHECK_EQ(alloc.operation, (uint8_t)0);
@@ -533,13 +561,13 @@ JR_TEST(byt_playback, command_order_and_ipc_categories)
 	JR_CHECK_EQ(kPlaybackHardwareCommandCount, (size_t)2);
 	JR_CHECK_EQ(kPlaybackRouteCommandCount, (size_t)8);
 
-	const auto vbStart = WinkyVirtualBusStart();
+	const auto& vbStart = kWinkyProfile.playback.virtualBusStart;
 	JR_CHECK_EQ(vbStart.commandId, (uint16_t)85);
 
-	const auto ssp = WinkySspConfiguration();
+	const auto& ssp = kWinkyProfile.playback.sspConfiguration;
 	JR_CHECK_EQ(ssp.header.commandId, (uint16_t)117);
 
-	const auto slotMap = WinkySspSlotMap();
+	const auto& slotMap = kWinkyProfile.playback.sspSlotMap;
 	JR_CHECK_EQ(slotMap.header.commandId, (uint16_t)130);
 
 	const auto media1Gain = MakeMedia1Gain0dB();
