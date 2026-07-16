@@ -13,6 +13,7 @@
  */
 
 #include <common/iosf_mbi.h>
+#include <common/Trace.h>
 
 #include "IosfMbiProtocol.h"
 
@@ -26,12 +27,13 @@
 
 
 #define TRACE_IOSF_MBI
+#define IOSF_MBI_TRACE_LABEL "iosf_mbi"
 #ifdef TRACE_IOSF_MBI
-	#define TRACE(x...) dprintf("\33[34miosf_mbi:\33[0m " x)
+#	define TRACE(x...) JR_DIAG_TRACE(IOSF_MBI_TRACE_LABEL, x)
 #else
-	#define TRACE(x...) ;
+#	define TRACE(x...) JR_DIAG_DISABLED()
 #endif
-#define ERROR(x...) dprintf("\33[34miosf_mbi:\33[0m " x)
+#define ERROR(x...) JR_DIAG_ERROR(IOSF_MBI_TRACE_LABEL, x)
 
 
 namespace {

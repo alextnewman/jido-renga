@@ -7,12 +7,15 @@ SubDir JIDO_RENGA_TOP overlay ;
 # Build-time overlay root, entered through DeferredSubInclude after PLATFORM is
 # available. Directory classes match the add-ons' canonical Haiku runtime paths.
 
+JIDO_RENGA_BSP ?= winky ;
+JIDO_RENGA_INSTALL_IN_IMAGE ?= 1 ;
+
 # Generate the derivative root-package template from the captive template. The
 # strict transformer changes provenance only; package identity and dependencies
 # continue to track the selected Haiku revision.
 actions JidoRengaPackageInfo
 {
-	"$(2[1])" "$(2[2])" > "$(1)"
+	"$(2[1])" "$(2[2])" "$(JIDO_RENGA_PACKAGE_INFO_BSP)" > "$(1)"
 }
 
 # A repository index accepts packages from only its declared vendor. The
@@ -39,10 +42,24 @@ SEARCH on $(upstreamHaikuPackageInfo)
 local derivativeHaikuPackageInfo = <package-info-source>haiku ;
 MakeLocate $(derivativeHaikuPackageInfo)
 	: [ FDirName $(HAIKU_OBJECT_DIR) jido-renga package_infos ] ;
+local packageInfoBsp = none ;
+if $(JIDO_RENGA_INSTALL_IN_IMAGE) = 1 {
+	packageInfoBsp = $(JIDO_RENGA_BSP) ;
+}
+JIDO_RENGA_PACKAGE_INFO_BSP on $(derivativeHaikuPackageInfo)
+	= $(packageInfoBsp) ;
 Depends $(derivativeHaikuPackageInfo)
 	: $(jidoRengaPackageInfoTool) $(upstreamHaikuPackageInfo) ;
 JidoRengaPackageInfo $(derivativeHaikuPackageInfo)
 	: $(jidoRengaPackageInfoTool) $(upstreamHaikuPackageInfo) ;
+
+JIDO_RENGA_SST_FIRMWARE = <jido-renga-firmware>fw_sst_0f28.bin ;
+SEARCH on $(JIDO_RENGA_SST_FIRMWARE)
+	= [ FDirName $(JIDO_RENGA_TOP) firmware byt_max98090 ] ;
+JIDO_RENGA_SST_FIRMWARE_LICENSE
+	= <jido-renga-license>LicenseRef-Intel-SST.txt ;
+SEARCH on $(JIDO_RENGA_SST_FIRMWARE_LICENSE)
+	= [ FDirName $(JIDO_RENGA_TOP) LICENSES ] ;
 
 # Shared modules precede consumers.
 SubInclude JIDO_RENGA_TOP overlay bus_managers i2c ;
@@ -52,15 +69,16 @@ SubInclude JIDO_RENGA_TOP overlay bus_managers iosf_mbi ;
 SubInclude JIDO_RENGA_TOP overlay busses mmc sdhci_embedded ;
 
 # Leaf drivers.
+SubInclude JIDO_RENGA_TOP overlay drivers audio byt_max98090 ;
 SubInclude JIDO_RENGA_TOP overlay drivers input cros_ec_keyboard ;
 SubInclude JIDO_RENGA_TOP overlay drivers input i2c_atmel_mxt ;
 
 # A BSP declares two things: the overlay add-ons to ship and the exact paths in
 # haiku.hpkg that it replaces. Controller ownership is resolved at image time.
-JIDO_RENGA_BSP ?= winky ;
 JIDO_RENGA_BSP_IMAGE_BUS_MANAGERS = ;
 JIDO_RENGA_BSP_IMAGE_I2C_BUS_MANAGER = ;
 JIDO_RENGA_BSP_IMAGE_BUSSES_MMC = ;
+JIDO_RENGA_BSP_IMAGE_DRIVERS_AUDIO = ;
 JIDO_RENGA_BSP_IMAGE_DRIVERS_INPUT = ;
 JIDO_RENGA_BSP_BOOT_MODULE_TARGETS = ;
 JIDO_RENGA_BSP_OMIT_HAIKU_PACKAGE_FILES = ;
@@ -80,8 +98,6 @@ if $(JIDO_RENGA_BSP) = winky {
 #
 # Set JIDO_RENGA_INSTALL_IN_IMAGE = 0 in UserBuildConfig (before the overlay
 # walk) to build the add-ons without composing them into haiku.hpkg.
-JIDO_RENGA_INSTALL_IN_IMAGE ?= 1 ;
-
 # Haiku's package recipe exposes no stock-driver exclusion hook. These public
 # package adapters filter exact BSP-owned paths and boot links.
 rule JidoRengaPackageTargets directory : targets
@@ -142,10 +158,33 @@ rule JidoRengaBootModuleTargets targets
 	return $(kept) ;
 }
 
+rule JidoRengaAddBspPackageFiles
+{
+	local package = $(HAIKU_CURRENTLY_BUILT_HAIKU_PACKAGE) ;
+	if $(JIDO_RENGA_INSTALL_IN_IMAGE) != 1
+		|| $(JIDO_RENGA_BSP) != winky
+		|| $(package) != haiku.hpkg {
+		return ;
+	}
+
+	local added
+		= [ on $(package) return $(JIDO_RENGA_BSP_PACKAGE_FILES_ADDED) ] ;
+	if $(added) {
+		return ;
+	}
+	JIDO_RENGA_BSP_PACKAGE_FILES_ADDED on $(package) = 1 ;
+
+	AddFilesToContainer $(package) : data firmware byt_max98090
+		: $(JIDO_RENGA_SST_FIRMWARE) ;
+	AddFilesToContainer $(package) : data licenses
+		: $(JIDO_RENGA_SST_FIRMWARE_LICENSE) : "Intel (SST firmware)" ;
+}
+
 
 rule AddFilesToPackage directory : targets : destName
 {
 	if ! [ FDontRebuildCurrentPackage ] {
+		JidoRengaAddBspPackageFiles ;
 		targets = [ JidoRengaPackageTargets $(directory) : $(targets) ] ;
 		AddFilesToContainer $(HAIKU_CURRENTLY_BUILT_HAIKU_PACKAGE)
 			: $(directory) : $(targets) : $(destName) ;
@@ -172,6 +211,30 @@ rule AddBootModuleSymlinksToPackage targets
 }
 
 
+rule AddDriversToPackage relativeDirectoryTokens : targets
+{
+	if ! [ FDontRebuildCurrentPackage ] {
+		if $(JIDO_RENGA_INSTALL_IN_IMAGE) = 1
+			&& $(HAIKU_CURRENTLY_BUILT_HAIKU_PACKAGE) = haiku.hpkg {
+			local kept ;
+			local target ;
+			for target in $(targets) {
+				# BSP paths name the driver class, not Haiku's bin/dev split.
+				local path = [ FDirName add-ons kernel drivers
+					$(relativeDirectoryTokens[1]) $(target:BSM) ] ;
+				if ! $(path) in $(JIDO_RENGA_BSP_OMIT_HAIKU_PACKAGE_FILES) {
+					kept += $(target) ;
+				}
+			}
+			targets = $(kept) ;
+		}
+
+		AddDriversToContainer $(HAIKU_CURRENTLY_BUILT_HAIKU_PACKAGE)
+			: $(relativeDirectoryTokens) : $(targets) ;
+	}
+}
+
+
 rule AddNewDriversToPackage relativeDirectoryTokens : targets
 {
 	if ! [ FDontRebuildCurrentPackage ] {
@@ -190,10 +253,15 @@ rule AddNewDriversToPackage relativeDirectoryTokens : targets
 		}
 
 		if $(JIDO_RENGA_INSTALL_IN_IMAGE) = 1
-			&& $(HAIKU_CURRENTLY_BUILT_HAIKU_PACKAGE) = haiku.hpkg
-			&& [ FDirName $(relativeDirectoryTokens) ] = input {
+			&& $(HAIKU_CURRENTLY_BUILT_HAIKU_PACKAGE) = haiku.hpkg {
+			local additions ;
+			if [ FDirName $(relativeDirectoryTokens) ] = audio/hmulti {
+				additions = $(JIDO_RENGA_BSP_IMAGE_DRIVERS_AUDIO) ;
+			} else if [ FDirName $(relativeDirectoryTokens) ] = input {
+				additions = $(JIDO_RENGA_BSP_IMAGE_DRIVERS_INPUT) ;
+			}
 			local target ;
-			for target in $(JIDO_RENGA_BSP_IMAGE_DRIVERS_INPUT) {
+			for target in $(additions) {
 				if ! $(target) in $(targets) {
 					targets += $(target) ;
 				}

@@ -264,7 +264,8 @@ _enqueue_key(driver_cookie* d, uint32 keycode, bool isKeydown)
 	}
 
 	//! Ring full — log the drop (always visible, not behind TRACE).
-	dprintf("cros_ec_kbd: RING FULL! keycode=0x%03x %s DROPPED\n",
+	JR_DIAG_ERROR(CROS_EC_KBD_TRACE_LABEL,
+		"RING FULL! keycode=0x%03x %s DROPPED\n",
 		keycode, isKeydown ? "down" : "up");
 	return false;
 }

@@ -26,3 +26,9 @@ precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 The Jidō Renga Authors"
 SPDX-License-Identifier = "MIT"
 SPDX-FileContributor = "Generated with GitHub Copilot"
+
+[[annotations]]
+path = "firmware/byt_max98090/fw_sst_0f28.bin"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2014 Intel Corporation"
+SPDX-License-Identifier = "LicenseRef-Intel-SST"

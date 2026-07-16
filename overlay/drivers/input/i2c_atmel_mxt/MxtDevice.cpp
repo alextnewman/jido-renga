@@ -16,6 +16,7 @@
 #include <util/AutoLock.h>
 
 #include <new>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -762,13 +763,20 @@ MxtDevice::_ParseObjectTable()
 	fObjectTable.Initialize(tableData, tableSize);
 
 	// Trace at most the first 48 bytes of the object table.
-	TRACE("Object Table raw (%" B_PRIu32 " bytes): ", (uint32)tableSize);
-	for (uint32 i = 0; i < tableSize && i < 48; i++) {
-		if (i % 12 == 0)
-			dprintf("\n");
-		dprintf("0x%02x ", tableData[i]);
+#ifdef TRACE_I2C_ATMEL_MXT
+	TRACE("Object Table raw (%" B_PRIu32 " bytes)\n", (uint32)tableSize);
+	for (uint32 rowOffset = 0; rowOffset < tableSize && rowOffset < 48;
+			rowOffset += 12) {
+		char row[12 * 5 + 1];
+		size_t rowLength = 0;
+		for (uint32 i = rowOffset; i < tableSize && i < rowOffset + 12
+				&& i < 48; i++) {
+			rowLength += snprintf(row + rowLength, sizeof(row) - rowLength,
+				"0x%02x ", tableData[i]);
+		}
+		TRACE("  +0x%02" B_PRIx32 ": %s\n", rowOffset, row);
 	}
-	dprintf("\n");
+#endif
 
 	delete[] tableData;
 

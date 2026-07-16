@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
 // SPDX-License-Identifier: MIT
 // SPDX-FileContributor: Generated with Qwen 3.6
+// SPDX-FileContributor: Generated with GitHub Copilot
 
 //! ChromeOS EC keyboard driver -- native driver for the 8042-class interface
 //! emulated by the ChromeOS Embedded Controller (WINKY / Chromebook 2).
@@ -26,13 +27,16 @@
 #include <keyboard_mouse_driver.h>
 #include <lock.h>
 
+#include <common/Trace.h>
+
 
 // Debug tracing (disabled by default, enable for bring-up).
 //#define TRACE_CROS_EC_KBD
+#define CROS_EC_KBD_TRACE_LABEL "cros_ec_kbd"
 #ifdef TRACE_CROS_EC_KBD
-#	define TRACE(x...)	dprintf("cros_ec_kbd: " x)
+#	define TRACE(x...) JR_DIAG_TRACE(CROS_EC_KBD_TRACE_LABEL, x)
 #else
-#	define TRACE(x...)
+#	define TRACE(x...) JR_DIAG_DISABLED()
 #endif
 
 

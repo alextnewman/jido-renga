@@ -19,19 +19,22 @@
 
 CXX ?= c++
 CXXFLAGS := -std=c++17 -Wall -Wextra -Wshadow -O1 -g -pthread \
-	-I. -I../overlay/busses/mmc/sdhci_embedded \
+	-I. -I../overlay/headers -I../overlay/busses/mmc/sdhci_embedded \
 	-I../overlay/bus_managers/iosf_mbi \
-	-Ishims -I../overlay/drivers/input/i2c_atmel_mxt
+	-Ishims -I../overlay/drivers/input/i2c_atmel_mxt \
+	-I../overlay/drivers/audio/byt_max98090
 
 DRIVER_DIR := ../overlay/busses/mmc/sdhci_embedded
 MXT_DIR := ../overlay/drivers/input/i2c_atmel_mxt
+BYT_AUDIO_DIR := ../overlay/drivers/audio/byt_max98090
 
 # Pure-core sources with out-of-line definitions.
 CORE_SRC := \
 	$(DRIVER_DIR)/Matcher.cpp \
 	$(DRIVER_DIR)/Personality.cpp \
 	$(MXT_DIR)/ObjectTable.cpp \
-	$(MXT_DIR)/TouchEngine.cpp
+	$(MXT_DIR)/TouchEngine.cpp \
+	$(BYT_AUDIO_DIR)/Firmware.cpp
 
 TEST_SRC := \
 	framework/test_worker_rig.cpp \
@@ -49,6 +52,7 @@ TEST_SRC := \
 	iosf_mbi/test_iosf_mbi_protocol.cpp \
 	i2c_atmel_mxt/test_object_table.cpp \
 	i2c_atmel_mxt/test_touch_engine.cpp \
+	byt_max98090/test_firmware.cpp \
 	sdhci_embedded/test_main.cpp
 
 BIN := jr_tests

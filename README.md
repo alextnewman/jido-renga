@@ -46,14 +46,24 @@ The first BSP targets the Samsung Chromebook 2 `XE500C12`, ChromeOS board
 | `sdhci_embedded` | eMMC and removable-SD host controller | ACPI `80860F14`, `80860F16` |
 | `cros_ec_keyboard` | 8042-compatible EC keyboard | ACPI `GOOG000A` |
 | `i2c_atmel_mxt` | Atmel maXTouch touchpad | ACPI `ATML0000` |
+| `byt_max98090` | Internal audio (SST + MAX98090) | SST `80860F28`, I2C `193C9890` |
 
 Winky boots Haiku from removable SD, identifies and uses its eMMC, supports
 installation to eMMC, and provides working keyboard and touchpad input.
+The audio driver implements the complete legacy Intel SST/MRFLD playback path:
+firmware loading, codec initialization, 10-command route configuration, stream
+allocation/start/stop/free, and `B_MULTI_BUFFER_EXCHANGE` with period-elapsed
+polling and firmware timestamp reading. IPC/period servicing is currently
+polling-based; IRQ-driven handling is a future refinement. Internal-speaker
+playback is validated on Winky hardware. Headphone-jack detection and routing
+are not yet implemented, so the current mixer remains speaker-only.
 
 The Winky BSP is intentionally exclusive where controllers cannot safely have
-two owners. Its image omits Haiku's generic SDHCI add-on and installs
-`sdhci_embedded` instead; otherwise normal Haiku image composition is left
-alone.
+two owners. Its image omits Haiku's generic SDHCI add-on in favor of
+`sdhci_embedded`. It preserves Haiku's HDA driver for the separate PCI
+`8086:0f04` HDMI-audio controller while `byt_max98090` owns only the ACPI
+`80860F28` SST/LPE path for internal speakers. Other Haiku image composition is
+left alone.
 
 ## Relationship with Haiku
 
@@ -90,7 +100,7 @@ cd ..
 tools/weave generated.x86_64
 cd generated.x86_64
 ../tools/jr-jam -q i2c_guarded iosf_mbi sdhci_embedded \
-  cros_ec_keyboard i2c_atmel_mxt
+  cros_ec_keyboard i2c_atmel_mxt byt_max98090
 ```
 
 Build a bootable desktop image with:
@@ -128,6 +138,15 @@ package and is not enabled automatically in composed images. Applications such
 as WebPositive remain separate packages; JR does not rebuild or rebrand the
 Haiku desktop catalog.
 
+For Winky, the package also carries the unmodified Intel SST firmware at
+`data/firmware/byt_max98090/fw_sst_0f28.bin` and its separately licensed Intel
+redistribution terms.
+
+Kernel diagnostics share `<common/Trace.h>`: cyan trace/status labels, yellow
+warnings, red errors, and magenta event streams, all rendered as `[component]`.
+Each driver still owns its compile-time trace gates, so presentation is common
+without forcing verbose data-path logging.
+
 Set `JIDO_RENGA_BSP = none` in `UserBuildConfig` before the overlay walk to
 build the add-ons without applying a BSP image policy. Set
 `JIDO_RENGA_INSTALL_IN_IMAGE = 0` to keep them as loose build outputs only.
@@ -137,6 +156,7 @@ build the add-ons without applying a BSP image policy. Set
 ```text
 overlay/    project-owned kernel add-ons and public headers
 config/     graft template, BSP manifests, and revision configuration
+firmware/   separately licensed firmware vendored unchanged for BSP packages
 tools/      weave, revision, Jam wrapper, and terminal banner
 tests/      host-side policy, parser, and concurrency tests
 skills/     operational guidance for coding agents
@@ -148,6 +168,7 @@ Useful references:
 
 - [`docs/drivers/cros_ec_keyboard.md`](docs/drivers/cros_ec_keyboard.md)
 - [`docs/drivers/i2c_atmel_mxt.md`](docs/drivers/i2c_atmel_mxt.md)
+- [`docs/drivers/byt_max98090.md`](docs/drivers/byt_max98090.md)
 - [`docs/design/sdhci_embedded.md`](docs/design/sdhci_embedded.md)
 - [`docs/hardware/winky-bay-trail-sdhci.md`](docs/hardware/winky-bay-trail-sdhci.md)
 
@@ -170,4 +191,5 @@ interfaces and implementation details may change as hardware support expands.
 
 The project is MIT-licensed. See [`LICENSE`](LICENSE). Licensing metadata follows
 the [REUSE](https://reuse.software/) specification through per-file SPDX tags,
-`REUSE.toml`, and `LICENSES/`.
+`REUSE.toml`, and `LICENSES/`. The vendored Intel SST firmware remains under
+Intel's separate unmodified-binary redistribution terms.

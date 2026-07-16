@@ -3,7 +3,7 @@
 // SPDX-FileContributor: Generated with GitHub Copilot
 #pragma once
 
-#include <KernelExport.h>
+#include <common/Trace.h>
 
 // Per-component labeled tracing. Every log line is decorated with a short label
 // (e.g. "sdhci_emb:eMMC0") so it is always obvious which device or discovery
@@ -30,27 +30,27 @@ struct TraceLabel {
 
 #ifdef JR_SDHCI_TRACE
 #	define JR_TRACE(label, fmt, ...) \
-		dprintf("\33[36m[%s]\33[0m " fmt, (label).text, ##__VA_ARGS__)
+		JR_DIAG_TRACE((label).text, fmt, ##__VA_ARGS__)
 #else
-#	define JR_TRACE(label, fmt, ...) do {} while (0)
+#	define JR_TRACE(label, fmt, ...) JR_DIAG_DISABLED()
 #endif
 
 #define JR_TRACE_ALWAYS(label, fmt, ...) \
-	dprintf("\33[36m[%s]\33[0m " fmt, (label).text, ##__VA_ARGS__)
+	JR_DIAG_INFO((label).text, fmt, ##__VA_ARGS__)
 
 #define JR_WARN(label, fmt, ...) \
-	dprintf("\33[33m[%s]\33[0m " fmt, (label).text, ##__VA_ARGS__)
+	JR_DIAG_WARN((label).text, fmt, ##__VA_ARGS__)
 
 #define JR_ERROR(label, fmt, ...) \
-	dprintf("\33[31m[%s]\33[0m " fmt, (label).text, ##__VA_ARGS__)
+	JR_DIAG_ERROR((label).text, fmt, ##__VA_ARGS__)
 
 // The "meow bus": a spurious/late interrupt is just the device meowing. The
 // worker (the owner) will get up and check. Logged only when verbose, because
 // on Bay Trail the cat is *very* chatty.
 #ifdef JR_SDHCI_TRACE_MEOW
 #	define JR_MEOW(label, status) \
-		dprintf("\33[35m[%s]\33[0m meow (irq 0x%08" B_PRIx32 ")\n", \
-			(label).text, (uint32)(status))
+		JR_DIAG_EVENT((label).text, "meow (irq 0x%08" B_PRIx32 ")\n", \
+			(uint32)(status))
 #else
-#	define JR_MEOW(label, status) do {} while (0)
+#	define JR_MEOW(label, status) JR_DIAG_DISABLED()
 #endif

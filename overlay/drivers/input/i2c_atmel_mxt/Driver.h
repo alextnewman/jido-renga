@@ -11,6 +11,8 @@
 #include <OS.h>
 #include <util/kernel_cpp.h>
 
+#include <common/Trace.h>
+
 #include "DeviceList.h"
 
 
@@ -25,17 +27,17 @@ extern DeviceList *gDeviceList;
 //#define TRACE_I2C_ATMEL_MXT
 //#define TRACE_I2C_ATMEL_MXT_TOUCH
 #ifdef TRACE_I2C_ATMEL_MXT
-#	define TRACE(x...) dprintf(DRIVER_NAME ": " x)
+#	define TRACE(x...) JR_DIAG_TRACE(DRIVER_NAME, x)
 #else
-#	define TRACE(x...)
+#	define TRACE(x...) JR_DIAG_DISABLED()
 #endif
 #ifdef TRACE_I2C_ATMEL_MXT_TOUCH
-#	define TOUCH_TRACE(x...) dprintf(DRIVER_NAME ": touch: " x)
+#	define TOUCH_TRACE(x...) JR_DIAG_EVENT(DRIVER_NAME "/touch", x)
 #else
-#	define TOUCH_TRACE(x...)
+#	define TOUCH_TRACE(x...) JR_DIAG_DISABLED()
 #endif
-#define ERROR(x...) dprintf(DRIVER_NAME ": " x)
-#define TRACE_ALWAYS(x...)	dprintf(DRIVER_NAME ": " x)
+#define ERROR(x...) JR_DIAG_ERROR(DRIVER_NAME, x)
+#define TRACE_ALWAYS(x...) JR_DIAG_INFO(DRIVER_NAME, x)
 
 
 #endif	// _I2C_ATMEL_MXT_DRIVER_H

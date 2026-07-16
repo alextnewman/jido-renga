@@ -5,17 +5,25 @@
 
 set -eu
 
-if [ "$#" -ne 1 ]; then
-	echo "usage: jr-package-info <haiku-package-info-template>" >&2
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+	echo "usage: jr-package-info <haiku-package-info-template> [bsp]" >&2
 	exit 2
 fi
 
-awk '
+bsp=${2:-none}
+include_sst_firmware=0
+if [ "$bsp" = winky ]; then
+	include_sst_firmware=1
+fi
+
+awk -v include_sst_firmware="$include_sst_firmware" '
 BEGIN {
 	summary = 0
 	description = 0
 	packager = 0
 	vendor = 0
+	copyrights = 0
+	licenses = 0
 }
 
 /^[[:space:]]*summary[[:space:]]+"The Haiku base system"[[:space:]]*$/ {
@@ -48,6 +56,27 @@ BEGIN {
 	next
 }
 
+/^[[:space:]]*copyrights[[:space:]]+/ {
+	copyrights++
+	if (include_sst_firmware) {
+		value = $0
+		sub(/^[^[:space:]]+[[:space:]]+/, "", value)
+		print "copyrights {"
+		print "\t" value
+		print "\t\"2014 Intel Corporation\""
+		print "}"
+		next
+	}
+}
+
+/^[[:space:]]*licenses[[:space:]]*\{[[:space:]]*$/ {
+	licenses++
+	print
+	if (include_sst_firmware)
+		print "\t\"Intel (SST firmware)\""
+	next
+}
+
 {
 	print
 }
@@ -55,6 +84,11 @@ BEGIN {
 END {
 	if (summary != 1 || description != 1 || packager != 1 || vendor != 1) {
 		printf "jr-package-info: package template did not match expected provenance fields\n" \
+			> "/dev/stderr"
+		exit 1
+	}
+	if (include_sst_firmware && (copyrights != 1 || licenses != 1)) {
+		printf "jr-package-info: cannot add Intel SST firmware metadata\n" \
 			> "/dev/stderr"
 		exit 1
 	}
