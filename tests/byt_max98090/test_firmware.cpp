@@ -284,6 +284,11 @@ JR_TEST(byt_profile, winky_ssp_and_stream_contract_is_explicit)
 	JR_CHECK(!profile.jack.headphoneActiveLow);
 	JR_CHECK(profile.jack.microphoneActiveLow);
 	JR_CHECK_EQ(profile.jack.debounce, (int64_t)200000);
+	JR_CHECK_EQ(profile.output.speakerVolumeMaximum, (uint8_t)15);
+	JR_CHECK_EQ(profile.output.speakerVolumeDefault, (uint8_t)10);
+	JR_CHECK_EQ(profile.output.headphoneVolumeMaximum, (uint8_t)19);
+	JR_CHECK_EQ(profile.output.headphoneVolumeDefault, (uint8_t)19);
+	JR_CHECK_EQ(profile.output.speakerMixerVolume, (uint8_t)2);
 
 	const SstDspHeader& start = profile.playback.virtualBusStart;
 	JR_CHECK_EQ(start.commandId, (uint16_t)85);
@@ -378,11 +383,15 @@ JR_TEST(byt_codec, full_register_playback_program_is_exact)
 	JR_CHECK((kSystemClock19M2 & 0x40) == 0);
 	JR_CHECK_EQ(kLeftDacToLeftSpeaker, (uint8_t)0x01);
 	JR_CHECK_EQ(kRightDacToRightSpeaker, (uint8_t)0x02);
-	JR_CHECK_EQ(kDefaultSpeakerRegisterValue, (uint8_t)0x22);
-	JR_CHECK_EQ(kSpeakerControlValue, (uint8_t)0x00);
+	JR_CHECK_EQ(kSpeakerVolumeHardwareMaximum, (uint8_t)39);
+	JR_CHECK_EQ(kHeadphoneVolumeHardwareMaximum, (uint8_t)31);
+	JR_CHECK_EQ(kSpeakerVolumeRawMinimum
+		+ kWinkyProfile.output.speakerVolumeDefault, (uint8_t)0x22);
+	JR_CHECK_EQ(SpeakerControlValue(
+		kWinkyProfile.output.speakerMixerVolume), (uint8_t)0x05);
 	JR_CHECK_EQ(kDacAndSpeakerEnable, (uint8_t)0x33);
 	JR_CHECK_EQ(kDacAndHeadphoneEnable, (uint8_t)0xc3);
-	JR_CHECK_EQ(kDefaultHeadphoneVolume, (uint8_t)0x1a);
+	JR_CHECK_EQ(kWinkyProfile.output.headphoneVolumeDefault, (uint8_t)0x13);
 	JR_CHECK_EQ(kHeadphoneMute, (uint8_t)0x80);
 	JR_CHECK_EQ(kShutdownRelease, (uint8_t)0x80);
 }

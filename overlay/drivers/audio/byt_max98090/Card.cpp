@@ -284,9 +284,9 @@ Card::Card()
 	fI2cCookie(nullptr),
 	fCodecNode(nullptr),
 	fCodecRevision(0),
-	fVolume(max98090::kDefaultSpeakerVolume),
+	fVolume(0xff),
 	fMuted(false),
-	fHeadphoneVolume(max98090::kDefaultHeadphoneVolume),
+	fHeadphoneVolume(0xff),
 	fHeadphoneMuted(false),
 	fHeadphonePresent(false),
 	fMicrophonePresent(false),
@@ -938,6 +938,10 @@ Card::_InitializeCodec()
 		mutex_unlock(&fCodecLock);
 		return status;
 	}
+	if (fVolume > fProfile->output.speakerVolumeMaximum)
+		fVolume = fProfile->output.speakerVolumeDefault;
+	if (fHeadphoneVolume > fProfile->output.headphoneVolumeMaximum)
+		fHeadphoneVolume = fProfile->output.headphoneVolumeDefault;
 
 	const struct {
 		uint8 reg;
@@ -957,20 +961,22 @@ Card::_InitializeCodec()
 		{max98090::kDaiPlaybackLevel, max98090::kDaiPlaybackUnmutedUnity},
 		{max98090::kHeadphoneControl, 0},
 		{max98090::kLeftHeadphoneVolume,
-			static_cast<uint8>(max98090::kDefaultHeadphoneVolume
+			static_cast<uint8>(fHeadphoneVolume
 				| max98090::kHeadphoneMute)},
 		{max98090::kRightHeadphoneVolume,
-			static_cast<uint8>(max98090::kDefaultHeadphoneVolume
+			static_cast<uint8>(fHeadphoneVolume
 				| max98090::kHeadphoneMute)},
 		{max98090::kLeftSpeakerMixer,
 			max98090::kLeftDacToLeftSpeaker},
 		{max98090::kRightSpeakerMixer,
 			max98090::kRightDacToRightSpeaker},
-		{max98090::kSpeakerControl, max98090::kSpeakerControlValue},
+		{max98090::kSpeakerControl,
+			max98090::SpeakerControlValue(
+				fProfile->output.speakerMixerVolume)},
 		{max98090::kLeftSpeakerVolume,
-			max98090::kDefaultSpeakerRegisterValue},
+			static_cast<uint8>(max98090::kSpeakerVolumeRawMinimum + fVolume)},
 		{max98090::kRightSpeakerVolume,
-			max98090::kDefaultSpeakerRegisterValue},
+			static_cast<uint8>(max98090::kSpeakerVolumeRawMinimum + fVolume)},
 		{max98090::kOutputEnable, max98090::kDacAndSpeakerEnable},
 		{max98090::kDeviceShutdown, max98090::kShutdownRelease}
 	};
@@ -999,8 +1005,10 @@ Card::_InitializeCodec()
 status_t
 Card::_SetCodecVolume(uint8 volume, bool muted)
 {
-	if (volume > max98090::kSpeakerVolumeMaximum)
-		volume = max98090::kSpeakerVolumeMaximum;
+	if (fProfile == nullptr)
+		return B_NO_INIT;
+	if (volume > fProfile->output.speakerVolumeMaximum)
+		volume = fProfile->output.speakerVolumeMaximum;
 	mutex_lock(&fCodecLock);
 	const uint8 value = (max98090::kSpeakerVolumeRawMinimum + volume)
 		| ((muted || fHeadphonePresent) ? max98090::kSpeakerMute : 0);
@@ -1024,8 +1032,10 @@ Card::_SetCodecVolume(uint8 volume, bool muted)
 status_t
 Card::_SetHeadphoneVolume(uint8 volume, bool muted)
 {
-	if (volume > max98090::kHeadphoneVolumeMaximum)
-		volume = max98090::kHeadphoneVolumeMaximum;
+	if (fProfile == nullptr)
+		return B_NO_INIT;
+	if (volume > fProfile->output.headphoneVolumeMaximum)
+		volume = fProfile->output.headphoneVolumeMaximum;
 	mutex_lock(&fCodecLock);
 	const uint8 value = volume
 		| ((muted || !fHeadphonePresent) ? max98090::kHeadphoneMute : 0);
@@ -1356,6 +1366,8 @@ Card::_SetGlobalFormat(multi_format_info* format)
 status_t
 Card::_ListMixControls(multi_mix_control_info* controls)
 {
+	if (fProfile == nullptr)
+		return B_NO_INIT;
 	if (controls->control_count < 9)
 		return B_BUFFER_OVERFLOW;
 	multi_mix_control list[9] = {};
@@ -1368,7 +1380,7 @@ Card::_ListMixControls(multi_mix_control_info* controls)
 	list[1].flags = B_MULTI_MIX_GAIN;
 	list[1].string = S_VOLUME;
 	list[1].gain.min_gain = 0;
-	list[1].gain.max_gain = max98090::kSpeakerVolumeMaximum;
+	list[1].gain.max_gain = fProfile->output.speakerVolumeMaximum;
 	list[1].gain.granularity = 1;
 	list[2].id = kMixMuteId;
 	list[2].parent = kMixGroupId;
@@ -1383,7 +1395,7 @@ Card::_ListMixControls(multi_mix_control_info* controls)
 	list[4].flags = B_MULTI_MIX_GAIN;
 	list[4].string = S_VOLUME;
 	list[4].gain.min_gain = 0;
-	list[4].gain.max_gain = max98090::kHeadphoneVolumeMaximum;
+	list[4].gain.max_gain = fProfile->output.headphoneVolumeMaximum;
 	list[4].gain.granularity = 1;
 	list[5].id = kMixHeadphoneMuteId;
 	list[5].parent = kMixHeadphoneGroupId;
@@ -1445,6 +1457,8 @@ Card::_GetMix(multi_mix_value_info* values)
 status_t
 Card::_SetMix(multi_mix_value_info* values)
 {
+	if (fProfile == nullptr)
+		return B_NO_INIT;
 	mutex_lock(&fCodecLock);
 	uint8 speakerVolume = fVolume;
 	bool speakerMuted = fMuted;
@@ -1461,7 +1475,7 @@ Card::_SetMix(multi_mix_value_info* values)
 			return B_BAD_ADDRESS;
 		if (value.id == kMixVolumeId) {
 			if (value.gain < 0
-				|| value.gain > max98090::kSpeakerVolumeMaximum) {
+				|| value.gain > fProfile->output.speakerVolumeMaximum) {
 				return B_BAD_VALUE;
 			}
 			speakerVolume = static_cast<uint8>(value.gain);
@@ -1471,7 +1485,7 @@ Card::_SetMix(multi_mix_value_info* values)
 			setSpeaker = true;
 		} else if (value.id == kMixHeadphoneVolumeId) {
 			if (value.gain < 0
-				|| value.gain > max98090::kHeadphoneVolumeMaximum) {
+				|| value.gain > fProfile->output.headphoneVolumeMaximum) {
 				return B_BAD_VALUE;
 			}
 			headphoneVolume = static_cast<uint8>(value.gain);

@@ -57,18 +57,16 @@ constexpr uint8_t kShutdownRelease = 1u << 7;
 constexpr uint8_t kHeadphoneMute = 1u << 7;
 constexpr uint8_t kSpeakerMute = 1u << 7;
 
-constexpr uint8_t kHeadphoneVolumeMaximum = 31;
-constexpr uint8_t kDefaultHeadphoneVolume = 26;
+constexpr uint8_t kHeadphoneVolumeHardwareMaximum = 31;
 constexpr uint8_t kSpeakerVolumeRawMinimum = 24;
-constexpr uint8_t kSpeakerVolumeMaximum = 39;
-constexpr uint8_t kDefaultSpeakerVolume = 10;
-constexpr uint8_t kDefaultSpeakerRegisterValue
-	= kSpeakerVolumeRawMinimum + kDefaultSpeakerVolume;
+constexpr uint8_t kSpeakerVolumeHardwareMaximum = 39;
 constexpr uint8_t kMixerVolumeMaximum = 3;
-constexpr uint8_t kDefaultMixerVolume = 3;
-constexpr uint8_t kDefaultMixerRawValue
-	= kMixerVolumeMaximum - kDefaultMixerVolume;
-constexpr uint8_t kSpeakerControlValue
-	= (kDefaultMixerRawValue << 2) | kDefaultMixerRawValue;
+
+constexpr uint8_t
+SpeakerControlValue(uint8_t logicalVolume)
+{
+	const uint8_t rawValue = kMixerVolumeMaximum - logicalVolume;
+	return (rawValue << 2) | rawValue;
+}
 
 } // namespace jr::byt_audio::max98090

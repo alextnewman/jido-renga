@@ -66,6 +66,15 @@ struct JackProfile {
 };
 
 
+struct CodecOutputProfile {
+	uint8_t		speakerVolumeMaximum;
+	uint8_t		speakerVolumeDefault;
+	uint8_t		headphoneVolumeMaximum;
+	uint8_t		headphoneVolumeDefault;
+	uint8_t		speakerMixerVolume;
+};
+
+
 struct PlatformProfile {
 	const char*				id;
 	const char*				name;
@@ -79,6 +88,7 @@ struct PlatformProfile {
 	LpeResourceProfile		resources;
 	SstPlaybackProfile		playback;
 	JackProfile				jack;
+	CodecOutputProfile		output;
 };
 
 

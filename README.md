@@ -62,6 +62,9 @@ now use SCORE GPIO interrupts with 200 ms debounce and automatic MAX98090
 speaker/headphone switching; insertion and removal are hardware-validated and
 reliable. Board assumptions are selected at load time from immutable
 `byt_max98090` profiles, with Winky currently the sole configured profile.
+Winky's profile also enforces the historical ChromeOS analog ceilings: -5 dB
+speaker volume with another -6 dB at the speaker mixer, and -9 dB for
+headphones.
 
 The Winky BSP is intentionally exclusive where controllers cannot safely have
 two owners. Its image omits Haiku's generic SDHCI add-on in favor of

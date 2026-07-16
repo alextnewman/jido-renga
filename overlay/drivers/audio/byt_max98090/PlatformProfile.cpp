@@ -16,6 +16,11 @@ constexpr uint16_t kSbaConfigureSsp = 117;
 constexpr uint16_t kSbaSetSspSlotMap = 130;
 constexpr uint16_t kSspCodecSelection = 3;
 constexpr uint16_t kSspSwitchOn = 3;
+constexpr uint8_t kWinkySpeakerVolumeMaximum = 15;
+constexpr uint8_t kWinkySpeakerVolumeDefault = 10;
+constexpr uint8_t kWinkyHeadphoneVolumeMaximum = 19;
+constexpr uint8_t kWinkyHeadphoneVolumeDefault = 19;
+constexpr uint8_t kWinkySpeakerMixerVolume = 2;
 
 const PlatformProfile* const kProfiles[] = {
 	&kWinkyProfile
@@ -96,6 +101,13 @@ const PlatformProfile kWinkyProfile = {
 		1,
 		true,
 		200000
+	},
+	{
+		kWinkySpeakerVolumeMaximum,
+		kWinkySpeakerVolumeDefault,
+		kWinkyHeadphoneVolumeMaximum,
+		kWinkyHeadphoneVolumeDefault,
+		kWinkySpeakerMixerVolume
 	}
 };
 

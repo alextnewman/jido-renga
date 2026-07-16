@@ -216,8 +216,11 @@ firmware contract.
 Winky uses SSP2 with the DSP providing BCLK and FSYNC. The backend format is
 48 kHz stereo `S16_LE`, I2S one-bit delay, two 16-bit slots, and active slot
 mask `0x3`. MAX98090 consumes both clocks. Speaker routing selects left DAC to
-left speaker mixer and right DAC to right speaker mixer, with conservative
-speaker volume 10 and mixer gain 3.
+left speaker mixer and right DAC to right speaker mixer. The Winky profile
+retains logical speaker volume 10 (-14 dB) as its default, caps it at logical
+15 (-5 dB), and fixes the speaker mixer at logical 2 (-6 dB). The maximum
+speaker path is therefore approximately -11 dB before future digital tuning.
+Headphone volume defaults to and is capped at logical 19 (-9 dB).
 
 Codec setup uses the normal full-register path. For the 19.2 MHz MCLK,
 `SYSTEM_CLOCK` register `0x1b` receives `PSCLK_DIV1` (`0x10`);
@@ -231,12 +234,12 @@ quick-sample-rate register `0x05`, or capture-only SDOUT.
 The fixed playback controls follow their ALSA value mappings rather than
 writing user-facing numbers directly. Logical speaker volume 10 maps through
 the ranged control's raw minimum 24 to `0x22` in registers `0x31` and `0x32`;
-mute bits remain clear. Logical left/right mixer volume 3 is inverted over
-0..3, so `SPK_CONTROL` `0x30` receives `0x00`. The speaker mixers receive
+mute bits remain clear. Logical left/right mixer volume 2 is inverted over
+0..3, so `SPK_CONTROL` `0x30` receives `0x05`. The speaker mixers receive
 `0x01` and `0x02`, `FILTER_CONFIG` `0x26` receives Music mode plus playback DC
 blocking (`0xa0`), and `OUTPUT_ENABLE` `0x3f` enables DACL, DACR, SPL, and SPR
-((`0x33`). Headphone control remains on the direct-DAC path, registers
-`0x2c`/`0x2d` start at raw volume `0x1a` with their mute bits set, and
+(`0x33`). Headphone control remains on the direct-DAC path, registers
+`0x2c`/`0x2d` start at raw volume `0x13` with their mute bits set, and
 `DEVICE_SHUTDOWN` `0x45 = 0x80` is written last. Jack insertion changes
 `OUTPUT_ENABLE` to DACL, DACR, HPL, and HPR (`0xc3`) after muting the speakers.
 
@@ -281,6 +284,30 @@ speaker/headphone volume and mute controls, and an automatically selected
 active-output route. DSP cells, switch matrices, SSP controls, and raw codec
 register controls remain private implementation details; no UCM-style
 userspace policy is required.
+
+### Speaker tuning boundary
+
+The upstream Linux driver establishes the MAX98090 tuning transport without
+defining the coefficient mathematics. Its seven-band control is one contiguous
+105-byte image beginning at register `0x46`: seven bands, five coefficients
+(`B0`, `B1`, `B2`, `A1`, `A2`) per band, and three bytes per coefficient in
+high/middle/low order. Linux writes that image as opaque hardware-native bytes.
+The related MAX98095 driver also establishes the safe programming sequence:
+disable EQ, replace the coefficients most-significant byte first, and restore
+the previous enable state.
+
+Linux completely defines the MAX98090 DRC controls. The historical Winky CRAS
+limiter maps most closely to `DRC_TIMING = 0xb1` (enabled, 1-second release,
+1 ms attack), `DRC_COMPRESSOR = 0x8b` (infinite ratio, -11 dB threshold), and
+`DRC_GAIN = 0x04` (+4 dB makeup). These values are not enabled yet: DRC must be
+limited to the speaker route and exercised at low volume before becoming board
+policy.
+
+Linux does not define the EQ fixed-point scale, rounding rule, transfer
+equation, or whether the stored `A1`/`A2` values use mathematical denominator
+signs or their negations. The CRAS filters therefore must not be converted and
+enabled from Linux evidence alone. An authoritative MAX98090 coefficient export
+or a controlled hardware response measurement is still required.
 
 The captured Winky boot log confirms Haiku detects and reserves the
 `8086:0f04` HDA controller independently, and separately enumerates the I2C
