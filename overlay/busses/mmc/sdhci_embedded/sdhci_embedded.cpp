@@ -366,12 +366,18 @@ sdhci_embedded_disk_control_impl(DiskHandle* handle, uint32 op, void* buffer,
 		{
 			if (buffer == nullptr || length < sizeof(status_t))
 				return B_BAD_VALUE;
-			status_t status = controller->MediaPresent() ? B_OK : B_DEV_NO_MEDIA;
-			return user_memcpy(buffer, &status, sizeof(status));
+			status_t status = disk->ConsumeMediaStatus();
+			status_t copyStatus = user_memcpy(buffer, &status, sizeof(status));
+			if (copyStatus != B_OK && status == B_DEV_MEDIA_CHANGED)
+				disk->RestoreMediaChange();
+			return copyStatus;
 		}
 
 		case B_FLUSH_DRIVE_CACHE:
 			return controller->ActiveCard()->Flush(controller->Engine());
+
+		case B_EJECT_DEVICE:
+			return controller->EjectMedia();
 	}
 
 	return B_DEV_INVALID_IOCTL;

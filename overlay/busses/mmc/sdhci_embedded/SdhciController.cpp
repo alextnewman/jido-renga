@@ -75,13 +75,6 @@ SdhciController::~SdhciController()
 }
 
 
-bool
-SdhciController::MediaPresent() const
-{
-	return fDisk != nullptr && fDisk->IsOnline();
-}
-
-
 status_t
 SdhciController::RecoverCard()
 {
@@ -98,6 +91,39 @@ SdhciController::RecoverCard()
 		fDisk->SetOnline(true);
 	if (fDisk != nullptr)
 		fDisk->UnlockMediaIo();
+	return status;
+}
+
+
+status_t
+SdhciController::EjectMedia()
+{
+	if (!fRemovable)
+		return B_NOT_SUPPORTED;
+
+	MutexLocker locker(fRecoveryLock);
+	if (fCard == nullptr || fDisk == nullptr)
+		return B_NO_INIT;
+	if (!fDisk->IsOnline())
+		return B_DEV_NO_MEDIA;
+
+	// Latch first so the watcher cannot interpret our offline transition as a
+	// failed transfer and immediately re-identify the still-inserted card.
+	fHotplug.MarkEjected();
+	fDisk->SetOnline(false);
+	fDisk->LockMediaIo();
+
+	status_t status = fCard->Flush(fEngine);
+	if (status == B_OK) {
+		fEngine.PowerOff();
+		JR_TRACE_ALWAYS(fLabel, "media ejected; waiting for physical removal\n");
+	} else {
+		fHotplug.CancelEject();
+		if (fEngine.CardPresent())
+			fDisk->SetOnline(true);
+	}
+
+	fDisk->UnlockMediaIo();
 	return status;
 }
 
@@ -404,6 +430,7 @@ SdhciController::_StartWatcher()
 		return;
 	}
 
+	fHotplug.SetPresent(fEngine.CardPresent());
 	fWatcherRunning = true;
 	fWatcher = spawn_kernel_thread(_WatcherEntry, "sdhci_emb watcher",
 		B_LOW_PRIORITY, this);
@@ -428,18 +455,19 @@ SdhciController::_WatcherEntry(void* self)
 int32
 SdhciController::_WatcherLoop()
 {
-	bool present = fEngine.CardPresent();
 	while (fWatcherRunning) {
 		snooze(500000);	// 500ms; this is not a hot path
 		const bool now = fEngine.CardPresent();
-		if (!now && present) {
+		const bool online = fDisk != nullptr && fDisk->IsOnline();
+		switch (fHotplug.Observe(now, online)) {
+		case HotplugAction::Remove:
 			JR_TRACE_ALWAYS(fLabel, "card removed\n");
 			if (fDisk != nullptr)
 				fDisk->SetOnline(false);
-			present = now;
 			continue;
-		}
-		if (now && (!present || (fDisk != nullptr && !fDisk->IsOnline()))) {
+
+		case HotplugAction::Identify:
+		{
 			JR_TRACE_ALWAYS(fLabel, "card inserted; identifying\n");
 			if (fDisk != nullptr)
 				fDisk->SetOnline(false);
@@ -452,7 +480,11 @@ SdhciController::_WatcherLoop()
 				JR_ERROR(fLabel, "card re-identification failed: %s\n",
 					strerror(status));
 			}
-			present = now;
+			continue;
+		}
+
+		case HotplugAction::None:
+			continue;
 		}
 	}
 	return 0;

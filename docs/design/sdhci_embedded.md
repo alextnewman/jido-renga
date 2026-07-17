@@ -224,7 +224,15 @@ boot-media discovery.
 Soldered eMMC does not create a hot-plug watcher. The removable-SD profile starts
 a low-priority watcher only after initial publication. The watcher polls
 Present State for future insertion or removal and performs complete
-re-identification before returning media online.
+re-identification before returning media online. The devfs disk node remains
+published while the slot is empty. A successful offline-to-online transition
+arms a one-shot `B_DEV_MEDIA_CHANGED` result from `B_GET_MEDIA_STATUS`, which
+causes Haiku's disk-device manager to refresh geometry and rescan partitions.
+Consuming that notification does not change the media epoch captured by queued
+I/O. `B_EJECT_DEVICE` flushes and offlines removable media, powers down the
+slot, and suppresses watcher recovery until physical removal rearms it. Initial
+hot insertion, logical eject, and repeated physical removal/reinsertion are
+hardware-validated on Winky.
 
 ## Thread model
 
@@ -254,5 +262,6 @@ The eMMC ADMA2 path also uses Haiku scheduler threads.
 12. Boot and runtime commands use the same execution path.
 
 Host tests cover policy, matching, capacity decoding, transaction lifetime,
-mailbox concurrency, staged-request planning, and IOSF encoding. MMIO timing and
-electrical behavior require validation on Winky.
+mailbox concurrency, media-change signaling, eject/watcher policy, staged-request
+planning, and IOSF encoding. MMIO timing and electrical behavior require
+validation on Winky.

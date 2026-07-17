@@ -37,7 +37,35 @@ enum {
 	B_BAD_VALUE	= (int)0x80000005,
 	B_BAD_DATA	= (int)0x8000000a,
 	B_BUFFER_OVERFLOW = (int)0x8000000b,
+	B_DEV_NO_MEDIA = (int)0x8000a003,
+	B_DEV_MEDIA_CHANGED = (int)0x8000a00d,
 };
+
+static inline void
+atomic_set(int32* value, int32 newValue)
+{
+	__atomic_store_n(value, newValue, __ATOMIC_RELEASE);
+}
+
+static inline int32
+atomic_get(int32* value)
+{
+	return __atomic_load_n(value, __ATOMIC_ACQUIRE);
+}
+
+static inline int32
+atomic_get_and_set(int32* value, int32 newValue)
+{
+	return __atomic_exchange_n(value, newValue, __ATOMIC_SEQ_CST);
+}
+
+static inline int32
+atomic_test_and_set(int32* value, int32 newValue, int32 testAgainst)
+{
+	__atomic_compare_exchange_n(value, &testAgainst, newValue, false,
+		__ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+	return testAgainst;
+}
 
 // printf length modifiers (Haiku spells these via <inttypes.h>-style macros).
 #define B_PRId32 "d"

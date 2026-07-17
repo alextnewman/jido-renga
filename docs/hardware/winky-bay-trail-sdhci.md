@@ -440,8 +440,14 @@ Recovery is selected by what state may have been lost:
 - Geometry must be produced with Haiku's geometry helper rather than truncating
   capacity into a legacy field.
 - Soldered eMMC is always non-removable.
-- The SD slot publishes an offline disk when empty, transitions offline on
+- The SD slot keeps its disk node published while empty, transitions offline on
   removal, and re-identifies before returning online after insertion.
+- Each successful offline-to-online transition must report
+  `B_DEV_MEDIA_CHANGED` exactly once through `B_GET_MEDIA_STATUS` so Haiku
+  refreshes geometry and rescans partitions.
+- `B_EJECT_DEVICE` must flush and take the removable slot offline without
+  allowing the watcher to re-identify it until a physical removal/reinsert
+  cycle.
 - Scheduler and DMA resources must be destroyed before the controller worker and
   MMIO mapping are torn down.
 
@@ -453,7 +459,7 @@ The following behavior is validated on Winky:
 |---|---|
 | Image ownership | JR `sdhci_embedded` is present with its boot link; stock `sdhci` is absent |
 | Early dependency order | `iosf_mbi`, PCI registration, ACPI binding, and IOSF OCP access complete before SDHCI MMIO |
-| Removable SD | Identifies, negotiates four-bit high-speed at 50 MHz, discovers partitions, and boots Haiku through the staged SDMA path |
+| Removable SD | Boots through staged SDMA; hot insertion auto-mounts; logical eject and repeated removal/reinsertion are reliable |
 | eMMC | Identifies, publishes writable media, and supports installation and sustained block I/O through ADMA2 |
 | Interrupt convergence | Supports identification and runtime traffic without treating interrupt delivery as authoritative |
 | Input drivers | JR keyboard and Atmel touchpad behavior is validated on Winky |
@@ -463,8 +469,7 @@ Current limits:
 - SD UHS modes remain disabled when the Intel DSM interface is unavailable.
 - The exact eMMC timing rung selected by the current mode ladder is not exposed
   as a persistent diagnostic.
-- Removable-media failure recovery is implemented but still requires broader
-  physical removal and replacement testing.
+- Transfer-failure recovery still requires broader fault-injection testing.
 
 ## 13. Extending the contract
 

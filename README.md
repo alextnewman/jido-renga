@@ -51,7 +51,9 @@ The first BSP targets the Samsung Chromebook 2 `XE500C12`, ChromeOS board
 | `byt_max98090` | Internal audio (SST + MAX98090) | SST `80860F28`, I2C `193C9890` |
 
 Winky boots Haiku from removable SD, identifies and uses its eMMC, supports
-installation to eMMC, and provides working keyboard and touchpad input.
+installation to eMMC, and provides working keyboard and touchpad input. SD hot
+insertion, automatic mounting, repeated removal/reinsertion, and logical eject
+are hardware-validated.
 The audio driver implements the complete legacy Intel SST/MRFLD playback path:
 firmware loading, codec initialization, 10-command route configuration, stream
 allocation/start/stop/free, and `B_MULTI_BUFFER_EXCHANGE` with period-elapsed

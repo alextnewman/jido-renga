@@ -10,6 +10,7 @@
 #include <util/iovec_support.h>	// generic_io_vec (physical segments from the IO op)
 
 #include "Adma2.h"
+#include "MediaStatus.h"
 #include "Types.h"
 
 
@@ -73,23 +74,11 @@ public:
 
 	uint64_t Capacity() const;
 	uint32_t BlockSize() const;
-	bool IsOnline() const { return (atomic_get(&fMediaState) & 1) != 0; }
-	int32 MediaState() const { return atomic_get(&fMediaState); }
-	void SetOnline(bool online)
-	{
-		const int32 onlineBit = online ? 1 : 0;
-		while (true) {
-			const int32 oldState = atomic_get(&fMediaState);
-			if ((oldState & 1) == onlineBit)
-				return;
-			const uint32 nextGeneration
-				= (static_cast<uint32>(oldState) & ~1u) + 2u;
-			const int32 newState = static_cast<int32>(nextGeneration)
-				| onlineBit;
-			if (atomic_test_and_set(&fMediaState, newState, oldState) == oldState)
-				return;
-		}
-	}
+	bool IsOnline() const { return fMediaStatus.IsOnline(); }
+	int32 MediaState() const { return fMediaStatus.State(); }
+	void SetOnline(bool online) { fMediaStatus.SetOnline(online); }
+	status_t ConsumeMediaStatus() { return fMediaStatus.ConsumeStatus(); }
+	void RestoreMediaChange() { fMediaStatus.RestoreChange(); }
 	virtual void LockMediaIo() {}
 	virtual void UnlockMediaIo() {}
 
@@ -120,7 +109,7 @@ private:
 
 	DMAResource*		fDmaResource = nullptr;
 	IOSchedulerSimple*	fScheduler = nullptr;
-	mutable int32		fMediaState = 1;
+	MediaStatusTracker	fMediaStatus;
 };
 
 

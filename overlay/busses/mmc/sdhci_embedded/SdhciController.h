@@ -6,6 +6,7 @@
 #include <KernelExport.h>
 #include <device_manager.h>
 
+#include "HotplugState.h"
 #include "Personality.h"
 #include "SdhciEngine.h"
 #include "SdhciRegisters.h"
@@ -44,8 +45,8 @@ public:
 	const TraceLabel& Label() const { return fLabel; }
 	bool IsRemovable() const { return fRemovable; }
 	bool CardPresent() const { return fEngine.CardPresent(); }
-	bool MediaPresent() const;
 	status_t RecoverCard();
+	status_t EjectMedia();
 	status_t SwitchSignalVoltage(bool to1v8) override;
 	uint8_t UhsCapabilities() const override
 	{
@@ -91,6 +92,7 @@ private:
 	thread_id				fWatcher = -1;
 	volatile bool			fWatcherRunning = false;
 	bool					fRemovable = false;		// gates the hot-plug watcher
+	HotplugState			fHotplug;
 	CardDialect				fDialect = CardDialect::Unknown;
 	DmaStrategy				fDmaStrategy = DmaStrategy::None;
 	bool					fCardPublished = false;
