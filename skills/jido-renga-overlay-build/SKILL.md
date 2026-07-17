@@ -229,17 +229,23 @@ updates.
 
 ## Documentation and comment policy
 
-Committed text describes the repository as it exists now:
+Committed text describes the repository as it exists now, not a planned or
+desired future:
 
 - `README.md` is the practical human introduction.
 - `docs/` records current architecture, hardware contracts, rationale, and
   known limitations.
 - `skills/` records durable operational lessons for agents.
 - Git history records previous repository states.
+- Forward-looking vision, roadmaps, phase plans, and designs for features that
+  do not yet exist stay out of `README.md`, `docs/`, and `skills/`. Keep them in
+  untracked scratch such as `research/`; once implementation exists, document
+  its actual behavior in the appropriate tracked surface.
 
 Keep KDL transcripts, build hashes, package checksums, local artifact paths,
-investigation timelines, discarded hypotheses, and temporary comparisons in
-session-local storage. Promote only the durable conclusion into committed docs.
+investigation timelines, discarded hypotheses, forward-looking plans, and
+temporary comparisons in session-local storage. Promote only the durable
+conclusion into committed docs.
 
 Code comments are reader hints, not a development diary. Retain comments that
 state hardware meaning, units, ownership, concurrency or lifetime invariants,

@@ -71,9 +71,16 @@ SubInclude JIDO_RENGA_TOP overlay busses mmc sdhci_embedded ;
 
 # Leaf drivers.
 SubInclude JIDO_RENGA_TOP overlay drivers audio byt_max98090 ;
+SubInclude JIDO_RENGA_TOP overlay drivers graphics intel_valleyview ;
 SubInclude JIDO_RENGA_TOP overlay drivers gpio byt_gpio ;
 SubInclude JIDO_RENGA_TOP overlay drivers input cros_ec_keyboard ;
 SubInclude JIDO_RENGA_TOP overlay drivers input i2c_atmel_mxt ;
+
+# Graphics userspace.
+SubInclude JIDO_RENGA_TOP overlay accelerants intel_valleyview ;
+
+# Bring-up diagnostics.
+SubInclude JIDO_RENGA_TOP overlay bin intel_valleyview_probe ;
 
 # A BSP declares two things: the overlay add-ons to ship and the exact paths in
 # haiku.hpkg that it replaces. Controller ownership is resolved at image time.
@@ -81,8 +88,11 @@ JIDO_RENGA_BSP_IMAGE_BUS_MANAGERS = ;
 JIDO_RENGA_BSP_IMAGE_I2C_BUS_MANAGER = ;
 JIDO_RENGA_BSP_IMAGE_BUSSES_MMC = ;
 JIDO_RENGA_BSP_IMAGE_DRIVERS_AUDIO = ;
+JIDO_RENGA_BSP_IMAGE_DRIVERS_GRAPHICS = ;
 JIDO_RENGA_BSP_IMAGE_DRIVERS_GPIO = ;
 JIDO_RENGA_BSP_IMAGE_DRIVERS_INPUT = ;
+JIDO_RENGA_BSP_IMAGE_ACCELERANTS = ;
+JIDO_RENGA_BSP_IMAGE_BIN = ;
 JIDO_RENGA_BSP_BOOT_MODULE_TARGETS = ;
 JIDO_RENGA_BSP_OMIT_HAIKU_PACKAGE_FILES = ;
 JIDO_RENGA_BSP_OMIT_HAIKU_BOOT_MODULE_TARGETS = ;
@@ -124,6 +134,10 @@ rule JidoRengaPackageTargets directory : targets
 			additions = $(JIDO_RENGA_BSP_IMAGE_BUS_MANAGERS) ;
 		} else if $(directoryPath) = add-ons/kernel/busses/mmc {
 			additions = $(JIDO_RENGA_BSP_IMAGE_BUSSES_MMC) ;
+		} else if $(directoryPath) = add-ons/accelerants {
+			additions = $(JIDO_RENGA_BSP_IMAGE_ACCELERANTS) ;
+		} else if $(directoryPath) = bin {
+			additions = $(JIDO_RENGA_BSP_IMAGE_BIN) ;
 		} else if $(directoryPath) = add-ons/kernel/drivers/gpio {
 			additions = $(JIDO_RENGA_BSP_IMAGE_DRIVERS_GPIO) ;
 		}
@@ -266,6 +280,8 @@ rule AddNewDriversToPackage relativeDirectoryTokens : targets
 			local additions ;
 			if [ FDirName $(relativeDirectoryTokens) ] = audio/hmulti {
 				additions = $(JIDO_RENGA_BSP_IMAGE_DRIVERS_AUDIO) ;
+			} else if [ FDirName $(relativeDirectoryTokens) ] = graphics {
+				additions = $(JIDO_RENGA_BSP_IMAGE_DRIVERS_GRAPHICS) ;
 			} else if [ FDirName $(relativeDirectoryTokens) ] = input {
 				additions = $(JIDO_RENGA_BSP_IMAGE_DRIVERS_INPUT) ;
 			}

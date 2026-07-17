@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
+# SPDX-License-Identifier: MIT
+# SPDX-FileContributor: Generated with GPT-5.6 Sol
+
+SubDir JIDO_RENGA_TOP overlay accelerants intel_valleyview ;
+
+SubDirSysHdrs $(JIDO_RENGA_TOP) overlay headers ;
+UsePrivateHeaders graphics ;
+UsePrivateHeaders [ FDirName graphics common ] ;
+
+Addon intel_valleyview.accelerant :
+	Accelerant.cpp
+	: libaccelerantscommon.a
+;

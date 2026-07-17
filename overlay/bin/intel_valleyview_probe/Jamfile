@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
+# SPDX-License-Identifier: MIT
+# SPDX-FileContributor: Generated with GPT-5.6 Sol
+
+SubDir JIDO_RENGA_TOP overlay bin intel_valleyview_probe ;
+
+SubDirSysHdrs $(JIDO_RENGA_TOP) overlay headers ;
+
+Application intel_valleyview_probe :
+	Probe.cpp
+;

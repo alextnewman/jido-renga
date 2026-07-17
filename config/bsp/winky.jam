@@ -19,11 +19,14 @@ JIDO_RENGA_BSP_IMAGE_BUS_MANAGERS +=
 JIDO_RENGA_BSP_IMAGE_I2C_BUS_MANAGER = i2c_guarded ;
 JIDO_RENGA_BSP_IMAGE_BUSSES_MMC += sdhci_embedded ;
 JIDO_RENGA_BSP_IMAGE_DRIVERS_AUDIO += byt_max98090 ;
+JIDO_RENGA_BSP_IMAGE_DRIVERS_GRAPHICS += intel_valleyview ;
 JIDO_RENGA_BSP_IMAGE_DRIVERS_GPIO += byt_gpio ;
 JIDO_RENGA_BSP_IMAGE_DRIVERS_INPUT +=
 	cros_ec_keyboard
 	i2c_atmel_mxt
 	;
+JIDO_RENGA_BSP_IMAGE_ACCELERANTS += intel_valleyview.accelerant ;
+JIDO_RENGA_BSP_IMAGE_BIN += intel_valleyview_probe ;
 
 # Stage two mounts only haiku.hpkg's packagefs view before entering the kernel.
 # The embedded controller hosts boot media, and its IOSF-MBI dependency must be
