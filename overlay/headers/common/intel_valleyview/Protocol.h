@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
 // SPDX-License-Identifier: MIT
 // SPDX-FileContributor: Generated with GPT-5.6 Sol
+// SPDX-FileContributor: Generated with Claude Opus 4.8
 #ifndef INTEL_VALLEYVIEW_PROTOCOL_H
 #define INTEL_VALLEYVIEW_PROTOCOL_H
 
@@ -13,7 +14,7 @@ constexpr uint16 kIntelVendorId = 0x8086;
 constexpr uint16 kWinkyDeviceId = 0x0f31;
 
 constexpr uint32 kProtocolMagic = 0x564c5657;
-constexpr uint16 kProtocolVersion = 3;
+constexpr uint16 kProtocolVersion = 4;
 
 constexpr bool kDefaultEnabled = false;
 constexpr bool kDefaultAllowModeset = false;
@@ -63,7 +64,8 @@ enum FirmwareSnapshotFlag : uint32 {
 	kSnapshotCursorEnabled = 1u << 11,
 	kSnapshotPanelFitterEnabled = 1u << 12,
 	kSnapshotBootFramebuffer = 1u << 13,
-	kSnapshotAdoptionCompatible = 1u << 14
+	kSnapshotAdoptionCompatible = 1u << 14,
+	kSnapshotScanoutMatchesBoot = 1u << 15
 };
 
 enum VbtSource : uint8 {
@@ -110,6 +112,7 @@ struct FirmwareSnapshot {
 	int32		adoptionStatus;
 	uint64		mmioPhysical;
 	uint64		mmioSize;
+	uint64		gmadrBase;
 	uint32		asls;
 	uint32		opRegionMboxes;
 	uint16		opRegionSizeKiB;
@@ -137,6 +140,9 @@ struct FirmwareSnapshot {
 	uint32		planeSurface;
 	uint32		planeSurfaceLive;
 	uint32		planeTileOffset;
+	uint32		planeGgttOffset;
+	uint32		gttPte;
+	uint64		scanoutPhysical;
 	uint32		panelFitterControl;
 	uint32		panelFitterProgrammedRatios;
 	uint32		panelFitterAutoRatios;

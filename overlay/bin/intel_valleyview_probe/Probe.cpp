@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
 // SPDX-License-Identifier: MIT
 // SPDX-FileContributor: Generated with GPT-5.6 Sol
+// SPDX-FileContributor: Generated with Claude Opus 4.8
 
 #include <common/intel_valleyview/FirmwareState.h>
 #include <common/intel_valleyview/Protocol.h>
@@ -67,6 +68,11 @@ PrintSnapshot(const valleyview::FirmwareSnapshot& snapshot)
 		snapshot.planeSurface, snapshot.planeSurfaceLive,
 		snapshot.planeAddressVlv, snapshot.planeLinearOffset,
 		snapshot.planeTileOffset);
+	printf("scanout gmadr=%#" B_PRIx64 " ggtt_offset=%#08" B_PRIx32
+		" pte=%#08" B_PRIx32 " physical=%#" B_PRIx64 " matches_boot=%s\n",
+		snapshot.gmadrBase, snapshot.planeGgttOffset, snapshot.gttPte,
+		snapshot.scanoutPhysical,
+		YesNo((snapshot.flags & valleyview::kSnapshotScanoutMatchesBoot) != 0));
 	printf("panel_fitter control=%#08" B_PRIx32 " enabled=%s programmed=%#08"
 		B_PRIx32 " auto=%#08" B_PRIx32 "\n", snapshot.panelFitterControl,
 		YesNo((snapshot.flags & valleyview::kSnapshotPanelFitterEnabled) != 0),

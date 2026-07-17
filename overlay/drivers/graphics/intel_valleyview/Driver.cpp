@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
 // SPDX-License-Identifier: MIT
 // SPDX-FileContributor: Generated with GPT-5.6 Sol
+// SPDX-FileContributor: Generated with Claude Opus 4.8
 
 #include "Driver.h"
 
@@ -121,6 +122,28 @@ CaptureMmio(ValleyViewDevice& device)
 	snapshot.cursorControl = ReadMmio(registers, valleyview::kCursorControlA);
 	snapshot.cursorBase = ReadMmio(registers, valleyview::kCursorBaseA);
 	snapshot.cursorPosition = ReadMmio(registers, valleyview::kCursorPositionA);
+
+	// GMADR (BAR2 on Gen4+) is the CPU aperture; recorded for diagnostics only.
+	if ((device.pciInfo.u.h0.base_register_flags[2] & PCI_address_space) == 0) {
+		uint64 gmadr = device.pciInfo.u.h0.base_registers[2];
+		if ((device.pciInfo.u.h0.base_register_flags[2] & PCI_address_type)
+				== PCI_address_type_64) {
+			gmadr |= (uint64)device.pciInfo.u.h0.base_registers[3] << 32;
+		}
+		snapshot.gmadrBase = gmadr;
+	}
+
+	// Read the GTT PTE that maps the plane's live GGTT page. The GTT lives in
+	// the upper half of this same read-only BAR mapping; a short or missing
+	// mapping simply leaves gttPte zero, which fails the adoption gate closed.
+	snapshot.planeGgttOffset = snapshot.planeAddressVlv & ~valleyview::kPageMask;
+	const uint64 pteByteOffset = valleyview::kGttOffsetInBar
+		+ static_cast<uint64>(snapshot.planeGgttOffset >> 12)
+			* valleyview::kGen7PteSize;
+	if (pteByteOffset + valleyview::kGen7PteSize <= size) {
+		snapshot.gttPte
+			= ReadMmio(registers, static_cast<uint32>(pteByteOffset));
+	}
 	delete_area(area);
 
 	valleyview::DecodeFirmwareSnapshot(snapshot);
@@ -494,19 +517,17 @@ PublishValleyViewGraphics(ValleyViewDevice& device)
 		device.sharedInfo->framebufferSize
 			= device.snapshot.bootFramebufferSize;
 	}
-	mutex_unlock(&device.lock);
-
 	char name[B_PATH_NAME_LENGTH];
 	snprintf(name, sizeof(name), "graphics/intel_valleyview_%02x%02x%02x",
 		device.pciInfo.bus, device.pciInfo.device,
 		device.pciInfo.function);
+	// Publish under device.lock so a second concurrent caller cannot pass the
+	// graphicsPublished guard above and republish the same devfs path.
 	status_t status = gDeviceManager->publish_device(device.node, name,
 		kValleyViewDeviceModuleName);
-	if (status == B_OK) {
-		mutex_lock(&device.lock);
+	if (status == B_OK)
 		device.graphicsPublished = true;
-		mutex_unlock(&device.lock);
-	}
+	mutex_unlock(&device.lock);
 	return status;
 }
 

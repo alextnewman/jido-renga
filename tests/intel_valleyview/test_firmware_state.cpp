@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
 // SPDX-License-Identifier: MIT
 // SPDX-FileContributor: Generated with GPT-5.6 Sol
+// SPDX-FileContributor: Generated with Claude Opus 4.8
 
 #include "framework/jr_test.h"
 
@@ -22,6 +23,7 @@ JR_TEST(intel_valleyview_firmware, register_map_stays_within_valleyview_bar)
 	JR_CHECK_EQ(kPlaneAddressVlvA, 0x1f017cu);
 	JR_CHECK_EQ(kPlaneSurfaceLiveA, 0x1f01acu);
 	JR_CHECK_EQ(kPanelFitterControl, 0x1e1230u);
+	JR_CHECK_EQ(kGttOffsetInBar, 0x200000u);
 	JR_CHECK_EQ(kOpRegionMboxesOffset, 88u);
 	JR_CHECK_EQ(kAsleRvdaOffset, 186u);
 	JR_CHECK_EQ(kAsleRvdsOffset, 194u);
@@ -87,11 +89,27 @@ JR_TEST(intel_valleyview_firmware, requires_exact_linear_boot_scanout_for_adopti
 	snapshot.bootHeight = 768;
 	snapshot.bootDepth = 32;
 	snapshot.bootBytesPerRow = 4096;
+	// GTT PTE resolving to the same physical page the boot loader reported.
+	snapshot.gttPte = 0x80000000u | kGen7PtePresent;
 
 	DecodeFirmwareSnapshot(snapshot);
+	JR_CHECK_EQ(snapshot.scanoutPhysical, 0x80000000ull);
+	JR_CHECK((snapshot.flags & kSnapshotScanoutMatchesBoot) != 0);
 	JR_CHECK((snapshot.flags & kSnapshotAdoptionCompatible) != 0);
 
-	snapshot.flags &= ~kSnapshotAdoptionCompatible;
+	// A PTE naming a different page must fail the gate closed.
+	snapshot.gttPte = 0x70000000u | kGen7PtePresent;
+	DecodeFirmwareSnapshot(snapshot);
+	JR_CHECK((snapshot.flags & kSnapshotScanoutMatchesBoot) == 0);
+	JR_CHECK((snapshot.flags & kSnapshotAdoptionCompatible) == 0);
+
+	// An absent PTE (bit 0 clear) resolves to no physical page.
+	snapshot.gttPte = 0x80000000u;
+	DecodeFirmwareSnapshot(snapshot);
+	JR_CHECK_EQ(snapshot.scanoutPhysical, 0ull);
+	JR_CHECK((snapshot.flags & kSnapshotAdoptionCompatible) == 0);
+
+	snapshot.gttPte = 0x80000000u | kGen7PtePresent;
 	snapshot.bootBytesPerRow = 4092;
 	DecodeFirmwareSnapshot(snapshot);
 	JR_CHECK((snapshot.flags & kSnapshotAdoptionCompatible) == 0);

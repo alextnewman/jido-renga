@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
 // SPDX-License-Identifier: MIT
 // SPDX-FileContributor: Generated with GPT-5.6 Sol
+// SPDX-FileContributor: Generated with Claude Opus 4.8
 #ifndef INTEL_VALLEYVIEW_FIRMWARE_STATE_H
 #define INTEL_VALLEYVIEW_FIRMWARE_STATE_H
 
@@ -59,6 +60,16 @@ constexpr uint32 kPanelFitterEnable = 1u << 31;
 constexpr uint32 kPlaneFormatMask = 0xfu << 26;
 constexpr uint32 kPlaneFormatBgrx888 = 6u << 26;
 constexpr uint32 kPlaneTiled = 1u << 10;
+
+// The Gen7 ValleyView GTTMMADR BAR is 4 MiB: the low 2 MiB is the register
+// block and the high 2 MiB is the global GTT. Each 4-byte PTE maps one 4 KiB
+// page; the physical page frame lives in bits 31:12 (valid for the <4 GiB
+// stolen memory this board uses), with bit 0 marking a present entry.
+constexpr uint32 kGttOffsetInBar = 0x200000;
+constexpr uint32 kGen7PteSize = 4;
+constexpr uint32 kGen7PtePresent = 1u << 0;
+constexpr uint32 kGen7PtePhysMask = 0xfffff000u;
+constexpr uint32 kPageMask = 0xfffu;
 
 constexpr size_t kOpRegionSize = 8 * 1024;
 constexpr uint32 kOpRegionAsls = 0xfc;
@@ -170,6 +181,15 @@ ValidateVbt(const uint8* bytes, size_t mappedSize, uint32& declaredSize)
 }
 
 
+inline uint64
+DecodePtePhysical(uint32 pte)
+{
+	if ((pte & kGen7PtePresent) == 0)
+		return 0;
+	return static_cast<uint64>(pte & kGen7PtePhysMask);
+}
+
+
 inline void
 DecodeFirmwareSnapshot(FirmwareSnapshot& snapshot)
 {
@@ -178,7 +198,7 @@ DecodeFirmwareSnapshot(FirmwareSnapshot& snapshot)
 		| kSnapshotPortEnabled | kSnapshotPpsOn | kSnapshotPpsReady
 		| kSnapshotPwmEnabled | kSnapshotCursorEnabled
 		| kSnapshotPanelFitterEnabled | kSnapshotBootFramebuffer
-		| kSnapshotAdoptionCompatible);
+		| kSnapshotAdoptionCompatible | kSnapshotScanoutMatchesBoot);
 
 	snapshot.hDisplay = DecodeLowSize(snapshot.hTotal);
 	snapshot.hTotalPixels = DecodeHighSize(snapshot.hTotal);
@@ -223,11 +243,25 @@ DecodeFirmwareSnapshot(FirmwareSnapshot& snapshot)
 		snapshot.flags |= kSnapshotBootFramebuffer;
 	}
 
+	// Resolve the live scanout's physical page via the GTT PTE that the
+	// firmware programmed for the plane's GGTT offset, and require it to name
+	// the same page the boot loader reported. This proves the framebuffer we
+	// would adopt is the surface PIPE A is actually displaying, so a mismatch
+	// fails closed to the generic framebuffer instead of handing app_server a
+	// buffer that is never scanned out.
+	snapshot.scanoutPhysical = DecodePtePhysical(snapshot.gttPte);
+	if (snapshot.scanoutPhysical != 0
+		&& (snapshot.scanoutPhysical & ~static_cast<uint64>(kPageMask))
+			== (snapshot.bootFramebufferPhysical
+				& ~static_cast<uint64>(kPageMask))) {
+		snapshot.flags |= kSnapshotScanoutMatchesBoot;
+	}
+
 	const uint32 requiredState = kSnapshotMmioMapped
 		| kSnapshotDpllEnabled | kSnapshotDpllLocked
 		| kSnapshotPipeEnabled | kSnapshotPlaneEnabled
 		| kSnapshotPortEnabled | kSnapshotPpsOn | kSnapshotPpsReady
-		| kSnapshotBootFramebuffer;
+		| kSnapshotBootFramebuffer | kSnapshotScanoutMatchesBoot;
 	if ((snapshot.flags & requiredState) == requiredState
 		&& snapshot.bootWidth == snapshot.sourceWidth
 		&& snapshot.bootHeight == snapshot.sourceHeight

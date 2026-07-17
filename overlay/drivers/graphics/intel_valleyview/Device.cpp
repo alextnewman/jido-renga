@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
 // SPDX-License-Identifier: MIT
 // SPDX-FileContributor: Generated with GPT-5.6 Sol
+// SPDX-FileContributor: Generated with Claude Opus 4.8
 
 #include "Driver.h"
 
@@ -174,7 +175,11 @@ Control(void* cookie, uint32 operation, void* buffer, size_t length)
 				device->framebufferArea, true);
 			if (area < B_OK)
 				return area;
-			return _user_get_area_info(area, (area_info*)buffer);
+
+			status_t status = _user_get_area_info(area, (area_info*)buffer);
+			if (status != B_OK)
+				delete_area(area);
+			return status;
 		}
 
 		case valleyview::kPublishGraphics:
