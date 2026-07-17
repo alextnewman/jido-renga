@@ -895,14 +895,25 @@ Card::_LoadAndStartFirmware()
 status_t
 Card::_WriteCodec(uint8 reg, uint8 value)
 {
+	return _WriteCodec(reg, &value, 1);
+}
+
+
+status_t
+Card::_WriteCodec(uint8 reg, const uint8* values, size_t count)
+{
 	if (fI2c == nullptr)
 		return B_NO_INIT;
+	if (values == nullptr || count == 0 || count > max98090::kEqualizerBandSize)
+		return B_BAD_VALUE;
 	status_t status = fI2c->acquire_bus(fI2cCookie);
 	if (status != B_OK)
 		return status;
-	const uint8 command[2] = {reg, value};
+	uint8 command[1 + max98090::kEqualizerBandSize];
+	command[0] = reg;
+	memcpy(command + 1, values, count);
 	status = fI2c->exec_command(fI2cCookie, I2C_OP_WRITE_STOP, command,
-		sizeof(command), nullptr, 0);
+		count + 1, nullptr, 0);
 	fI2c->release_bus(fI2cCookie);
 	return status;
 }
@@ -911,14 +922,113 @@ Card::_WriteCodec(uint8 reg, uint8 value)
 status_t
 Card::_ReadCodec(uint8 reg, uint8& value)
 {
+	return _ReadCodec(reg, &value, 1);
+}
+
+
+status_t
+Card::_ReadCodec(uint8 reg, uint8* values, size_t count)
+{
 	if (fI2c == nullptr)
 		return B_NO_INIT;
+	if (values == nullptr || count == 0 || count > max98090::kEqualizerBandSize)
+		return B_BAD_VALUE;
 	status_t status = fI2c->acquire_bus(fI2cCookie);
 	if (status != B_OK)
 		return status;
 	status = fI2c->exec_command(fI2cCookie, I2C_OP_READ_STOP, &reg, 1,
-		&value, 1);
+		values, count);
 	fI2c->release_bus(fI2cCookie);
+	return status;
+}
+
+
+status_t
+Card::_ProgramSpeakerTuning()
+{
+	const auto& tuning = fProfile->output.speakerTuning;
+	if (!tuning.enabled)
+		return B_OK;
+	if (tuning.equalizerCoefficients == nullptr
+		|| tuning.equalizerCoefficientCount != max98090::kEqualizerSize) {
+		ERROR("invalid %s speaker EQ image: %" B_PRIuSIZE " bytes\n",
+			fProfile->id, tuning.equalizerCoefficientCount);
+		return B_BAD_DATA;
+	}
+
+	for (size_t offset = 0; offset < max98090::kEqualizerSize;
+		offset += max98090::kEqualizerBandSize) {
+		const status_t status = _WriteCodec(
+			static_cast<uint8>(max98090::kEqualizerBase + offset),
+			tuning.equalizerCoefficients + offset,
+			max98090::kEqualizerBandSize);
+		if (status != B_OK)
+			return status;
+	}
+
+	uint8 readback[max98090::kEqualizerBandSize];
+	for (size_t offset = 0; offset < max98090::kEqualizerSize;
+		offset += max98090::kEqualizerBandSize) {
+		const uint8 reg = static_cast<uint8>(max98090::kEqualizerBase + offset);
+		status_t status = _ReadCodec(reg, readback,
+			max98090::kEqualizerBandSize);
+		if (status != B_OK)
+			return status;
+		if (memcmp(readback, tuning.equalizerCoefficients + offset,
+				max98090::kEqualizerBandSize) != 0) {
+			ERROR("%s speaker EQ readback failed at register 0x%02x\n",
+				fProfile->id, reg);
+			return B_IO_ERROR;
+		}
+	}
+
+	const struct {
+		uint8 reg;
+		uint8 value;
+	} drcSettings[] = {
+		{max98090::kDrcTiming,
+			static_cast<uint8>(tuning.drcTiming & ~max98090::kDrcEnable)},
+		{max98090::kDrcCompressor, tuning.drcCompressor},
+		{max98090::kDrcExpander, tuning.drcExpander},
+		{max98090::kDrcGain, tuning.drcGain}
+	};
+	for (size_t i = 0; i < B_COUNT_OF(drcSettings); i++) {
+		const status_t status = _WriteCodec(drcSettings[i].reg,
+			drcSettings[i].value);
+		if (status != B_OK)
+			return status;
+	}
+	TRACE("%s speaker tuning programmed: seven-band EQ and DRC\n",
+		fProfile->id);
+	return B_OK;
+}
+
+
+status_t
+Card::_SetSpeakerTuningEnabled(bool enabled)
+{
+	const auto& tuning = fProfile->output.speakerTuning;
+	if (!tuning.enabled)
+		return B_OK;
+
+	if (enabled) {
+		status_t status = _WriteCodec(max98090::kDaiPlaybackEqualizerLevel,
+			tuning.equalizerPreattenuation);
+		if (status == B_OK) {
+			status = _WriteCodec(max98090::kDspFilterEnable,
+				max98090::kEqualizer7BandEnable);
+		}
+		if (status == B_OK)
+			status = _WriteCodec(max98090::kDrcTiming, tuning.drcTiming);
+		return status;
+	}
+
+	status_t status = _WriteCodec(max98090::kDrcTiming,
+		static_cast<uint8>(tuning.drcTiming & ~max98090::kDrcEnable));
+	if (status == B_OK)
+		status = _WriteCodec(max98090::kDspFilterEnable, 0);
+	if (status == B_OK)
+		status = _WriteCodec(max98090::kDaiPlaybackEqualizerLevel, 0);
 	return status;
 }
 
@@ -976,9 +1086,7 @@ Card::_InitializeCodec()
 		{max98090::kLeftSpeakerVolume,
 			static_cast<uint8>(max98090::kSpeakerVolumeRawMinimum + fVolume)},
 		{max98090::kRightSpeakerVolume,
-			static_cast<uint8>(max98090::kSpeakerVolumeRawMinimum + fVolume)},
-		{max98090::kOutputEnable, max98090::kDacAndSpeakerEnable},
-		{max98090::kDeviceShutdown, max98090::kShutdownRelease}
+			static_cast<uint8>(max98090::kSpeakerVolumeRawMinimum + fVolume)}
 	};
 	for (size_t i = 0; i < B_COUNT_OF(settings); i++) {
 		status = _WriteCodec(settings[i].reg, settings[i].value);
@@ -986,6 +1094,21 @@ Card::_InitializeCodec()
 			mutex_unlock(&fCodecLock);
 			return status;
 		}
+	}
+	status = _ProgramSpeakerTuning();
+	if (status == B_OK)
+		status = _SetSpeakerTuningEnabled(true);
+	if (status == B_OK) {
+		status = _WriteCodec(max98090::kOutputEnable,
+			max98090::kDacAndSpeakerEnable);
+	}
+	if (status == B_OK) {
+		status = _WriteCodec(max98090::kDeviceShutdown,
+			max98090::kShutdownRelease);
+	}
+	if (status != B_OK) {
+		mutex_unlock(&fCodecLock);
+		return status;
 	}
 	fHeadphonePresent = false;
 	fMicrophonePresent = false;
@@ -1167,6 +1290,8 @@ Card::_ApplyJackState(bool headphonePresent, bool microphonePresent)
 		status = _WriteCodec(max98090::kLeftSpeakerVolume, speakerValue);
 		if (status == B_OK)
 			status = _WriteCodec(max98090::kRightSpeakerVolume, speakerValue);
+		if (status == B_OK)
+			status = _SetSpeakerTuningEnabled(false);
 		if (status == B_OK) {
 			status = _WriteCodec(max98090::kOutputEnable,
 				max98090::kDacAndHeadphoneEnable);
@@ -1189,6 +1314,8 @@ Card::_ApplyJackState(bool headphonePresent, bool microphonePresent)
 			status = _WriteCodec(max98090::kOutputEnable,
 				max98090::kDacAndSpeakerEnable);
 		}
+		if (status == B_OK)
+			status = _SetSpeakerTuningEnabled(true);
 		if (status == B_OK)
 			status = _WriteCodec(max98090::kLeftSpeakerVolume, speakerValue);
 		if (status == B_OK)

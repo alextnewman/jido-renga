@@ -66,12 +66,25 @@ struct JackProfile {
 };
 
 
+struct CodecSpeakerTuningProfile {
+	bool			enabled;
+	const uint8_t*	equalizerCoefficients;
+	size_t			equalizerCoefficientCount;
+	uint8_t			equalizerPreattenuation;
+	uint8_t			drcTiming;
+	uint8_t			drcCompressor;
+	uint8_t			drcExpander;
+	uint8_t			drcGain;
+};
+
+
 struct CodecOutputProfile {
-	uint8_t		speakerVolumeMaximum;
-	uint8_t		speakerVolumeDefault;
-	uint8_t		headphoneVolumeMaximum;
-	uint8_t		headphoneVolumeDefault;
-	uint8_t		speakerMixerVolume;
+	uint8_t						speakerVolumeMaximum;
+	uint8_t						speakerVolumeDefault;
+	uint8_t						headphoneVolumeMaximum;
+	uint8_t						headphoneVolumeDefault;
+	uint8_t						speakerMixerVolume;
+	CodecSpeakerTuningProfile	speakerTuning;
 };
 
 

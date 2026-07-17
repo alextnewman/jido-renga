@@ -41,7 +41,11 @@ private:
 	status_t _LoadFirmwareFile(uint8** data, size_t* size);
 	status_t _InitializeCodec();
 	status_t _WriteCodec(uint8 reg, uint8 value);
+	status_t _WriteCodec(uint8 reg, const uint8* values, size_t count);
 	status_t _ReadCodec(uint8 reg, uint8& value);
+	status_t _ReadCodec(uint8 reg, uint8* values, size_t count);
+	status_t _ProgramSpeakerTuning();
+	status_t _SetSpeakerTuningEnabled(bool enabled);
 	status_t _SetCodecVolume(uint8 volume, bool muted);
 	status_t _SetHeadphoneVolume(uint8 volume, bool muted);
 	status_t _InitializeJackDetection();

@@ -62,9 +62,13 @@ now use SCORE GPIO interrupts with 200 ms debounce and automatic MAX98090
 speaker/headphone switching; insertion and removal are hardware-validated and
 reliable. Board assumptions are selected at load time from immutable
 `byt_max98090` profiles, with Winky currently the sole configured profile.
-Winky's profile also enforces the historical ChromeOS analog ceilings: -5 dB
-speaker volume with another -6 dB at the speaker mixer, and -9 dB for
-headphones.
+Winky's profile follows the historical UCM hardware policy: speaker volume is
+capped at 0 dB with -6 dB at the speaker mixer, while headphones remain capped
+at -9 dB. The separate ChromeOS -5 dB speaker curve was software gain for its
+DSP pipeline and is not imposed on Haiku's codec control. The original
+seven-band speaker voicing is enabled with direct Q4.20 MAX98090 coefficients
+and 4 dB preattenuation; this configuration is hardware-validated. DRC remains
+disabled after the combined EQ/DRC configuration silenced playback.
 
 The Winky BSP is intentionally exclusive where controllers cannot safely have
 two owners. Its image omits Haiku's generic SDHCI add-on in favor of

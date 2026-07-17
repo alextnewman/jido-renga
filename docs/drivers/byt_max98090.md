@@ -218,9 +218,17 @@ Winky uses SSP2 with the DSP providing BCLK and FSYNC. The backend format is
 mask `0x3`. MAX98090 consumes both clocks. Speaker routing selects left DAC to
 left speaker mixer and right DAC to right speaker mixer. The Winky profile
 retains logical speaker volume 10 (-14 dB) as its default, caps it at logical
-15 (-5 dB), and fixes the speaker mixer at logical 2 (-6 dB). The maximum
-speaker path is therefore approximately -11 dB before future digital tuning.
+20 (0 dB), and fixes the speaker mixer at logical 2 (-6 dB). The maximum
+speaker path is therefore -6 dB before future digital tuning.
 Headphone volume defaults to and is capped at logical 19 (-9 dB).
+
+The original ChromeOS `db_at_100 = -5 dB` speaker value belongs to CRAS's
+software volume curve, not to the MAX98090 speaker-volume register. Winky's UCM
+does not set that register, leaving the codec reset value `0x2c` (logical 20,
+0 dB), while explicitly setting only the speaker mixers to logical 2 (-6 dB).
+Applying both the CRAS software ceiling and mixer attenuation as analog policy
+made Haiku unnecessarily quiet and encouraged clipping when applications were
+raised above 0 dB.
 
 Codec setup uses the normal full-register path. For the 19.2 MHz MCLK,
 `SYSTEM_CLOCK` register `0x1b` receives `PSCLK_DIV1` (`0x10`);
@@ -287,27 +295,49 @@ userspace policy is required.
 
 ### Speaker tuning boundary
 
-The upstream Linux driver establishes the MAX98090 tuning transport without
-defining the coefficient mathematics. Its seven-band control is one contiguous
-105-byte image beginning at register `0x46`: seven bands, five coefficients
-(`B0`, `B1`, `B2`, `A1`, `A2`) per band, and three bytes per coefficient in
-high/middle/low order. Linux writes that image as opaque hardware-native bytes.
-The related MAX98095 driver also establishes the safe programming sequence:
-disable EQ, replace the coefficients most-significant byte first, and restore
-the previous enable state.
+The Winky profile carries the historical ChromeOS seven-band speaker graph as
+an immutable 105-byte MAX98090 coefficient image. The tuning implementation is
+speaker-only. Its first hardware exercise used an erroneous -11 dB analog path
+and sounded excessively quiet and narrow; the bypassed comparison remained too
+quiet and distorted only when userspace gain entered the red. The unchanged EQ
+and DRC were tested again with the corrected -6 dB hardware path and produced
+silence, but that combined test did not identify which block caused it. A
+subsequent EQ-only test with negated stored `A1` and `A2` was also silent,
+rejecting that alternate sign convention. Restoring direct `A1` and `A2` with
+4 dB preattenuation while leaving DRC disabled produced clear, good-sounding
+speaker output and is the accepted Winky configuration.
 
-Linux completely defines the MAX98090 DRC controls. The historical Winky CRAS
-limiter maps most closely to `DRC_TIMING = 0xb1` (enabled, 1-second release,
+[Analog Devices' MAX98090 coefficient guidance](https://ez.analog.com/other-products/w/documents/38421/how-are-the-equalizer-coefficients-for-the-max98090-and-max98091-obtained)
+identifies the codec equation as a Direct Form I IIR biquad, points to the RBJ
+Audio EQ Cookbook used by the evaluation GUI, and requires normalization by
+`a0`, multiplication by `2^20`, and rounding. MuditaOS independently packs
+standard RBJ `a1`/`a2` unchanged as Q4.20. Winky hardware testing confirms that
+direct encoding: the direct EQ-only image sounds correct, while negating the
+stored feedback coefficients produces silence.
+
+The original CRAS high-pass used `Q = 0` as zero resonance, not as an RBJ
+quality factor. Coefficients are therefore generated with CRAS's actual
+high-pass implementation; shelves use slope 1 and the five peaking stages use
+their recorded Q values. After Q4.20 rounding, all poles remain inside the unit
+circle; the closest pole radius is below 0.999. The combined response peaks at
+approximately -1.89 dB near 9.4 kHz.
+
+[Analog Devices' register-write guidance](https://ez.analog.com/other-products/w/documents/36561/how-do-i-write-the-eq-registers-on-the-max98090)
+requires each three-byte coefficient to be written consecutively or discarded.
+The driver writes each complete 15-byte band in one I2C transaction while the
+codec is shut down, then reads all seven bands back before enabling the device.
+
+The historical limiter maps to `DRC_TIMING = 0xb1` (enabled, 1-second release,
 1 ms attack), `DRC_COMPRESSOR = 0x8b` (infinite ratio, -11 dB threshold), and
-`DRC_GAIN = 0x04` (+4 dB makeup). These values are not enabled yet: DRC must be
-limited to the speaker route and exercised at low volume before becoming board
-policy.
+`DRC_GAIN = 0x04` (+4 dB makeup). Those parameters remain recorded, but the
+enable bit is deliberately clear because the combined EQ/DRC image silenced
+playback. EQ preattenuation is 4 dB, leaving the quantized EQ's -1.89 dB peak
+below 0 dB without compressor makeup. Music filter mode, already required by
+the playback path, remains selected.
 
-Linux does not define the EQ fixed-point scale, rounding rule, transfer
-equation, or whether the stored `A1`/`A2` values use mathematical denominator
-signs or their negations. The CRAS filters therefore must not be converted and
-enabled from Linux evidence alone. An authoritative MAX98090 coefficient export
-or a controlled hardware response measurement is still required.
+The accepted profile therefore combines the corrected analog path (0 dB
+speaker-volume ceiling and -6 dB speaker mixer), the direct-sign seven-band EQ,
+and 4 dB EQ preattenuation. DRC is not part of the accepted profile.
 
 The captured Winky boot log confirms Haiku detects and reserves the
 `8086:0f04` HDA controller independently, and separately enumerates the I2C

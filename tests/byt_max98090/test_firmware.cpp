@@ -12,7 +12,10 @@
 #include "SstPlayback.h"
 #include "SstProtocol.h"
 
+#include <cmath>
+#include <complex>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 
@@ -82,6 +85,73 @@ Visit(const FirmwareBlock& block, void* context)
 	state->offset = block.destinationOffset;
 	state->first = block.data[0];
 	return FirmwareStatus::kOk;
+}
+
+
+uint32_t
+Fnv1a(const uint8_t* bytes, size_t count)
+{
+	uint32_t hash = 2166136261u;
+	for (size_t i = 0; i < count; i++) {
+		hash ^= bytes[i];
+		hash *= 16777619u;
+	}
+	return hash;
+}
+
+
+double
+DecodeEqualizerCoefficient(const uint8_t* bytes)
+{
+	int32_t value = (static_cast<int32_t>(bytes[0]) << 16)
+		| (static_cast<int32_t>(bytes[1]) << 8) | bytes[2];
+	if ((value & 0x800000) != 0)
+		value -= 1 << 24;
+	return static_cast<double>(value) / (1 << 20);
+}
+
+
+double
+EqualizerResponseDb(const CodecSpeakerTuningProfile& tuning, double frequency)
+{
+	constexpr double kPi = 3.14159265358979323846;
+	const std::complex<double> z = std::polar(1.0,
+		-2.0 * kPi * frequency / 48000.0);
+	std::complex<double> response = 1.0;
+	for (size_t band = 0; band < max98090::kEqualizerBandCount; band++) {
+		const uint8_t* data = tuning.equalizerCoefficients
+			+ band * max98090::kEqualizerBandSize;
+		const double b0 = DecodeEqualizerCoefficient(data);
+		const double b1 = DecodeEqualizerCoefficient(data + 3);
+		const double b2 = DecodeEqualizerCoefficient(data + 6);
+		const double a1 = DecodeEqualizerCoefficient(data + 9);
+		const double a2 = DecodeEqualizerCoefficient(data + 12);
+		response *= (b0 + b1 * z + b2 * z * z)
+			/ (1.0 + a1 * z + a2 * z * z);
+	}
+	return 20.0 * std::log10(std::abs(response));
+}
+
+
+double
+MaximumEqualizerPoleRadius(const CodecSpeakerTuningProfile& tuning)
+{
+	double maximum = 0;
+	for (size_t band = 0; band < max98090::kEqualizerBandCount; band++) {
+		const uint8_t* data = tuning.equalizerCoefficients
+			+ band * max98090::kEqualizerBandSize;
+		const double a1 = DecodeEqualizerCoefficient(data + 9);
+		const double a2 = DecodeEqualizerCoefficient(data + 12);
+		const std::complex<double> discriminant
+			= std::sqrt(std::complex<double>(a1 * a1 - 4.0 * a2));
+		const double first = std::abs((-a1 + discriminant) / 2.0);
+		const double second = std::abs((-a1 - discriminant) / 2.0);
+		if (first > maximum)
+			maximum = first;
+		if (second > maximum)
+			maximum = second;
+	}
+	return maximum;
 }
 
 } // namespace
@@ -284,11 +354,20 @@ JR_TEST(byt_profile, winky_ssp_and_stream_contract_is_explicit)
 	JR_CHECK(!profile.jack.headphoneActiveLow);
 	JR_CHECK(profile.jack.microphoneActiveLow);
 	JR_CHECK_EQ(profile.jack.debounce, (int64_t)200000);
-	JR_CHECK_EQ(profile.output.speakerVolumeMaximum, (uint8_t)15);
+	JR_CHECK_EQ(profile.output.speakerVolumeMaximum, (uint8_t)20);
 	JR_CHECK_EQ(profile.output.speakerVolumeDefault, (uint8_t)10);
 	JR_CHECK_EQ(profile.output.headphoneVolumeMaximum, (uint8_t)19);
 	JR_CHECK_EQ(profile.output.headphoneVolumeDefault, (uint8_t)19);
 	JR_CHECK_EQ(profile.output.speakerMixerVolume, (uint8_t)2);
+	JR_CHECK(profile.output.speakerTuning.enabled);
+	JR_CHECK_EQ(profile.output.speakerTuning.equalizerCoefficientCount,
+		max98090::kEqualizerSize);
+	JR_CHECK_EQ(profile.output.speakerTuning.equalizerPreattenuation,
+		max98090::kEqualizerPreattenuation4Db);
+	JR_CHECK_EQ(profile.output.speakerTuning.drcTiming, (uint8_t)0x31);
+	JR_CHECK_EQ(profile.output.speakerTuning.drcCompressor, (uint8_t)0x8b);
+	JR_CHECK_EQ(profile.output.speakerTuning.drcExpander, (uint8_t)0);
+	JR_CHECK_EQ(profile.output.speakerTuning.drcGain, (uint8_t)0x04);
 
 	const SstDspHeader& start = profile.playback.virtualBusStart;
 	JR_CHECK_EQ(start.commandId, (uint16_t)85);
@@ -344,6 +423,43 @@ JR_TEST(byt_profile, winky_ssp_and_stream_contract_is_explicit)
 }
 
 
+JR_TEST(byt_profile, winky_direct_feedback_eq_is_stable_and_headroom_safe)
+{
+	const CodecSpeakerTuningProfile& tuning
+		= kWinkyProfile.output.speakerTuning;
+	JR_CHECK_NE(tuning.equalizerCoefficients, nullptr);
+	JR_CHECK_EQ(Fnv1a(tuning.equalizerCoefficients,
+		tuning.equalizerCoefficientCount), (uint32_t)0x0240c079);
+	JR_CHECK_EQ(tuning.equalizerCoefficients[0], (uint8_t)0x0f);
+	JR_CHECK_EQ(tuning.equalizerCoefficients[1], (uint8_t)0xb4);
+	JR_CHECK_EQ(tuning.equalizerCoefficients[2], (uint8_t)0xdf);
+	JR_CHECK_EQ(tuning.equalizerCoefficients[102], (uint8_t)0x08);
+	JR_CHECK_EQ(tuning.equalizerCoefficients[103], (uint8_t)0x9d);
+	JR_CHECK_EQ(tuning.equalizerCoefficients[104], (uint8_t)0xa9);
+
+	const double maximumPoleRadius = MaximumEqualizerPoleRadius(tuning);
+	JR_CHECK(maximumPoleRadius > 0.998);
+	JR_CHECK(maximumPoleRadius < 0.999);
+
+	double maximumResponse = -std::numeric_limits<double>::infinity();
+	double maximumFrequency = 0;
+	for (int frequency = 1; frequency < 24000; frequency++) {
+		const double response = EqualizerResponseDb(tuning, frequency);
+		if (response > maximumResponse) {
+			maximumResponse = response;
+			maximumFrequency = frequency;
+		}
+	}
+	JR_CHECK(maximumResponse > -1.91);
+	JR_CHECK(maximumResponse < -1.88);
+	JR_CHECK(maximumFrequency > 9300);
+	JR_CHECK(maximumFrequency < 9500);
+	JR_CHECK(EqualizerResponseDb(tuning, 200) > -10.7);
+	JR_CHECK(EqualizerResponseDb(tuning, 200) < -10.5);
+	JR_CHECK(maximumResponse - tuning.equalizerPreattenuation < 0);
+}
+
+
 JR_TEST(byt_codec, full_register_playback_program_is_exact)
 {
 	using namespace max98090;
@@ -387,6 +503,8 @@ JR_TEST(byt_codec, full_register_playback_program_is_exact)
 	JR_CHECK_EQ(kHeadphoneVolumeHardwareMaximum, (uint8_t)31);
 	JR_CHECK_EQ(kSpeakerVolumeRawMinimum
 		+ kWinkyProfile.output.speakerVolumeDefault, (uint8_t)0x22);
+	JR_CHECK_EQ(kSpeakerVolumeRawMinimum
+		+ kWinkyProfile.output.speakerVolumeMaximum, (uint8_t)0x2c);
 	JR_CHECK_EQ(SpeakerControlValue(
 		kWinkyProfile.output.speakerMixerVolume), (uint8_t)0x05);
 	JR_CHECK_EQ(kDacAndSpeakerEnable, (uint8_t)0x33);
@@ -394,6 +512,14 @@ JR_TEST(byt_codec, full_register_playback_program_is_exact)
 	JR_CHECK_EQ(kWinkyProfile.output.headphoneVolumeDefault, (uint8_t)0x13);
 	JR_CHECK_EQ(kHeadphoneMute, (uint8_t)0x80);
 	JR_CHECK_EQ(kShutdownRelease, (uint8_t)0x80);
+	JR_CHECK_EQ(kEqualizerBase, (uint8_t)0x46);
+	JR_CHECK_EQ(kEqualizerBandSize, (size_t)15);
+	JR_CHECK_EQ(kEqualizerSize, (size_t)105);
+	JR_CHECK_EQ(kEqualizer7BandEnable, (uint8_t)0x01);
+	JR_CHECK_EQ(kDrcEnable | kDrcRelease1Second
+		| kDrcAttack1Millisecond, (uint8_t)0xb1);
+	JR_CHECK_EQ(kDrcCompressionInfinity
+		| kDrcCompressionThresholdMinus11Db, (uint8_t)0x8b);
 }
 
 

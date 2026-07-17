@@ -3,6 +3,7 @@
 // SPDX-FileContributor: Generated with GitHub Copilot
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 
@@ -20,6 +21,7 @@ constexpr uint8_t kTdmFormat = 0x24;
 constexpr uint8_t kIoConfiguration = 0x25;
 constexpr uint8_t kFilterConfiguration = 0x26;
 constexpr uint8_t kDaiPlaybackLevel = 0x27;
+constexpr uint8_t kDaiPlaybackEqualizerLevel = 0x28;
 constexpr uint8_t kHeadphoneControl = 0x2b;
 constexpr uint8_t kLeftHeadphoneVolume = 0x2c;
 constexpr uint8_t kRightHeadphoneVolume = 0x2d;
@@ -28,8 +30,14 @@ constexpr uint8_t kRightSpeakerMixer = 0x2f;
 constexpr uint8_t kSpeakerControl = 0x30;
 constexpr uint8_t kLeftSpeakerVolume = 0x31;
 constexpr uint8_t kRightSpeakerVolume = 0x32;
+constexpr uint8_t kDrcTiming = 0x33;
+constexpr uint8_t kDrcCompressor = 0x34;
+constexpr uint8_t kDrcExpander = 0x35;
+constexpr uint8_t kDrcGain = 0x36;
 constexpr uint8_t kOutputEnable = 0x3f;
+constexpr uint8_t kDspFilterEnable = 0x41;
 constexpr uint8_t kDeviceShutdown = 0x45;
+constexpr uint8_t kEqualizerBase = 0x46;
 constexpr uint8_t kRevision = 0xff;
 
 constexpr uint8_t kReset = 1u << 7;
@@ -56,11 +64,25 @@ constexpr uint8_t kDacAndHeadphoneEnable = kLeftDacEnable | kRightDacEnable
 constexpr uint8_t kShutdownRelease = 1u << 7;
 constexpr uint8_t kHeadphoneMute = 1u << 7;
 constexpr uint8_t kSpeakerMute = 1u << 7;
+constexpr uint8_t kEqualizer7BandEnable = 1u << 0;
+constexpr uint8_t kDrcEnable = 1u << 7;
+constexpr uint8_t kDrcRelease1Second = 3u << 4;
+constexpr uint8_t kDrcAttack1Millisecond = 1u;
+constexpr uint8_t kDrcCompressionInfinity = 4u << 5;
+constexpr uint8_t kDrcCompressionThresholdMinus11Db = 11u;
+constexpr uint8_t kDrcMakeup4Db = 4u;
+constexpr uint8_t kEqualizerPreattenuation4Db = 4u;
 
 constexpr uint8_t kHeadphoneVolumeHardwareMaximum = 31;
 constexpr uint8_t kSpeakerVolumeRawMinimum = 24;
 constexpr uint8_t kSpeakerVolumeHardwareMaximum = 39;
 constexpr uint8_t kMixerVolumeMaximum = 3;
+constexpr size_t kEqualizerBandCount = 7;
+constexpr size_t kEqualizerCoefficientCount = 5;
+constexpr size_t kEqualizerCoefficientSize = 3;
+constexpr size_t kEqualizerBandSize
+	= kEqualizerCoefficientCount * kEqualizerCoefficientSize;
+constexpr size_t kEqualizerSize = kEqualizerBandCount * kEqualizerBandSize;
 
 constexpr uint8_t
 SpeakerControlValue(uint8_t logicalVolume)
