@@ -56,6 +56,7 @@ TEST_SRC := \
 	sdhci_embedded/test_staged_request.cpp \
 	iosf_mbi/test_iosf_mbi_protocol.cpp \
 	intel_valleyview/test_firmware_state.cpp \
+	intel_valleyview/test_gpu_core.cpp \
 	intel_valleyview/test_protocol.cpp \
 	i2c_atmel_mxt/test_object_table.cpp \
 	i2c_atmel_mxt/test_message_protocol.cpp \

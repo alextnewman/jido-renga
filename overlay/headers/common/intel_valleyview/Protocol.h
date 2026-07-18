@@ -13,7 +13,7 @@ constexpr uint16 kIntelVendorId = 0x8086;
 constexpr uint16 kWinkyDeviceId = 0x0f31;
 
 constexpr uint32 kProtocolMagic = 0x564c5657;
-constexpr uint16 kProtocolVersion = 5;
+constexpr uint16 kProtocolVersion = 6;
 
 constexpr bool kDefaultEnabled = false;
 constexpr bool kDefaultAllowModeset = false;
@@ -26,7 +26,9 @@ enum {
 	kGetFirmwareSnapshot,
 	kGetSharedInfo,
 	kCloneFramebuffer,
-	kPublishGraphics
+	kPublishGraphics,
+	kGetGpuDiagnostics,
+	kRunGpuSelfTest
 };
 
 enum DisplayState : uint32 {
@@ -45,7 +47,9 @@ enum Capability : uint32 {
 	kCapabilityBacklight = 1u << 2,
 	kCapabilityCursor = 1u << 3,
 	kCapabilityDpms = 1u << 4,
-	kCapabilityVblank = 1u << 5
+	kCapabilityVblank = 1u << 5,
+	kCapabilityGpuDiagnostics = 1u << 6,
+	kCapabilityBcsSelfTest = 1u << 7
 };
 
 enum FirmwareSnapshotFlag : uint32 {
@@ -180,6 +184,94 @@ struct FirmwareSnapshot {
 	uint8		ppsPort;
 	uint8		dpPipe;
 	uint8		reserved[6];
+};
+
+
+constexpr uint32 kGpuSelfTestArm = 0x42435330;
+
+enum GpuSelfTestStage : uint32 {
+	kGpuStageNone = 0,
+	kGpuStageSnapshot,
+	kGpuStageMemoryAllocated,
+	kGpuStageGgttInstalled,
+	kGpuStageForcewakeAcquired,
+	kGpuStageRingStarted,
+	kGpuStageCommandsCompleted,
+	kGpuStageBuffersVerified,
+	kGpuStageRestored
+};
+
+enum GpuDiagnosticFlag : uint32 {
+	kGpuSnapshotCaptured = 1u << 0,
+	kGpuScratchRangeUniform = 1u << 1,
+	kGpuMemoryAllocated = 1u << 2,
+	kGpuGgttInstalled = 1u << 3,
+	kGpuGtWakeAllowed = 1u << 4,
+	kGpuRenderForcewake = 1u << 5,
+	kGpuMediaForcewake = 1u << 6,
+	kGpuRingAvailable = 1u << 7,
+	kGpuRingStarted = 1u << 8,
+	kGpuCommandsCompleted = 1u << 9,
+	kGpuFillVerified = 1u << 10,
+	kGpuCopyVerified = 1u << 11,
+	kGpuDisplayUnchanged = 1u << 12,
+	kGpuGgttRestored = 1u << 13,
+	kGpuRingRestored = 1u << 14,
+	kGpuBcsReset = 1u << 15
+};
+
+struct GpuRegisterSnapshot {
+	uint32	gtlcWakeControl;
+	uint32	gtlcPowerStatus;
+	uint32	forcewakeRender;
+	uint32	forcewakeAckRender;
+	uint32	forcewakeMedia;
+	uint32	forcewakeAckMedia;
+	uint32	gtFifoControl;
+	uint32	gtFifoDebug;
+	uint32	gtThreadStatus;
+	uint32	renderC0Count;
+	uint32	mediaC0Count;
+	uint32	gdrst;
+	uint32	bcsTail;
+	uint32	bcsHead;
+	uint32	bcsStart;
+	uint32	bcsControl;
+	uint32	bcsHws;
+	uint32	bcsMiMode;
+	uint32	bcsMode;
+	uint32	bcsActhd;
+	uint32	bcsIpehr;
+	uint32	bcsIpeir;
+	uint32	bcsInstdone;
+};
+
+struct GpuDiagnostics {
+	AbiHeader				header;
+	uint32					command;
+	uint32					generation;
+	uint32					flags;
+	int32					status;
+	GpuSelfTestStage		stage;
+	uint32					ggttOffset;
+	uint32					ringTailBytes;
+	uint64					testPhysical;
+	uint64					displaySignatureBefore;
+	uint64					displaySignatureAfter;
+	uint32					pteBefore[4];
+	uint32					pteTest[4];
+	uint32					pteAfter[4];
+	uint32					expectedPattern;
+	uint32					completionMarker;
+	uint32					sourceMismatchOffset;
+	uint32					sourceObserved;
+	uint32					destinationMismatchOffset;
+	uint32					destinationObserved;
+	uint32					elapsedUs;
+	uint32					reserved;
+	GpuRegisterSnapshot	before;
+	GpuRegisterSnapshot	active;
+	GpuRegisterSnapshot	after;
 };
 
 

@@ -114,6 +114,74 @@ PrintSnapshot(const valleyview::FirmwareSnapshot& snapshot)
 		snapshot.adoptionStatus);
 }
 
+
+void
+PrintGpuRegisterSnapshot(const char* label,
+	const valleyview::GpuRegisterSnapshot& snapshot)
+{
+	printf("gpu_%s wake=%#08" B_PRIx32 "/%#08" B_PRIx32
+		" forcewake=%#08" B_PRIx32 "/%#08" B_PRIx32
+		" media=%#08" B_PRIx32 "/%#08" B_PRIx32
+		" fifo=%#08" B_PRIx32 " debug=%#08" B_PRIx32
+		" thread=%#08" B_PRIx32 " c0=%" B_PRIu32 "/%" B_PRIu32
+		" reset=%#08" B_PRIx32 "\n",
+		label, snapshot.gtlcWakeControl, snapshot.gtlcPowerStatus,
+		snapshot.forcewakeRender, snapshot.forcewakeAckRender,
+		snapshot.forcewakeMedia, snapshot.forcewakeAckMedia,
+		snapshot.gtFifoControl, snapshot.gtFifoDebug,
+		snapshot.gtThreadStatus, snapshot.renderC0Count,
+		snapshot.mediaC0Count, snapshot.gdrst);
+	printf("bcs_%s tail=%#08" B_PRIx32 " head=%#08" B_PRIx32
+		" start=%#08" B_PRIx32 " control=%#08" B_PRIx32
+		" hws=%#08" B_PRIx32 " mi_mode=%#08" B_PRIx32
+		" mode=%#08" B_PRIx32
+		" acthd=%#08" B_PRIx32 " ipehr=%#08" B_PRIx32
+		" ipeir=%#08" B_PRIx32 " instdone=%#08" B_PRIx32 "\n",
+		label, snapshot.bcsTail, snapshot.bcsHead, snapshot.bcsStart,
+		snapshot.bcsControl, snapshot.bcsHws, snapshot.bcsMiMode,
+		snapshot.bcsMode,
+		snapshot.bcsActhd, snapshot.bcsIpehr, snapshot.bcsIpeir,
+		snapshot.bcsInstdone);
+}
+
+
+void
+PrintGpuDiagnostics(const valleyview::GpuDiagnostics& diagnostics)
+{
+	printf("gpu_test generation=%" B_PRIu32 " command=%#08" B_PRIx32
+		" status=%" B_PRId32 " stage=%u flags=%#08" B_PRIx32
+		" elapsed_us=%" B_PRIu32 "\n", diagnostics.generation,
+		diagnostics.command, diagnostics.status, diagnostics.stage,
+		diagnostics.flags, diagnostics.elapsedUs);
+	printf("gpu_memory physical=%#" B_PRIx64 " ggtt_offset=%#08" B_PRIx32
+		" ring_tail=%" B_PRIu32 "\n", diagnostics.testPhysical,
+		diagnostics.ggttOffset, diagnostics.ringTailBytes);
+	printf("gpu_ptes before=%#08" B_PRIx32 ",%#08" B_PRIx32
+		",%#08" B_PRIx32 ",%#08" B_PRIx32
+		" test=%#08" B_PRIx32 ",%#08" B_PRIx32 ",%#08" B_PRIx32
+		",%#08" B_PRIx32 " after=%#08" B_PRIx32 ",%#08" B_PRIx32
+		",%#08" B_PRIx32 ",%#08" B_PRIx32 "\n",
+		diagnostics.pteBefore[0], diagnostics.pteBefore[1],
+		diagnostics.pteBefore[2], diagnostics.pteBefore[3],
+		diagnostics.pteTest[0], diagnostics.pteTest[1],
+		diagnostics.pteTest[2], diagnostics.pteTest[3],
+		diagnostics.pteAfter[0], diagnostics.pteAfter[1],
+		diagnostics.pteAfter[2], diagnostics.pteAfter[3]);
+	printf("gpu_verify pattern=%#08" B_PRIx32 " marker=%#08" B_PRIx32
+		" source_mismatch=%#" B_PRIx32 "/%#08" B_PRIx32
+		" destination_mismatch=%#" B_PRIx32 "/%#08" B_PRIx32
+		" display=%#" B_PRIx64 "/%#" B_PRIx64 "\n",
+		diagnostics.expectedPattern, diagnostics.completionMarker,
+		diagnostics.sourceMismatchOffset, diagnostics.sourceObserved,
+		diagnostics.destinationMismatchOffset,
+		diagnostics.destinationObserved,
+		diagnostics.displaySignatureBefore,
+		diagnostics.displaySignatureAfter);
+	PrintGpuRegisterSnapshot("before", diagnostics.before);
+	PrintGpuRegisterSnapshot("active", diagnostics.active);
+	PrintGpuRegisterSnapshot("after", diagnostics.after);
+}
+
 } // namespace
 
 
@@ -153,8 +221,36 @@ main(int argc, char** argv)
 			return 1;
 		}
 		printf("published /dev/graphics/intel_valleyview_000200\n");
+	} else if (argc == 2
+		&& (strcmp(argv[1], "--gpu-diagnostics") == 0
+			|| strcmp(argv[1], "--gpu-self-test") == 0)) {
+		valleyview::GpuDiagnostics diagnostics = {};
+		diagnostics.header
+			= valleyview::MakeAbiHeader(sizeof(diagnostics));
+		const bool runSelfTest = strcmp(argv[1], "--gpu-self-test") == 0;
+		if (runSelfTest)
+			diagnostics.command = valleyview::kGpuSelfTestArm;
+		status = ioctl(device, runSelfTest
+				? valleyview::kRunGpuSelfTest
+				: valleyview::kGetGpuDiagnostics,
+			&diagnostics, sizeof(diagnostics));
+		if (valleyview::IsValidAbiHeader(diagnostics.header,
+				sizeof(diagnostics))) {
+			PrintGpuDiagnostics(diagnostics);
+		}
+		if (status != B_OK || diagnostics.status != B_OK) {
+			const status_t failure
+				= status != B_OK ? status : diagnostics.status;
+			fprintf(stderr,
+				"intel_valleyview_probe: GPU diagnostic failed: %s"
+				" (result %" B_PRId32 ")\n", strerror(failure),
+				diagnostics.status);
+			close(device);
+			return 1;
+		}
 	} else if (argc != 1) {
-		fprintf(stderr, "usage: intel_valleyview_probe [--publish]\n");
+		fprintf(stderr, "usage: intel_valleyview_probe"
+			" [--publish|--gpu-diagnostics|--gpu-self-test]\n");
 		close(device);
 		return 1;
 	}

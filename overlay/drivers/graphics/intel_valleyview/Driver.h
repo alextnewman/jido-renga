@@ -29,6 +29,9 @@ struct ValleyViewDevice {
 	bool						enabled;
 	bool						allowModeset;
 	bool						graphicsPublished;
+	bool						gpuFaulted;
+	uint32						gpuTestGeneration;
+	area_id						gpuTestArea;
 	area_id						sharedArea;
 	valleyview::DisplaySharedInfo* sharedInfo;
 	area_id						framebufferArea;
@@ -41,5 +44,9 @@ extern device_manager_info* gDeviceManager;
 extern device_module_info gValleyViewDeviceModule;
 
 status_t PublishValleyViewGraphics(ValleyViewDevice& device);
+status_t CaptureGpuDiagnostics(ValleyViewDevice& device,
+	valleyview::GpuDiagnostics& diagnostics);
+status_t RunGpuSelfTest(ValleyViewDevice& device,
+	valleyview::GpuDiagnostics& diagnostics);
 
 #endif

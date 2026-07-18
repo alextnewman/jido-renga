@@ -115,9 +115,11 @@ Control(void* cookie, uint32 operation, void* buffer, size_t length)
 
 			valleyview::DriverStatus status = {};
 			status.header = valleyview::MakeAbiHeader(sizeof(status));
+			status.capabilities = valleyview::kCapabilityGpuDiagnostics
+				| valleyview::kCapabilityBcsSelfTest;
 			if (device->snapshot.adoptionStatus == B_OK) {
 				status.capabilities
-					= valleyview::kCapabilityFirmwareAdoption;
+					|= valleyview::kCapabilityFirmwareAdoption;
 				status.displayState = valleyview::kFirmwareAdopted;
 			} else
 				status.displayState = valleyview::kDisplayUnavailable;
@@ -183,6 +185,44 @@ Control(void* cookie, uint32 operation, void* buffer, size_t length)
 
 		case valleyview::kPublishGraphics:
 			return PublishValleyViewGraphics(*device);
+
+		case valleyview::kGetGpuDiagnostics:
+		{
+			if (buffer == NULL
+				|| length < sizeof(valleyview::GpuDiagnostics)) {
+				return B_BAD_VALUE;
+			}
+
+			valleyview::GpuDiagnostics diagnostics = {};
+			status_t status = CaptureGpuDiagnostics(*device, diagnostics);
+			status_t copyStatus = user_memcpy(buffer, &diagnostics,
+				sizeof(diagnostics));
+			return copyStatus == B_OK ? status : copyStatus;
+		}
+
+		case valleyview::kRunGpuSelfTest:
+		{
+			if (buffer == NULL
+				|| length < sizeof(valleyview::GpuDiagnostics)) {
+				return B_BAD_VALUE;
+			}
+
+			valleyview::GpuDiagnostics diagnostics;
+			status_t status = user_memcpy(&diagnostics, buffer,
+				sizeof(diagnostics));
+			if (status != B_OK)
+				return status;
+			if (!valleyview::IsValidAbiHeader(diagnostics.header,
+					sizeof(diagnostics))
+				|| diagnostics.command != valleyview::kGpuSelfTestArm) {
+				return B_BAD_VALUE;
+			}
+
+			status = RunGpuSelfTest(*device, diagnostics);
+			status_t copyStatus = user_memcpy(buffer, &diagnostics,
+				sizeof(diagnostics));
+			return copyStatus == B_OK ? status : copyStatus;
+		}
 
 		default:
 			return B_DEV_INVALID_IOCTL;

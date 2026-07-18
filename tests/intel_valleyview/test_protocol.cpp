@@ -58,6 +58,19 @@ JR_TEST(intel_valleyview, assigns_stable_private_operations)
 	JR_CHECK_EQ(kGetSharedInfo, 10004);
 	JR_CHECK_EQ(kCloneFramebuffer, 10005);
 	JR_CHECK_EQ(kPublishGraphics, 10006);
+	JR_CHECK_EQ(kGetGpuDiagnostics, 10007);
+	JR_CHECK_EQ(kRunGpuSelfTest, 10008);
 	JR_CHECK_NE(kGetDeviceName, kGetDriverStatus);
 	JR_CHECK_NE(kGetDriverStatus, kGetDeviceIdentity);
+}
+
+
+JR_TEST(intel_valleyview, validates_gpu_diagnostic_abi)
+{
+	GpuDiagnostics diagnostics = {};
+	diagnostics.header = MakeAbiHeader(sizeof(diagnostics));
+	diagnostics.command = kGpuSelfTestArm;
+	JR_CHECK(IsValidAbiHeader(diagnostics.header, sizeof(diagnostics)));
+	JR_CHECK_EQ(diagnostics.command, 0x42435330u);
+	JR_CHECK_EQ((uint32)kGpuStageRestored, 8u);
 }

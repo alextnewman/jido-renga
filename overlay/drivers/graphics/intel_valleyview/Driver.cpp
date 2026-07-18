@@ -363,6 +363,7 @@ InitDriver(device_node* node, void** cookie)
 		return B_NO_MEMORY;
 
 	device->node = node;
+	device->gpuTestArea = -1;
 	device->sharedArea = -1;
 	device->framebufferArea = -1;
 	device_node* parent = gDeviceManager->get_parent_node(node);
@@ -444,6 +445,8 @@ UninitDriver(void* cookie)
 		delete_area(device->sharedArea);
 	if (device->framebufferArea >= B_OK)
 		delete_area(device->framebufferArea);
+	if (device->gpuTestArea >= B_OK && !device->gpuFaulted)
+		delete_area(device->gpuTestArea);
 	mutex_destroy(&device->lock);
 	free(device);
 }
