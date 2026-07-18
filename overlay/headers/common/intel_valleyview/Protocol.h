@@ -13,10 +13,10 @@ constexpr uint16 kIntelVendorId = 0x8086;
 constexpr uint16 kWinkyDeviceId = 0x0f31;
 
 constexpr uint32 kProtocolMagic = 0x564c5657;
-constexpr uint16 kProtocolVersion = 6;
+constexpr uint16 kProtocolVersion = 8;
 
-constexpr bool kDefaultEnabled = false;
-constexpr bool kDefaultAllowModeset = false;
+constexpr bool kDefaultEnabled = true;
+constexpr bool kDefaultAllowModeset = true;
 constexpr bool kDevicePublicationReady = true;
 
 enum {
@@ -28,7 +28,18 @@ enum {
 	kCloneFramebuffer,
 	kPublishGraphics,
 	kGetGpuDiagnostics,
-	kRunGpuSelfTest
+	kRunGpuSelfTest,
+	kGetP0Status,
+	kGetBrightness,
+	kSetBrightness,
+	kGetDpms,
+	kSetDpms,
+	kSetCursorShape,
+	kMoveCursor,
+	kShowCursor,
+	kBcsFill,
+	kBcsBlit,
+	kRunP0SelfTest
 };
 
 enum DisplayState : uint32 {
@@ -149,6 +160,7 @@ struct FirmwareSnapshot {
 	uint32		gttPte;
 	uint64		scanoutPhysical;
 	uint64		scanoutAperture;
+	uint64		gttSignature;
 	uint32		gttRequiredPages;
 	uint32		gttPresentPages;
 	uint32		panelFitterControl;
@@ -165,6 +177,7 @@ struct FirmwareSnapshot {
 	uint32		cursorControl;
 	uint32		cursorBase;
 	uint32		cursorPosition;
+	uint32		cursorSurfaceLive;
 	uint64		bootFramebufferPhysical;
 	uint64		bootFramebufferSize;
 	int32		bootFramebufferArea;
@@ -272,6 +285,117 @@ struct GpuDiagnostics {
 	GpuRegisterSnapshot	before;
 	GpuRegisterSnapshot	active;
 	GpuRegisterSnapshot	after;
+};
+
+
+enum P0RuntimeFlag : uint32 {
+	kP0MemoryAllocated = 1u << 0,
+	kP0GgttMapped = 1u << 1,
+	kP0NativeScanout = 1u << 2,
+	kP0BcsReady = 1u << 3,
+	kP0CursorReady = 1u << 4,
+	kP0SoftBlanked = 1u << 5,
+	kP0Faulted = 1u << 6
+};
+
+struct P0Status {
+	AbiHeader	header;
+	uint32		flags;
+	int32		nativeStatus;
+	int32		bcsStatus;
+	uint32		width;
+	uint32		height;
+	uint32		bytesPerRow;
+	uint32		ggttOffset;
+	uint32		ggttPages;
+	uint64		physical;
+	uint32		cursorOffset;
+	uint32		ringOffset;
+	uint32		statusOffset;
+	uint32		dpmsMode;
+	uint32		pwmDuty;
+	uint32		pwmPeriod;
+	uint64		bcsSubmissions;
+	uint64		bcsFailures;
+};
+
+struct BrightnessRequest {
+	AbiHeader	header;
+	float		value;
+};
+
+struct DpmsRequest {
+	AbiHeader	header;
+	uint32		mode;
+};
+
+constexpr uint32 kCursorMaxWidth = 64;
+constexpr uint32 kCursorMaxHeight = 64;
+constexpr uint32 kCursorMaskBytes
+	= kCursorMaxWidth * kCursorMaxHeight / 8;
+
+struct CursorShapeRequest {
+	AbiHeader	header;
+	uint16		width;
+	uint16		height;
+	uint16		hotX;
+	uint16		hotY;
+	uint8		andMask[kCursorMaskBytes];
+	uint8		xorMask[kCursorMaskBytes];
+};
+
+struct CursorMoveRequest {
+	AbiHeader	header;
+	int32		x;
+	int32		y;
+};
+
+struct CursorShowRequest {
+	AbiHeader	header;
+	uint8		visible;
+	uint8		reserved[3];
+};
+
+constexpr uint32 kBcsMaxOperations = 64;
+
+struct BcsFillRect {
+	uint16	left;
+	uint16	top;
+	uint16	right;
+	uint16	bottom;
+};
+
+struct BcsFillRequest {
+	AbiHeader	header;
+	uint32		color;
+	uint32		count;
+	BcsFillRect	rects[kBcsMaxOperations];
+};
+
+struct BcsBlitRect {
+	uint16	sourceLeft;
+	uint16	sourceTop;
+	uint16	destinationLeft;
+	uint16	destinationTop;
+	uint16	width;
+	uint16	height;
+};
+
+struct BcsBlitRequest {
+	AbiHeader	header;
+	uint32		count;
+	BcsBlitRect	rects[kBcsMaxOperations];
+};
+
+constexpr uint32 kP0SelfTestArm = 0x50305430;
+
+struct P0SelfTest {
+	AbiHeader	header;
+	uint32		command;
+	int32		status;
+	uint32		flags;
+	P0Status	before;
+	P0Status	after;
 };
 
 

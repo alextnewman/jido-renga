@@ -33,6 +33,25 @@ JR_TEST(intel_valleyview_gpu, uses_gen7_bcs_register_layout)
 }
 
 
+JR_TEST(intel_valleyview_gpu, requires_bcs_to_drop_all_runtime_addresses)
+{
+	GpuRegisterSnapshot snapshot = {};
+	JR_CHECK(IsBcsRingQuiesced(snapshot));
+
+	snapshot.bcsControl = kRingValid;
+	JR_CHECK(!IsBcsRingQuiesced(snapshot));
+	snapshot.bcsControl = 0;
+	snapshot.bcsStart = 0x0fffc000;
+	JR_CHECK(!IsBcsRingQuiesced(snapshot));
+	snapshot.bcsStart = 0;
+	snapshot.bcsHws = 0x0fffd000;
+	JR_CHECK(!IsBcsRingQuiesced(snapshot));
+	snapshot.bcsHws = 0;
+	snapshot.bcsHead = 8;
+	JR_CHECK(!IsBcsRingQuiesced(snapshot));
+}
+
+
 JR_TEST(intel_valleyview_gpu, reserves_the_top_four_ggtt_pages)
 {
 	uint32 offset = 0;
@@ -79,4 +98,28 @@ JR_TEST(intel_valleyview_gpu, reports_the_first_mismatching_dword)
 	JR_CHECK_EQ(offset, 8u);
 	JR_CHECK_EQ(observed, 3u);
 	JR_CHECK(!FindWordMismatch(words, 2, 7, offset, observed));
+}
+
+
+JR_TEST(intel_valleyview_gpu, builds_runtime_fill_and_copy_commands)
+{
+	uint32 commands[18] = {};
+	size_t count = 0;
+	JR_CHECK(AppendBcsFill(commands, 18, count, 0x100000, 5504,
+		0x11223344, 3, 4, 9, 12));
+	JR_CHECK(AppendBcsCopy(commands, 18, count, 0x100000, 5504,
+		20, 30, 40, 50, 7, 8));
+	JR_CHECK(AppendBcsCompletion(commands, 18, count, 0x12345678));
+	JR_CHECK_EQ(count, 18u);
+	JR_CHECK_EQ(commands[0], 0x54300004u);
+	JR_CHECK_EQ(commands[2], 0x00040003u);
+	JR_CHECK_EQ(commands[3], 0x000d000au);
+	JR_CHECK_EQ(commands[4], 0x00100000u);
+	JR_CHECK_EQ(commands[5], 0x11223344u);
+	JR_CHECK_EQ(commands[6], 0x54f00006u);
+	JR_CHECK_EQ(commands[8], 0x00320028u);
+	JR_CHECK_EQ(commands[9], 0x003b0030u);
+	JR_CHECK_EQ(commands[11], 0x001e0014u);
+	JR_CHECK_EQ(commands[14], 0x13204001u);
+	JR_CHECK_EQ(commands[16], 0x12345678u);
 }

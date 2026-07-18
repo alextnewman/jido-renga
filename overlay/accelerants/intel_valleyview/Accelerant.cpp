@@ -31,6 +31,15 @@ struct AccelerantInfo {
 };
 
 AccelerantInfo* gInfo;
+engine_token gEngineToken = {1, B_2D_ACCELERATION, NULL};
+
+
+bool
+NativeActive()
+{
+	return gInfo != NULL && gInfo->shared != NULL
+		&& gInfo->shared->nativeActive != 0;
+}
 
 
 bool
@@ -233,6 +242,8 @@ GetDeviceInfo(accelerant_device_info* info)
 	strlcpy(info->name, "Intel ValleyView", sizeof(info->name));
 	strlcpy(info->chipset, "ValleyView 0f31", sizeof(info->chipset));
 	strlcpy(info->serial_no, "None", sizeof(info->serial_no));
+	if (gInfo != NULL)
+		info->memory = static_cast<uint32>(gInfo->shared->framebufferSize);
 	return B_OK;
 }
 
@@ -316,6 +327,237 @@ GetPixelClockLimits(display_mode* mode, uint32* low, uint32* high)
 	return *low <= *high ? B_OK : B_BAD_VALUE;
 }
 
+
+status_t
+SetBrightness(float brightness)
+{
+	if (gInfo == NULL)
+		return B_NO_INIT;
+	valleyview::BrightnessRequest request = {};
+	request.header = valleyview::MakeAbiHeader(sizeof(request));
+	request.value = brightness;
+	return ioctl(gInfo->device, valleyview::kSetBrightness, &request,
+		sizeof(request));
+}
+
+
+status_t
+GetBrightness(float* brightness)
+{
+	if (gInfo == NULL || brightness == NULL)
+		return B_BAD_VALUE;
+	valleyview::BrightnessRequest request = {};
+	status_t status = ioctl(gInfo->device, valleyview::kGetBrightness,
+		&request, sizeof(request));
+	if (status == B_OK
+		&& !valleyview::IsValidAbiHeader(request.header, sizeof(request))) {
+		status = B_BAD_DATA;
+	}
+	if (status == B_OK)
+		*brightness = request.value;
+	return status;
+}
+
+
+uint32
+DpmsCapabilities()
+{
+	return B_DPMS_ON | B_DPMS_STAND_BY | B_DPMS_SUSPEND | B_DPMS_OFF;
+}
+
+
+uint32
+DpmsMode()
+{
+	if (gInfo == NULL)
+		return B_DPMS_ON;
+	valleyview::DpmsRequest request = {};
+	if (ioctl(gInfo->device, valleyview::kGetDpms, &request,
+			sizeof(request)) != B_OK) {
+		return B_DPMS_ON;
+	}
+	return request.mode;
+}
+
+
+status_t
+SetDpmsMode(uint32 mode)
+{
+	if (gInfo == NULL)
+		return B_NO_INIT;
+	valleyview::DpmsRequest request = {};
+	request.header = valleyview::MakeAbiHeader(sizeof(request));
+	request.mode = mode;
+	return ioctl(gInfo->device, valleyview::kSetDpms, &request,
+		sizeof(request));
+}
+
+
+status_t
+SetCursorShape(uint16 width, uint16 height, uint16 hotX, uint16 hotY,
+	const uint8* andMask, const uint8* xorMask)
+{
+	if (gInfo == NULL || andMask == NULL || xorMask == NULL
+		|| width == 0 || height == 0 || width > valleyview::kCursorMaxWidth
+		|| height > valleyview::kCursorMaxHeight) {
+		return B_BAD_VALUE;
+	}
+	valleyview::CursorShapeRequest request = {};
+	request.header = valleyview::MakeAbiHeader(sizeof(request));
+	request.width = width;
+	request.height = height;
+	request.hotX = hotX;
+	request.hotY = hotY;
+	const size_t maskBytes = ((width + 7) / 8) * height;
+	memcpy(request.andMask, andMask, maskBytes);
+	memcpy(request.xorMask, xorMask, maskBytes);
+	return ioctl(gInfo->device, valleyview::kSetCursorShape, &request,
+		sizeof(request));
+}
+
+
+void
+MoveCursor(uint16 x, uint16 y)
+{
+	if (gInfo == NULL)
+		return;
+	valleyview::CursorMoveRequest request = {};
+	request.header = valleyview::MakeAbiHeader(sizeof(request));
+	request.x = static_cast<int16>(x);
+	request.y = static_cast<int16>(y);
+	ioctl(gInfo->device, valleyview::kMoveCursor, &request, sizeof(request));
+}
+
+
+void
+ShowCursor(bool visible)
+{
+	if (gInfo == NULL)
+		return;
+	valleyview::CursorShowRequest request = {};
+	request.header = valleyview::MakeAbiHeader(sizeof(request));
+	request.visible = visible ? 1 : 0;
+	ioctl(gInfo->device, valleyview::kShowCursor, &request, sizeof(request));
+}
+
+
+uint32
+EngineCount()
+{
+	return 1;
+}
+
+
+status_t
+AcquireEngine(uint32, uint32, sync_token* syncToken, engine_token** token)
+{
+	if (gInfo == NULL || token == NULL)
+		return B_BAD_VALUE;
+	*token = &gEngineToken;
+	return B_OK;
+}
+
+
+status_t
+ReleaseEngine(engine_token* token, sync_token* syncToken)
+{
+	if (gInfo == NULL || token != &gEngineToken)
+		return B_BAD_VALUE;
+	if (syncToken != NULL) {
+		syncToken->engine_id = gEngineToken.engine_id;
+		syncToken->counter = 0;
+	}
+	return B_OK;
+}
+
+
+void
+WaitEngineIdle()
+{
+}
+
+
+status_t
+GetSyncToken(engine_token* token, sync_token* syncToken)
+{
+	if (token != &gEngineToken || syncToken == NULL)
+		return B_BAD_VALUE;
+	syncToken->engine_id = gEngineToken.engine_id;
+	syncToken->counter = 0;
+	return B_OK;
+}
+
+
+status_t
+SyncToToken(sync_token* syncToken)
+{
+	return syncToken != NULL && syncToken->engine_id == gEngineToken.engine_id
+		? B_OK : B_BAD_VALUE;
+}
+
+
+void
+FillRectangle(engine_token*, uint32 color, fill_rect_params* rects,
+	uint32 count)
+{
+	if (gInfo == NULL || rects == NULL || count == 0)
+		return;
+
+	uint32 first = 0;
+	while (first < count) {
+		const uint32 batchCount = count - first > valleyview::kBcsMaxOperations
+			? valleyview::kBcsMaxOperations : count - first;
+		valleyview::BcsFillRequest request = {};
+		request.header = valleyview::MakeAbiHeader(sizeof(request));
+		request.color = color;
+		request.count = batchCount;
+		for (uint32 index = 0; index < batchCount; index++) {
+			request.rects[index].left = rects[first + index].left;
+			request.rects[index].top = rects[first + index].top;
+			request.rects[index].right = rects[first + index].right;
+			request.rects[index].bottom = rects[first + index].bottom;
+		}
+		ioctl(gInfo->device, valleyview::kBcsFill, &request,
+			sizeof(request));
+		first += batchCount;
+	}
+}
+
+
+bool
+BlitFits(const blit_params& blit)
+{
+	const uint32 width = gInfo->shared->currentMode.virtual_width;
+	const uint32 height = gInfo->shared->currentMode.virtual_height;
+	return static_cast<uint32>(blit.src_left) + blit.width < width
+		&& static_cast<uint32>(blit.dest_left) + blit.width < width
+		&& static_cast<uint32>(blit.src_top) + blit.height < height
+		&& static_cast<uint32>(blit.dest_top) + blit.height < height;
+}
+
+
+void
+ScreenToScreenBlit(engine_token*, blit_params* blits, uint32 count)
+{
+	if (gInfo == NULL || blits == NULL)
+		return;
+
+	for (uint32 index = 0; index < count; index++) {
+		valleyview::BcsBlitRequest request = {};
+		request.header = valleyview::MakeAbiHeader(sizeof(request));
+		request.count = 1;
+		request.rects[0].sourceLeft = blits[index].src_left;
+		request.rects[0].sourceTop = blits[index].src_top;
+		request.rects[0].destinationLeft = blits[index].dest_left;
+		request.rects[0].destinationTop = blits[index].dest_top;
+		request.rects[0].width = blits[index].width;
+		request.rects[0].height = blits[index].height;
+		if (BlitFits(blits[index]))
+			ioctl(gInfo->device, valleyview::kBcsBlit, &request,
+				sizeof(request));
+	}
+}
+
 } // namespace
 
 
@@ -351,6 +593,38 @@ get_accelerant_hook(uint32 feature, void*)
 			return (void*)GetFramebuffer;
 		case B_GET_PIXEL_CLOCK_LIMITS:
 			return (void*)GetPixelClockLimits;
+		case B_SET_BRIGHTNESS:
+			return NativeActive() ? (void*)SetBrightness : NULL;
+		case B_GET_BRIGHTNESS:
+			return NativeActive() ? (void*)GetBrightness : NULL;
+		case B_DPMS_CAPABILITIES:
+			return NativeActive() ? (void*)DpmsCapabilities : NULL;
+		case B_DPMS_MODE:
+			return NativeActive() ? (void*)DpmsMode : NULL;
+		case B_SET_DPMS_MODE:
+			return NativeActive() ? (void*)SetDpmsMode : NULL;
+		case B_SET_CURSOR_SHAPE:
+			return NativeActive() ? (void*)SetCursorShape : NULL;
+		case B_MOVE_CURSOR:
+			return NativeActive() ? (void*)MoveCursor : NULL;
+		case B_SHOW_CURSOR:
+			return NativeActive() ? (void*)ShowCursor : NULL;
+		case B_ACCELERANT_ENGINE_COUNT:
+			return NativeActive() ? (void*)EngineCount : NULL;
+		case B_ACQUIRE_ENGINE:
+			return NativeActive() ? (void*)AcquireEngine : NULL;
+		case B_RELEASE_ENGINE:
+			return NativeActive() ? (void*)ReleaseEngine : NULL;
+		case B_WAIT_ENGINE_IDLE:
+			return NativeActive() ? (void*)WaitEngineIdle : NULL;
+		case B_GET_SYNC_TOKEN:
+			return NativeActive() ? (void*)GetSyncToken : NULL;
+		case B_SYNC_TO_TOKEN:
+			return NativeActive() ? (void*)SyncToToken : NULL;
+		case B_SCREEN_TO_SCREEN_BLIT:
+			return NativeActive() ? (void*)ScreenToScreenBlit : NULL;
+		case B_FILL_RECTANGLE:
+			return NativeActive() ? (void*)FillRectangle : NULL;
 		default:
 			return NULL;
 	}

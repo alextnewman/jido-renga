@@ -15,5 +15,6 @@ if $(TARGET_ARCH) = "x86" || $(TARGET_ARCH) = "x86_64" {
 		Driver.cpp
 		Device.cpp
 		Gpu.cpp
+		P0.cpp
 	;
 }

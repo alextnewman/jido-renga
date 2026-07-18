@@ -71,6 +71,17 @@ constexpr size_t kBcsSelfTestCommandCount = 18;
 
 
 inline bool
+IsBcsRingQuiesced(const GpuRegisterSnapshot& snapshot)
+{
+	return (snapshot.bcsControl & kRingValid) == 0
+		&& snapshot.bcsStart == 0
+		&& snapshot.bcsHws == 0
+		&& (snapshot.bcsHead & kRingAddressMask) == 0
+		&& (snapshot.bcsTail & kRingAddressMask) == 0;
+}
+
+
+inline bool
 EncodeBytPte(uint64 physical, bool writable, bool snooped, uint32& pte)
 {
 	if (physical >= 0x100000000ull || (physical & kPageMask) != 0)
@@ -148,6 +159,68 @@ BuildBcsSelfTestCommands(uint32* commands, size_t capacity,
 	commands[index++] = completionMarker;
 	commands[index++] = 0;
 	return index;
+}
+
+
+inline bool
+AppendBcsFill(uint32* commands, size_t capacity, size_t& count,
+	uint32 destinationOffset, uint32 stride, uint32 color,
+	uint16 left, uint16 top, uint16 right, uint16 bottom)
+{
+	if (commands == NULL || count > capacity || capacity - count < 6
+		|| stride == 0 || left > right || top > bottom) {
+		return false;
+	}
+
+	commands[count++] = 0x54300004;
+	commands[count++] = (3u << 24) | (0xf0u << 16) | stride;
+	commands[count++] = (static_cast<uint32>(top) << 16) | left;
+	commands[count++] = (static_cast<uint32>(bottom + 1) << 16)
+		| static_cast<uint16>(right + 1);
+	commands[count++] = destinationOffset;
+	commands[count++] = color;
+	return true;
+}
+
+
+inline bool
+AppendBcsCopy(uint32* commands, size_t capacity, size_t& count,
+	uint32 framebufferOffset, uint32 stride, uint16 sourceLeft,
+	uint16 sourceTop, uint16 destinationLeft, uint16 destinationTop,
+	uint16 width, uint16 height)
+{
+	if (commands == NULL || count > capacity || capacity - count < 8
+		|| stride == 0 || width == UINT16_MAX || height == UINT16_MAX) {
+		return false;
+	}
+
+	commands[count++] = 0x54f00006;
+	commands[count++] = (3u << 24) | (0xccu << 16) | stride;
+	commands[count++] = (static_cast<uint32>(destinationTop) << 16)
+		| destinationLeft;
+	commands[count++] = (static_cast<uint32>(
+			destinationTop + height + 1) << 16)
+		| static_cast<uint16>(destinationLeft + width + 1);
+	commands[count++] = framebufferOffset;
+	commands[count++] = (static_cast<uint32>(sourceTop) << 16)
+		| sourceLeft;
+	commands[count++] = stride;
+	commands[count++] = framebufferOffset;
+	return true;
+}
+
+
+inline bool
+AppendBcsCompletion(uint32* commands, size_t capacity, size_t& count,
+	uint32 marker)
+{
+	if (commands == NULL || count > capacity || capacity - count < 4)
+		return false;
+	commands[count++] = 0x13204001;
+	commands[count++] = kGpuCompletionOffset | (1u << 2);
+	commands[count++] = marker;
+	commands[count++] = 0;
+	return true;
 }
 
 

@@ -21,12 +21,26 @@ JR_TEST(intel_valleyview_firmware, register_map_stays_within_valleyview_bar)
 	JR_CHECK_EQ(kPipeConfigA, 0x1f0008u);
 	JR_CHECK_EQ(kPlaneAddressVlvA, 0x1f017cu);
 	JR_CHECK_EQ(kPlaneSurfaceLiveA, 0x1f01acu);
+	JR_CHECK_EQ(kCursorSurfaceLiveA, 0x1f00acu);
 	JR_CHECK_EQ(kPanelFitterControl, 0x1e1230u);
 	JR_CHECK_EQ(kGttOffsetInBar, 0x200000u);
 	JR_CHECK_EQ(kOpRegionMboxesOffset, 88u);
 	JR_CHECK_EQ(kAsleRvdaOffset, 186u);
 	JR_CHECK_EQ(kAsleRvdsOffset, 194u);
 	JR_CHECK(kLastSnapshotRegister + sizeof(uint32) <= 0x200000u);
+}
+
+
+JR_TEST(intel_valleyview_firmware, fingerprints_complete_ggtt_ranges)
+{
+	uint64 signature = kGgttSignatureSeed;
+	signature = AppendGgttPteSignature(signature, 0x7c000001);
+	signature = AppendGgttPteSignature(signature, 0x7c001001);
+	JR_CHECK_EQ(signature, 0x25870b30bfaf2b1bull);
+	JR_CHECK_NE(signature,
+		AppendGgttPteSignature(
+			AppendGgttPteSignature(kGgttSignatureSeed, 0x7c000001),
+			0x7c002001));
 }
 
 
@@ -45,7 +59,7 @@ JR_TEST(intel_valleyview_firmware, decodes_firmware_lit_state)
 	snapshot.ppsOnDelays = 2u << 30;
 	snapshot.pwmControl2 = kPwmEnable;
 	snapshot.pwmControl = (1000u << 17) | 1000u;
-	snapshot.cursorControl = kCursorEnable;
+	snapshot.cursorControl = kCursorMode64TwoColor;
 
 	DecodeFirmwareSnapshot(snapshot);
 

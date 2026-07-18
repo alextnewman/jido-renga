@@ -22,8 +22,8 @@ JR_TEST(intel_valleyview, matches_only_the_winky_gpu)
 
 JR_TEST(intel_valleyview, defaults_to_the_safe_disabled_policy)
 {
-	JR_CHECK(!kDefaultEnabled);
-	JR_CHECK(!kDefaultAllowModeset);
+	JR_CHECK(kDefaultEnabled);
+	JR_CHECK(kDefaultAllowModeset);
 	JR_CHECK(kDevicePublicationReady);
 	JR_CHECK_EQ((uint32)kDisplayUnavailable, 0u);
 }
@@ -60,6 +60,17 @@ JR_TEST(intel_valleyview, assigns_stable_private_operations)
 	JR_CHECK_EQ(kPublishGraphics, 10006);
 	JR_CHECK_EQ(kGetGpuDiagnostics, 10007);
 	JR_CHECK_EQ(kRunGpuSelfTest, 10008);
+	JR_CHECK_EQ(kGetP0Status, 10009);
+	JR_CHECK_EQ(kGetBrightness, 10010);
+	JR_CHECK_EQ(kSetBrightness, 10011);
+	JR_CHECK_EQ(kGetDpms, 10012);
+	JR_CHECK_EQ(kSetDpms, 10013);
+	JR_CHECK_EQ(kSetCursorShape, 10014);
+	JR_CHECK_EQ(kMoveCursor, 10015);
+	JR_CHECK_EQ(kShowCursor, 10016);
+	JR_CHECK_EQ(kBcsFill, 10017);
+	JR_CHECK_EQ(kBcsBlit, 10018);
+	JR_CHECK_EQ(kRunP0SelfTest, 10019);
 	JR_CHECK_NE(kGetDeviceName, kGetDriverStatus);
 	JR_CHECK_NE(kGetDriverStatus, kGetDeviceIdentity);
 }

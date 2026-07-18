@@ -50,6 +50,22 @@ ReadSettings()
 }
 
 
+status_t
+MapRuntimeRegisters(ValleyViewDevice& device)
+{
+	if (device.snapshot.mmioPhysical == 0 || device.snapshot.mmioSize == 0)
+		return B_NO_INIT;
+
+	device.registerArea = map_physical_memory(
+		"intel_valleyview runtime registers", device.snapshot.mmioPhysical,
+		device.snapshot.mmioSize,
+		B_ANY_KERNEL_BLOCK_ADDRESS | B_UNCACHED_MEMORY,
+		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
+		(void**)&device.registers);
+	return device.registerArea < B_OK ? device.registerArea : B_OK;
+}
+
+
 uint32
 ReadMmio(const volatile uint8* registers, uint32 offset)
 {
@@ -121,6 +137,8 @@ CaptureMmio(ValleyViewDevice& device)
 	snapshot.cursorControl = ReadMmio(registers, valleyview::kCursorControlA);
 	snapshot.cursorBase = ReadMmio(registers, valleyview::kCursorBaseA);
 	snapshot.cursorPosition = ReadMmio(registers, valleyview::kCursorPositionA);
+	snapshot.cursorSurfaceLive
+		= ReadMmio(registers, valleyview::kCursorSurfaceLiveA);
 
 	// GMADR (BAR2 on Gen4+) is the CPU-visible GGTT aperture.
 	if ((device.pciInfo.u.h0.base_register_flags[2] & PCI_address_space) == 0) {
@@ -154,11 +172,15 @@ CaptureMmio(ValleyViewDevice& device)
 		if (pageCount <= UINT32_MAX
 			&& valleyview::RangeFits(firstPteOffset, pteBytes, size)) {
 			snapshot.gttRequiredPages = static_cast<uint32>(pageCount);
+			snapshot.gttSignature = valleyview::kGgttSignatureSeed;
 			for (uint32 index = 0; index < snapshot.gttRequiredPages;
 					index++) {
 				const uint32 pte = ReadMmio(registers,
 					static_cast<uint32>(firstPteOffset
 						+ index * valleyview::kGen7PteSize));
+				snapshot.gttSignature
+					= valleyview::AppendGgttPteSignature(
+						snapshot.gttSignature, pte);
 				if (index == 0)
 					snapshot.gttPte = pte;
 				if ((pte & valleyview::kGen7PtePresent) != 0)
@@ -364,8 +386,12 @@ InitDriver(device_node* node, void** cookie)
 
 	device->node = node;
 	device->gpuTestArea = -1;
+	device->registerArea = -1;
 	device->sharedArea = -1;
 	device->framebufferArea = -1;
+	device->p0PrivateArea = -1;
+	device->nativeStatus = B_NO_INIT;
+	device->bcsStatus = B_NO_INIT;
 	device_node* parent = gDeviceManager->get_parent_node(node);
 	if (parent == NULL) {
 		free(device);
@@ -404,6 +430,11 @@ InitDriver(device_node* node, void** cookie)
 		= (device->snapshot.flags
 			& valleyview::kSnapshotAdoptionCompatible) != 0
 		? B_OK : B_BAD_DATA;
+	status_t registerStatus = MapRuntimeRegisters(*device);
+	if (registerStatus != B_OK) {
+		dprintf("intel_valleyview: runtime MMIO mapping failed: %"
+			B_PRId32 "\n", registerStatus);
+	}
 
 	dprintf("intel_valleyview: found %04x:%04x at %02x:%02x.%x; driver is %s; "
 		"modeset is %s; device publication is %s\n",
@@ -443,10 +474,19 @@ UninitDriver(void* cookie)
 
 	if (device->sharedArea >= B_OK)
 		delete_area(device->sharedArea);
-	if (device->framebufferArea >= B_OK)
+	ShutdownP0(*device);
+	if (device->p0PrivateArea >= B_OK
+		&& !device->p0MemoryQuarantined) {
+		delete_area(device->p0PrivateArea);
+	}
+	if (device->framebufferArea >= B_OK
+		&& !device->p0MemoryQuarantined) {
 		delete_area(device->framebufferArea);
+	}
 	if (device->gpuTestArea >= B_OK && !device->gpuFaulted)
 		delete_area(device->gpuTestArea);
+	if (device->registerArea >= B_OK)
+		delete_area(device->registerArea);
 	mutex_destroy(&device->lock);
 	free(device);
 }
@@ -481,6 +521,10 @@ PublishValleyViewGraphics(ValleyViewDevice& device)
 		mutex_unlock(&device.lock);
 		return B_OK;
 	}
+	if (device.gpuFaulted || device.p0MemoryQuarantined) {
+		mutex_unlock(&device.lock);
+		return B_NOT_ALLOWED;
+	}
 	if (!valleyview::kDevicePublicationReady
 		|| device.snapshot.adoptionStatus != B_OK) {
 		mutex_unlock(&device.lock);
@@ -488,27 +532,42 @@ PublishValleyViewGraphics(ValleyViewDevice& device)
 	}
 
 	if (device.framebufferArea < B_OK) {
-		device.framebufferArea = map_physical_memory(
-			"intel_valleyview framebuffer",
-			device.snapshot.bootFramebufferPhysical,
-			device.snapshot.bootFramebufferSize, B_ANY_KERNEL_ADDRESS,
-			B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA, &device.framebuffer);
-		if (device.framebufferArea < B_OK) {
-			status_t status = device.framebufferArea;
-			device.framebufferArea = -1;
-			mutex_unlock(&device.lock);
-			return status;
-		}
-
-		status_t status = vm_set_area_memory_type(device.framebufferArea,
-			device.snapshot.bootFramebufferPhysical,
-			B_WRITE_COMBINING_MEMORY);
+		status_t status = InitializeP0(device);
 		if (status != B_OK) {
-			delete_area(device.framebufferArea);
-			device.framebufferArea = -1;
-			device.framebuffer = NULL;
-			mutex_unlock(&device.lock);
-			return status;
+			dprintf("intel_valleyview: native P0 takeover failed (%"
+				B_PRId32 "); retaining adopted framebuffer\n", status);
+			if (device.gpuFaulted || device.p0MemoryQuarantined) {
+				mutex_unlock(&device.lock);
+				return status;
+			}
+			status_t liveStatus = ValidateP0FirmwareState(device);
+			if (liveStatus != B_OK) {
+				mutex_unlock(&device.lock);
+				return liveStatus;
+			}
+			device.framebufferArea = map_physical_memory(
+				"intel_valleyview framebuffer",
+				device.snapshot.bootFramebufferPhysical,
+				device.snapshot.bootFramebufferSize, B_ANY_KERNEL_ADDRESS,
+				B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA,
+				&device.framebuffer);
+			if (device.framebufferArea < B_OK) {
+				status = device.framebufferArea;
+				device.framebufferArea = -1;
+				mutex_unlock(&device.lock);
+				return status;
+			}
+
+			status = vm_set_area_memory_type(device.framebufferArea,
+				device.snapshot.bootFramebufferPhysical,
+				B_WRITE_COMBINING_MEMORY);
+			if (status != B_OK) {
+				delete_area(device.framebufferArea);
+				device.framebufferArea = -1;
+				device.framebuffer = NULL;
+				mutex_unlock(&device.lock);
+				return status;
+			}
 		}
 	}
 
@@ -520,8 +579,18 @@ PublishValleyViewGraphics(ValleyViewDevice& device)
 		if (device.sharedArea < B_OK) {
 			status_t status = device.sharedArea;
 			device.sharedArea = -1;
-			delete_area(device.framebufferArea);
-			device.framebufferArea = -1;
+			ShutdownP0(device);
+			if (device.p0PrivateArea >= B_OK
+				&& !device.p0MemoryQuarantined) {
+				delete_area(device.p0PrivateArea);
+				device.p0PrivateArea = -1;
+				device.p0Private = NULL;
+			}
+			if (device.framebufferArea >= B_OK
+				&& !device.p0MemoryQuarantined) {
+				delete_area(device.framebufferArea);
+				device.framebufferArea = -1;
+			}
 			device.framebuffer = NULL;
 			mutex_unlock(&device.lock);
 			return status;
@@ -532,15 +601,28 @@ PublishValleyViewGraphics(ValleyViewDevice& device)
 			= valleyview::MakeAbiHeader(sizeof(*device.sharedInfo));
 		device.sharedInfo->modeListArea = -1;
 		device.sharedInfo->currentMode.virtual_width
-			= device.snapshot.bootWidth;
+			= device.nativeActive
+			? valleyview::kP0Width : device.snapshot.bootWidth;
 		device.sharedInfo->currentMode.virtual_height
-			= device.snapshot.bootHeight;
+			= device.nativeActive
+			? valleyview::kP0Height : device.snapshot.bootHeight;
 		device.sharedInfo->currentMode.space = B_RGB32;
-		device.sharedInfo->bytesPerRow = device.snapshot.bootBytesPerRow;
+		if (device.nativeActive) {
+			device.sharedInfo->currentMode.flags
+				= B_HARDWARE_CURSOR | B_DPMS;
+		}
+		device.sharedInfo->bytesPerRow = device.nativeActive
+			? valleyview::kP0BytesPerRow
+			: device.snapshot.bootBytesPerRow;
 		device.sharedInfo->framebufferPhysical
-			= device.snapshot.bootFramebufferPhysical;
+			= device.nativeActive
+			? device.snapshot.gmadrBase + device.p0Layout.framebuffer
+			: device.snapshot.bootFramebufferPhysical;
 		device.sharedInfo->framebufferSize
-			= device.snapshot.bootFramebufferSize;
+			= device.nativeActive
+			? valleyview::kP0FramebufferBytes
+			: device.snapshot.bootFramebufferSize;
+		device.sharedInfo->nativeActive = device.nativeActive ? 1 : 0;
 	}
 	char name[B_PATH_NAME_LENGTH];
 	snprintf(name, sizeof(name), "graphics/intel_valleyview_%02x%02x%02x",
@@ -552,6 +634,26 @@ PublishValleyViewGraphics(ValleyViewDevice& device)
 		kValleyViewDeviceModuleName);
 	if (status == B_OK)
 		device.graphicsPublished = true;
+	else {
+		if (device.sharedArea >= B_OK) {
+			delete_area(device.sharedArea);
+			device.sharedArea = -1;
+			device.sharedInfo = NULL;
+		}
+		ShutdownP0(device);
+		if (device.p0PrivateArea >= B_OK
+			&& !device.p0MemoryQuarantined) {
+			delete_area(device.p0PrivateArea);
+			device.p0PrivateArea = -1;
+			device.p0Private = NULL;
+		}
+		if (device.framebufferArea >= B_OK
+			&& !device.p0MemoryQuarantined) {
+			delete_area(device.framebufferArea);
+			device.framebufferArea = -1;
+		}
+		device.framebuffer = NULL;
+	}
 	mutex_unlock(&device.lock);
 	return status;
 }

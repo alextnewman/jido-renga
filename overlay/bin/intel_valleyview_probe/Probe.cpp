@@ -5,6 +5,8 @@
 #include <common/intel_valleyview/FirmwareState.h>
 #include <common/intel_valleyview/Protocol.h>
 
+#include <Accelerant.h>
+
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -99,9 +101,11 @@ PrintSnapshot(const valleyview::FirmwareSnapshot& snapshot)
 		YesNo((snapshot.flags & valleyview::kSnapshotPwmEnabled) != 0),
 		snapshot.pwmDuty, snapshot.pwmPeriod);
 	printf("cursor control=%#08" B_PRIx32 " enabled=%s base=%#08" B_PRIx32
-		" position=%#08" B_PRIx32 "\n", snapshot.cursorControl,
+		" position=%#08" B_PRIx32 " live=%#08" B_PRIx32 "\n",
+		snapshot.cursorControl,
 		YesNo((snapshot.flags & valleyview::kSnapshotCursorEnabled) != 0),
-		snapshot.cursorBase, snapshot.cursorPosition);
+		snapshot.cursorBase, snapshot.cursorPosition,
+		snapshot.cursorSurfaceLive);
 	printf("boot_framebuffer status=%" B_PRId32 " physical=%#" B_PRIx64
 		" size=%#" B_PRIx64 " area=%" B_PRId32 " mode=%" B_PRIu32
 		"x%" B_PRIu32 "x%" B_PRIu32 " stride=%" B_PRIu32
@@ -182,6 +186,26 @@ PrintGpuDiagnostics(const valleyview::GpuDiagnostics& diagnostics)
 	PrintGpuRegisterSnapshot("after", diagnostics.after);
 }
 
+
+void
+PrintP0Status(const valleyview::P0Status& status)
+{
+	printf("p0 flags=%#08" B_PRIx32 " native_status=%" B_PRId32
+		" bcs_status=%" B_PRId32 " mode=%" B_PRIu32 "x%" B_PRIu32
+		" stride=%" B_PRIu32 " dpms=%#08" B_PRIx32 "\n",
+		status.flags, status.nativeStatus, status.bcsStatus, status.width,
+		status.height, status.bytesPerRow, status.dpmsMode);
+	printf("p0_memory physical=%#" B_PRIx64 " ggtt=%#08" B_PRIx32
+		" pages=%" B_PRIu32 " cursor=%#08" B_PRIx32
+		" ring=%#08" B_PRIx32 " status=%#08" B_PRIx32 "\n",
+		status.physical, status.ggttOffset, status.ggttPages,
+		status.cursorOffset, status.ringOffset, status.statusOffset);
+	printf("p0_pwm duty=%" B_PRIu32 " period=%" B_PRIu32
+		" bcs_submissions=%" B_PRIu64 " failures=%" B_PRIu64 "\n",
+		status.pwmDuty, status.pwmPeriod, status.bcsSubmissions,
+		status.bcsFailures);
+}
+
 } // namespace
 
 
@@ -248,9 +272,85 @@ main(int argc, char** argv)
 			close(device);
 			return 1;
 		}
+	} else if (argc == 2
+		&& (strcmp(argv[1], "--p0-status") == 0
+			|| strcmp(argv[1], "--p0-test") == 0)) {
+		valleyview::P0Status p0 = {};
+		status = ioctl(device, valleyview::kGetP0Status, &p0, sizeof(p0));
+		if (status != B_OK
+			|| !valleyview::IsValidAbiHeader(p0.header, sizeof(p0))) {
+			fprintf(stderr,
+				"intel_valleyview_probe: P0 status failed: %s\n",
+				strerror(status));
+			close(device);
+			return 1;
+		}
+		PrintP0Status(p0);
+		if (strcmp(argv[1], "--p0-test") == 0) {
+			valleyview::P0SelfTest test = {};
+			test.header = valleyview::MakeAbiHeader(sizeof(test));
+			test.command = valleyview::kP0SelfTestArm;
+			status = ioctl(device, valleyview::kRunP0SelfTest, &test,
+				sizeof(test));
+			if (valleyview::IsValidAbiHeader(test.header, sizeof(test))) {
+				printf("p0_test status=%" B_PRId32 " flags=%#08"
+					B_PRIx32 "\n", test.status, test.flags);
+				PrintP0Status(test.after);
+			}
+			if (status != B_OK || test.status != B_OK) {
+				fprintf(stderr,
+					"intel_valleyview_probe: P0 BCS self-test failed\n");
+				close(device);
+				return 1;
+			}
+
+			valleyview::BrightnessRequest brightness = {};
+			status = ioctl(device, valleyview::kGetBrightness, &brightness,
+				sizeof(brightness));
+			if (status != B_OK) {
+				fprintf(stderr,
+					"intel_valleyview_probe: brightness read failed\n");
+				close(device);
+				return 1;
+			}
+			const float originalBrightness = brightness.value;
+			brightness.header
+				= valleyview::MakeAbiHeader(sizeof(brightness));
+			brightness.value = originalBrightness * 0.75f;
+			status = ioctl(device, valleyview::kSetBrightness, &brightness,
+				sizeof(brightness));
+			brightness.value = originalBrightness;
+			status_t restoreStatus = ioctl(device,
+				valleyview::kSetBrightness, &brightness,
+				sizeof(brightness));
+			if (status != B_OK || restoreStatus != B_OK) {
+				fprintf(stderr,
+					"intel_valleyview_probe: brightness cycle failed\n");
+				close(device);
+				return 1;
+			}
+
+			valleyview::DpmsRequest dpms = {};
+			dpms.header = valleyview::MakeAbiHeader(sizeof(dpms));
+			dpms.mode = B_DPMS_STAND_BY;
+			status = ioctl(device, valleyview::kSetDpms, &dpms,
+				sizeof(dpms));
+			snooze(100000);
+			dpms.mode = B_DPMS_ON;
+			restoreStatus = ioctl(device, valleyview::kSetDpms, &dpms,
+				sizeof(dpms));
+			if (status != B_OK || restoreStatus != B_OK) {
+				fprintf(stderr,
+					"intel_valleyview_probe: DPMS cycle failed\n");
+				close(device);
+				return 1;
+			}
+			printf("p0_test brightness_cycle=yes soft_dpms_cycle=yes\n");
+		}
 	} else if (argc != 1) {
 		fprintf(stderr, "usage: intel_valleyview_probe"
-			" [--publish|--gpu-diagnostics|--gpu-self-test]\n");
+			" [--publish|--gpu-diagnostics|--gpu-self-test"
+			"|--p0-status|--p0-test]\n");
 		close(device);
 		return 1;
 	}

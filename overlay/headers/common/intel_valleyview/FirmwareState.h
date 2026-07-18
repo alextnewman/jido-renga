@@ -43,6 +43,9 @@ constexpr uint32 kPwmControlA = kVlvDisplayBase + 0x61254;
 constexpr uint32 kCursorControlA = kVlvDisplayBase + 0x70080;
 constexpr uint32 kCursorBaseA = kVlvDisplayBase + 0x70084;
 constexpr uint32 kCursorPositionA = kVlvDisplayBase + 0x70088;
+constexpr uint32 kCursorPaletteA = kVlvDisplayBase + 0x70090;
+constexpr uint32 kCursorSurfaceLiveA = kVlvDisplayBase + 0x700ac;
+constexpr uint32 kFwBlcSelfVlv = kVlvDisplayBase + 0x6500;
 
 constexpr uint32 kLastSnapshotRegister = kPlaneSurfaceLiveA;
 
@@ -54,8 +57,12 @@ constexpr uint32 kDpPortEnable = 1u << 31;
 constexpr uint32 kPpsOn = 1u << 31;
 constexpr uint32 kPpsReady = 1u << 30;
 constexpr uint32 kPwmEnable = 1u << 31;
-constexpr uint32 kCursorEnable = 1u << 31;
 constexpr uint32 kPanelFitterEnable = 1u << 31;
+constexpr uint32 kFwCxsrEnable = 1u << 15;
+constexpr uint32 kCursorModeMask = 0x27;
+constexpr uint32 kCursorMode64TwoColor = 0x04;
+constexpr uint32 kCursorPositionNegative = 1u << 15;
+constexpr uint32 kCursorPositionMask = 0x7fff;
 constexpr uint32 kPlaneFormatMask = 0xfu << 26;
 constexpr uint32 kPlaneFormatBgrx888 = 6u << 26;
 constexpr uint32 kPlaneTiled = 1u << 10;
@@ -82,6 +89,8 @@ constexpr uint32 kMailboxAsle = 1u << 2;
 constexpr uint32 kMaxVbtSize = 1024 * 1024;
 constexpr uint32 kVbtHeaderSize = 48;
 constexpr uint32 kBdbHeaderSize = 22;
+constexpr uint64 kGgttSignatureSeed = 1469598103934665603ull;
+constexpr uint64 kGgttSignaturePrime = 1099511628211ull;
 
 
 inline uint16
@@ -190,6 +199,17 @@ DecodePtePhysical(uint32 pte)
 }
 
 
+inline uint64
+AppendGgttPteSignature(uint64 signature, uint32 pte)
+{
+	for (uint32 byte = 0; byte < sizeof(pte); byte++) {
+		signature ^= (pte >> (byte * 8)) & 0xff;
+		signature *= kGgttSignaturePrime;
+	}
+	return signature;
+}
+
+
 inline bool
 RangeFits(uint64 offset, uint64 length, uint64 size)
 {
@@ -236,7 +256,7 @@ DecodeFirmwareSnapshot(FirmwareSnapshot& snapshot)
 		snapshot.flags |= kSnapshotPpsReady;
 	if ((snapshot.pwmControl2 & kPwmEnable) != 0)
 		snapshot.flags |= kSnapshotPwmEnabled;
-	if ((snapshot.cursorControl & kCursorEnable) != 0)
+	if ((snapshot.cursorControl & kCursorModeMask) != 0)
 		snapshot.flags |= kSnapshotCursorEnabled;
 	if ((snapshot.panelFitterControl & kPanelFitterEnable) != 0)
 		snapshot.flags |= kSnapshotPanelFitterEnabled;

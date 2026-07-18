@@ -19,6 +19,8 @@ struct DisplaySharedInfo {
 	uint32			bytesPerRow;
 	uint64			framebufferPhysical;
 	uint64			framebufferSize;
+	uint8			nativeActive;
+	uint8			reserved[3];
 };
 
 } // namespace valleyview

@@ -57,6 +57,7 @@ TEST_SRC := \
 	iosf_mbi/test_iosf_mbi_protocol.cpp \
 	intel_valleyview/test_firmware_state.cpp \
 	intel_valleyview/test_gpu_core.cpp \
+	intel_valleyview/test_p0_core.cpp \
 	intel_valleyview/test_protocol.cpp \
 	i2c_atmel_mxt/test_object_table.cpp \
 	i2c_atmel_mxt/test_message_protocol.cpp \

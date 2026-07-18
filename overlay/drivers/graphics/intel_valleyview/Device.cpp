@@ -117,7 +117,15 @@ Control(void* cookie, uint32 operation, void* buffer, size_t length)
 			status.header = valleyview::MakeAbiHeader(sizeof(status));
 			status.capabilities = valleyview::kCapabilityGpuDiagnostics
 				| valleyview::kCapabilityBcsSelfTest;
-			if (device->snapshot.adoptionStatus == B_OK) {
+			if (device->nativeActive) {
+				status.capabilities |= valleyview::kCapabilityFirmwareAdoption
+					| valleyview::kCapabilityModeset
+					| valleyview::kCapabilityBacklight
+					| valleyview::kCapabilityCursor
+					| valleyview::kCapabilityDpms;
+				status.displayState = device->softBlanked
+					? valleyview::kSoftBlankedNative : valleyview::kActive;
+			} else if (device->snapshot.adoptionStatus == B_OK) {
 				status.capabilities
 					|= valleyview::kCapabilityFirmwareAdoption;
 				status.displayState = valleyview::kFirmwareAdopted;
@@ -164,7 +172,8 @@ Control(void* cookie, uint32 operation, void* buffer, size_t length)
 
 		case valleyview::kCloneFramebuffer:
 		{
-			if (device->framebufferArea < B_OK || buffer == NULL
+			if (device->p0MemoryQuarantined || device->framebufferArea < B_OK
+				|| buffer == NULL
 				|| length < sizeof(area_info)) {
 				return B_NO_INIT;
 			}
@@ -221,6 +230,195 @@ Control(void* cookie, uint32 operation, void* buffer, size_t length)
 			status = RunGpuSelfTest(*device, diagnostics);
 			status_t copyStatus = user_memcpy(buffer, &diagnostics,
 				sizeof(diagnostics));
+			return copyStatus == B_OK ? status : copyStatus;
+		}
+
+		case valleyview::kGetP0Status:
+		{
+			if (buffer == NULL || length < sizeof(valleyview::P0Status))
+				return B_BAD_VALUE;
+			valleyview::P0Status status;
+			mutex_lock(&device->lock);
+			GetP0Status(*device, status);
+			mutex_unlock(&device->lock);
+			return user_memcpy(buffer, &status, sizeof(status));
+		}
+
+		case valleyview::kGetBrightness:
+		{
+			if (buffer == NULL
+				|| length < sizeof(valleyview::BrightnessRequest)) {
+				return B_BAD_VALUE;
+			}
+			valleyview::BrightnessRequest request = {};
+			status_t status = GetBrightness(*device, request);
+			if (status != B_OK)
+				return status;
+			return user_memcpy(buffer, &request, sizeof(request));
+		}
+
+		case valleyview::kSetBrightness:
+		{
+			if (buffer == NULL
+				|| length < sizeof(valleyview::BrightnessRequest)) {
+				return B_BAD_VALUE;
+			}
+			valleyview::BrightnessRequest request;
+			status_t status = user_memcpy(&request, buffer,
+				sizeof(request));
+			if (status != B_OK)
+				return status;
+			if (!valleyview::IsValidAbiHeader(request.header,
+					sizeof(request))) {
+				return B_BAD_VALUE;
+			}
+			return SetBrightness(*device, request);
+		}
+
+		case valleyview::kGetDpms:
+		{
+			if (buffer == NULL
+				|| length < sizeof(valleyview::DpmsRequest)) {
+				return B_BAD_VALUE;
+			}
+			valleyview::DpmsRequest request = {};
+			status_t status = GetDpms(*device, request);
+			if (status != B_OK)
+				return status;
+			return user_memcpy(buffer, &request, sizeof(request));
+		}
+
+		case valleyview::kSetDpms:
+		{
+			if (buffer == NULL
+				|| length < sizeof(valleyview::DpmsRequest)) {
+				return B_BAD_VALUE;
+			}
+			valleyview::DpmsRequest request;
+			status_t status = user_memcpy(&request, buffer,
+				sizeof(request));
+			if (status != B_OK)
+				return status;
+			if (!valleyview::IsValidAbiHeader(request.header,
+					sizeof(request))) {
+				return B_BAD_VALUE;
+			}
+			return SetDpms(*device, request);
+		}
+
+		case valleyview::kSetCursorShape:
+		{
+			if (buffer == NULL
+				|| length < sizeof(valleyview::CursorShapeRequest)) {
+				return B_BAD_VALUE;
+			}
+			valleyview::CursorShapeRequest request;
+			status_t status = user_memcpy(&request, buffer,
+				sizeof(request));
+			if (status != B_OK)
+				return status;
+			if (!valleyview::IsValidAbiHeader(request.header,
+					sizeof(request))) {
+				return B_BAD_VALUE;
+			}
+			return SetCursorShape(*device, request);
+		}
+
+		case valleyview::kMoveCursor:
+		{
+			if (buffer == NULL
+				|| length < sizeof(valleyview::CursorMoveRequest)) {
+				return B_BAD_VALUE;
+			}
+			valleyview::CursorMoveRequest request;
+			status_t status = user_memcpy(&request, buffer,
+				sizeof(request));
+			if (status != B_OK)
+				return status;
+			if (!valleyview::IsValidAbiHeader(request.header,
+					sizeof(request))) {
+				return B_BAD_VALUE;
+			}
+			return MoveCursor(*device, request);
+		}
+
+		case valleyview::kShowCursor:
+		{
+			if (buffer == NULL
+				|| length < sizeof(valleyview::CursorShowRequest)) {
+				return B_BAD_VALUE;
+			}
+			valleyview::CursorShowRequest request;
+			status_t status = user_memcpy(&request, buffer,
+				sizeof(request));
+			if (status != B_OK)
+				return status;
+			if (!valleyview::IsValidAbiHeader(request.header,
+					sizeof(request))) {
+				return B_BAD_VALUE;
+			}
+			return ShowCursor(*device, request);
+		}
+
+		case valleyview::kBcsFill:
+		{
+			if (buffer == NULL
+				|| length < sizeof(valleyview::BcsFillRequest)) {
+				return B_BAD_VALUE;
+			}
+			valleyview::BcsFillRequest request;
+			status_t status = user_memcpy(&request, buffer,
+				sizeof(request));
+			if (status != B_OK)
+				return status;
+			if (!valleyview::IsValidAbiHeader(request.header,
+					sizeof(request))) {
+				return B_BAD_VALUE;
+			}
+			return SubmitBcsFill(*device, request);
+		}
+
+		case valleyview::kBcsBlit:
+		{
+			if (buffer == NULL
+				|| length < sizeof(valleyview::BcsBlitRequest)) {
+				return B_BAD_VALUE;
+			}
+			valleyview::BcsBlitRequest request;
+			status_t status = user_memcpy(&request, buffer,
+				sizeof(request));
+			if (status != B_OK)
+				return status;
+			if (!valleyview::IsValidAbiHeader(request.header,
+					sizeof(request))) {
+				return B_BAD_VALUE;
+			}
+			return SubmitBcsBlit(*device, request);
+		}
+
+		case valleyview::kRunP0SelfTest:
+		{
+			if (buffer == NULL
+				|| length < sizeof(valleyview::P0SelfTest)) {
+				return B_BAD_VALUE;
+			}
+			valleyview::P0SelfTest test;
+			status_t status = user_memcpy(&test, buffer, sizeof(test));
+			if (status != B_OK)
+				return status;
+			if (!valleyview::IsValidAbiHeader(test.header, sizeof(test))
+				|| test.command != valleyview::kP0SelfTestArm) {
+				return B_BAD_VALUE;
+			}
+
+			mutex_lock(&device->lock);
+			GetP0Status(*device, test.before);
+			status = InitializeBcsRuntime(*device);
+			GetP0Status(*device, test.after);
+			mutex_unlock(&device->lock);
+			test.status = status;
+			test.flags = test.after.flags;
+			status_t copyStatus = user_memcpy(buffer, &test, sizeof(test));
 			return copyStatus == B_OK ? status : copyStatus;
 		}
 
