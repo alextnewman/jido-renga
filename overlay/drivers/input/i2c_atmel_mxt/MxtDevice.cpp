@@ -8,6 +8,7 @@
 
 
 #include "Driver.h"
+#include "MessageProtocol.h"
 #include "MxtDevice.h"
 #include "TouchEngine.h"
 
@@ -389,23 +390,14 @@ MxtDevice::_DrainAndAggregate(mxt_touch_batch& batch)
 
 	// Per spec §9.4: T44 sits immediately before T5, so a single
 	// burst from T44 returns count byte + first message.
+	mxt_message_read_step firstRead = MxtMessageReadStep(0, fT44Address,
+		fT5Address, fT5MsgSize);
 	uint8 addr[2];
-	_EncodeAddr(fT44Address, addr);
-	size_t readSize = 1 + fT5MsgSize;
+	_EncodeAddr(firstRead.address, addr);
 
-	// Write phase: set I2C pointer to T44
-	status_t status = fI2C->exec_command(fI2CCookie, I2C_OP_WRITE_STOP,
-		addr, sizeof(addr), NULL, 0);
-	if (status != B_OK) {
-		ERROR("drain: T44 write failed: %s\n", strerror(status));
-		return status;
-	}
-	snooze(50);
-
-	// Read phase: count + first message in one burst
 	uint8 countMsg[TRANSFER_BUFFER_SIZE];
-	status = fI2C->exec_command(fI2CCookie, I2C_OP_READ_STOP,
-		NULL, 0, countMsg, readSize);
+	status_t status = _FetchBufferLocked(addr, sizeof(addr), countMsg,
+		firstRead.length);
 	if (status != B_OK) {
 		ERROR("drain: T44 read failed: %s\n", strerror(status));
 		return status;
@@ -423,7 +415,11 @@ MxtDevice::_DrainAndAggregate(mxt_touch_batch& batch)
 		return B_BUFFER_OVERFLOW;
 	}
 
-	TRACE("drain: T44 count=%u, msgSize=%" B_PRIuSIZE "\n", count, readSize);
+	TRACE("drain: T44 count=%u, msgSize=%" B_PRIuSIZE "\n", count,
+		firstRead.length);
+
+	const uint8* firstMessage
+		= countMsg + (firstRead.includesCount ? 1 : 0);
 
 	// Feed all messages through the touch engine for stateful processing.
 	// The engine retains individual contacts between T44 batches and preserves
@@ -431,17 +427,25 @@ MxtDevice::_DrainAndAggregate(mxt_touch_batch& batch)
 	if (fTouchEngine != NULL) {
 		bigtime_t timestamp = system_time();
 		// Process first message (already in countMsg[1..msgSize])
-		status_t engineStatus = fTouchEngine->ProcessMessage(countMsg + 1,
+		status_t engineStatus = fTouchEngine->ProcessMessage(firstMessage,
 			fT5MsgSize,
 			fT9ReportIDMin, fT9ReportIDMax,
 			fT100ReportIDMin, fT100ReportIDMax,
 			fT19ReportID, fHasT9, fHasT100, timestamp);
 
-		// Read remaining messages (device auto-increments pointer)
+		// T5 is a FIFO-like object, not ordinary memory following the first
+		// message. Re-address it for every additional read. The power-on
+		// drain uses the same sequence, as do the established maXTouch host
+		// implementations; relying on the post-T44 memory pointer can skip
+		// a queued lifecycle message such as a contact release.
 		uint8 msgBuf[MXT_MSG_SIZE];
+		uint8 messageAddr[2];
 		for (uint8 i = 1; i < count; i++) {
-			status = fI2C->exec_command(fI2CCookie, I2C_OP_READ_STOP,
-				NULL, 0, msgBuf, fT5MsgSize);
+			mxt_message_read_step nextRead = MxtMessageReadStep(i,
+				fT44Address, fT5Address, fT5MsgSize);
+			_EncodeAddr(nextRead.address, messageAddr);
+			status = _FetchBufferLocked(messageAddr, sizeof(messageAddr),
+				msgBuf, nextRead.length);
 			if (status != B_OK) {
 				ERROR("drain: T5 message %u read failed: %s\n", i,
 					strerror(status));
@@ -465,12 +469,16 @@ MxtDevice::_DrainAndAggregate(mxt_touch_batch& batch)
 		// Fallback: legacy aggregate path (no gesture engine)
 		mxt_touch_state state;
 		memset(&state, 0, sizeof(state));
-		_ProcessMessage(countMsg + 1, fT5MsgSize, state);
+		_ProcessMessage(firstMessage, fT5MsgSize, state);
 
 		uint8 msgBuf[MXT_MSG_SIZE];
+		uint8 messageAddr[2];
 		for (uint8 i = 1; i < count; i++) {
-			status = fI2C->exec_command(fI2CCookie, I2C_OP_READ_STOP,
-				NULL, 0, msgBuf, fT5MsgSize);
+			mxt_message_read_step nextRead = MxtMessageReadStep(i,
+				fT44Address, fT5Address, fT5MsgSize);
+			_EncodeAddr(nextRead.address, messageAddr);
+			status = _FetchBufferLocked(messageAddr, sizeof(messageAddr),
+				msgBuf, nextRead.length);
 			if (status != B_OK) {
 				ERROR("drain: T5 message %u read failed: %s\n", i,
 					strerror(status));
@@ -636,18 +644,32 @@ status_t
 MxtDevice::_FetchBuffer(uint8* cmd, size_t cmdLength, void* buffer,
 	size_t bufferLength)
 {
+	I2cBusGuard guard(fI2C, fI2CCookie);
+	status_t status = guard.Acquire();
+	if (status != B_OK)
+		return status;
+
+	return _FetchBufferLocked(cmd, cmdLength, buffer, bufferLength);
+}
+
+
+status_t
+MxtDevice::_FetchBufferLocked(uint8* cmd, size_t cmdLength, void* buffer,
+	size_t bufferLength)
+{
 	if (bufferLength == 0)
 		return B_BAD_VALUE;
 
 	// BayTrail DesignWare I2C: separate write (set address pointer) and read.
-	status_t status = _ExecCommand(I2C_OP_WRITE_STOP, cmd, cmdLength,
-		NULL, 0);
+	status_t status = fI2C->exec_command(fI2CCookie, I2C_OP_WRITE_STOP,
+		cmd, cmdLength, NULL, 0);
 	if (status != B_OK)
 		return status;
 
 	snooze(50);	// 50us for device to latch register address
 
-	status = _ExecCommand(I2C_OP_READ_STOP, NULL, 0, buffer, bufferLength);
+	status = fI2C->exec_command(fI2CCookie, I2C_OP_READ_STOP, NULL, 0,
+		buffer, bufferLength);
 	if (status != B_OK)
 		return status;
 
@@ -833,6 +855,16 @@ MxtDevice::_ParseObjectTable()
 		}
 	}
 
+	if (fT5MsgSize == 0 || fT5MsgSize > MXT_MSG_SIZE) {
+		ERROR("invalid T5 message size %u\n", fT5MsgSize);
+		return B_BAD_DATA;
+	}
+	if (fT44Address == 0 || fT5Address != fT44Address + 1) {
+		ERROR("invalid T44/T5 layout: T44=0x%04x T5=0x%04x\n",
+			fT44Address, fT5Address);
+		return B_BAD_DATA;
+	}
+
 	TRACE_ALWAYS("Object table: T9=%s(0x%04x,%u-%u), T100=%s(0x%04x,%u-%u), "
 		"T5=0x%04x(%u), T6=0x%04x, T44=0x%04x\n",
 		fHasT9 ? "yes" : "no", fT9Address, fT9ReportIDMin, fT9ReportIDMax,
@@ -850,8 +882,8 @@ MxtDevice::_ParseObjectTable()
 
 //! Write bytes to an object register using the bundled maXTouch I2C
 //! protocol (addr + data in one transaction), then read back and verify.
-//! Each phase is its own full transaction — _ExecCommand acquires/releases
-//! the bus independently, and waits for STOP_DET before returning.
+//! The write and read-back are separate operations; the read-back keeps bus
+//! ownership across its pointer-set and read transactions.
 status_t
 MxtDevice::_WriteObjectVerify(uint16 addr, const uint8* data, size_t len,
 	const char* label)
@@ -1087,13 +1119,14 @@ MxtDevice::_DrainInitMessages()
 	if (fT44Address == 0 || fT5MsgSize == 0)
 		return B_ERROR;
 
+	mxt_message_read_step firstRead = MxtMessageReadStep(0, fT44Address,
+		fT5Address, fT5MsgSize);
 	uint8 addr[2];
-	_EncodeAddr(fT44Address, addr);
+	_EncodeAddr(firstRead.address, addr);
 
 	// Read count + first message in one burst
-	uint8 buf[MXT_MSG_SIZE];
-	size_t readSize = MIN((size_t)(1 + fT5MsgSize), sizeof(buf));
-	status_t status = _FetchBuffer(addr, sizeof(addr), buf, readSize);
+	uint8 buf[TRANSFER_BUFFER_SIZE];
+	status_t status = _FetchBuffer(addr, sizeof(addr), buf, firstRead.length);
 	if (status != B_OK)
 		return status;
 
@@ -1101,12 +1134,15 @@ MxtDevice::_DrainInitMessages()
 	if (count == 0 || count >= 0xFF)
 		return B_OK;
 
-	// Read remaining messages from T5 address (auto-incrementing)
-	uint8 t5Addr[2];
-	_EncodeAddr(fT5Address, t5Addr);
-
+	uint8 messageAddr[2];
 	for (uint8 i = 1; i < count; i++) {
-		_FetchBuffer(t5Addr, sizeof(t5Addr), buf, fT5MsgSize);
+		mxt_message_read_step nextRead = MxtMessageReadStep(i,
+			fT44Address, fT5Address, fT5MsgSize);
+		_EncodeAddr(nextRead.address, messageAddr);
+		status = _FetchBuffer(messageAddr, sizeof(messageAddr), buf,
+			nextRead.length);
+		if (status != B_OK)
+			return status;
 	}
 
 	TRACE("Drained %u init messages\n", count);

@@ -119,6 +119,9 @@ private:
 									size_t bufferLength);
 			status_t			_FetchBuffer(uint8* cmd, size_t cmdLength,
 									void* buffer, size_t bufferLength);
+			status_t			_FetchBufferLocked(uint8* cmd,
+									size_t cmdLength, void* buffer,
+									size_t bufferLength);
 			void				_EncodeAddr(uint16 addr, uint8* out);
 
 			// OBP discovery

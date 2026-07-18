@@ -41,7 +41,7 @@ The worker owns message I/O:
 
 1. acquire the I2C bus;
 2. read T44 and the first T5 message in one transaction;
-3. read the remaining queued T5 messages;
+3. re-address T5 and read each remaining queued message;
 4. pass every message to `TouchEngine`;
 5. flush the ordered output frames into the event ring;
 6. repeat until T44 reports an empty queue.
@@ -50,6 +50,11 @@ This keeps I2C out of interrupt context and leaves the driver asleep when the
 touchpad is idle. The input server blocks on a separate condition variable until
 the ring contains an event. The empty check and condition-variable wait share
 the ring mutex so a final release frame cannot be stranded by a lost wakeup.
+
+T5 is a FIFO-like message object, not ordinary memory following the first
+message. Every follow-up read therefore sets the address pointer back to T5.
+Relying on the pointer left after the combined T44/T5 read can skip a queued
+lifecycle message, including the release that makes a contact slot inactive.
 
 ## Touch state
 
@@ -107,7 +112,7 @@ wedging the device.
 
 The authoritative-slot and ordered-frame implementation is validated on Winky
 for smooth pointer movement, physical clickpad input, two-finger scrolling, and
-physical two-finger right-click without cursor jumps or loss of interaction.
+physical two-finger right-click without cursor jumps or retained-contact stalls.
 The controller lifecycle is also covered by host-side message-sequence tests.
 
 Current limitations:

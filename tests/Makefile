@@ -9,7 +9,7 @@
 #   * sdhci_embedded  (matcher, command policy, convergence, ADMA2, CSD,
 #                      transactions, personalities)
 #   * iosf_mbi        (mailbox protocol)
-#   * i2c_atmel_mxt   (object-table parser, CRC characterization, touch engine)
+#   * i2c_atmel_mxt   (message-read protocol, object table, touch engine)
 #                     -- compiled against the minimal kernel-header shims in
 #                     shims/ so pure driver logic can run on the host.
 #
@@ -55,6 +55,7 @@ TEST_SRC := \
 	sdhci_embedded/test_staged_request.cpp \
 	iosf_mbi/test_iosf_mbi_protocol.cpp \
 	i2c_atmel_mxt/test_object_table.cpp \
+	i2c_atmel_mxt/test_message_protocol.cpp \
 	i2c_atmel_mxt/test_touch_engine.cpp \
 	byt_max98090/test_firmware.cpp \
 	byt_gpio/test_baytrail_gpio.cpp \

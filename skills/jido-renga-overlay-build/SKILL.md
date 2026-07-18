@@ -118,6 +118,14 @@ The Winky image applies three surgical composition policies:
    `bus_managers/i2c` filename. Unchanged I2C companion units compile directly
    from the captive tree; no captive source is copied or rewritten.
 
+### maXTouch message-drain invariant
+
+For `i2c_atmel_mxt`, read T44 and the first T5 message together, then explicitly
+set the pointer back to T5 before every follow-up message read. T5 is a FIFO-like
+object, not linear memory after the first message; an addressless continuation
+can lose a contact release. Keep runtime and initialization drains on the shared
+`MxtMessageReadStep()` contract and its host tests.
+
 ## The derivative-revision seam
 
 Haiku stamps a **revision** (normally an `hrev` number) into `libroot`, surfaced
