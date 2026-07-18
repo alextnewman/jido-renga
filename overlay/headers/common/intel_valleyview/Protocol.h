@@ -13,7 +13,7 @@ constexpr uint16 kIntelVendorId = 0x8086;
 constexpr uint16 kWinkyDeviceId = 0x0f31;
 
 constexpr uint32 kProtocolMagic = 0x564c5657;
-constexpr uint16 kProtocolVersion = 8;
+constexpr uint16 kProtocolVersion = 9;
 
 constexpr bool kDefaultEnabled = true;
 constexpr bool kDefaultAllowModeset = true;
@@ -39,7 +39,8 @@ enum {
 	kShowCursor,
 	kBcsFill,
 	kBcsBlit,
-	kRunP0SelfTest
+	kRunP0SelfTest,
+	kSetCursorBitmap
 };
 
 enum DisplayState : uint32 {
@@ -315,8 +316,29 @@ struct P0Status {
 	uint32		dpmsMode;
 	uint32		pwmDuty;
 	uint32		pwmPeriod;
+	uint32		pipeSource;
+	uint32		planeControl;
+	uint32		planeStride;
+	uint32		planeSurface;
+	uint32		planeSurfaceLive;
+	uint32		panelFitterControl;
+	uint32		panelFitterProgrammedRatios;
+	uint32		panelFitterAutoRatios;
+	uint32		cursorControl;
+	uint32		cursorBase;
+	uint32		cursorPosition;
+	uint32		cursorSurfaceLive;
+	uint32		cursorVisible;
 	uint64		bcsSubmissions;
 	uint64		bcsFailures;
+	uint64		bcsFillRequests;
+	uint64		bcsBlitRequests;
+	uint64		cpuFillFallbacks;
+	uint64		cpuBlitFallbacks;
+	uint64		cursorShapeUpdates;
+	uint64		cursorBitmapUpdates;
+	uint64		cursorMoveUpdates;
+	uint64		cursorShowUpdates;
 };
 
 struct BrightnessRequest {
@@ -355,6 +377,20 @@ struct CursorShowRequest {
 	uint8		visible;
 	uint8		reserved[3];
 };
+
+
+constexpr uint32 kCursorBitmapPixels
+	= kCursorMaxWidth * kCursorMaxHeight;
+
+struct CursorBitmapRequest {
+	AbiHeader	header;
+	uint16		width;
+	uint16		height;
+	uint16		hotX;
+	uint16		hotY;
+	uint32		pixels[kCursorBitmapPixels];
+};
+
 
 constexpr uint32 kBcsMaxOperations = 64;
 

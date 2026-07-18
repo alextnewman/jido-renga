@@ -61,6 +61,7 @@ constexpr uint32 kPanelFitterEnable = 1u << 31;
 constexpr uint32 kFwCxsrEnable = 1u << 15;
 constexpr uint32 kCursorModeMask = 0x27;
 constexpr uint32 kCursorMode64TwoColor = 0x04;
+constexpr uint32 kCursorMode64Argb = 0x27;
 constexpr uint32 kCursorPositionNegative = 1u << 15;
 constexpr uint32 kCursorPositionMask = 0x7fff;
 constexpr uint32 kPlaneFormatMask = 0xfu << 26;

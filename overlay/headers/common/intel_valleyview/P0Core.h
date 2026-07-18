@@ -16,7 +16,9 @@ constexpr uint32 kP0FramebufferBytes = kP0BytesPerRow * kP0Height;
 constexpr uint32 kP0FramebufferPages
 	= kP0FramebufferBytes / kPageSize;
 constexpr uint32 kP0CursorPage = kP0FramebufferPages;
-constexpr uint32 kP0RingPage = kP0CursorPage + 1;
+constexpr uint32 kP0CursorPages = 4;
+constexpr uint32 kP0CursorBytes = kP0CursorPages * kPageSize;
+constexpr uint32 kP0RingPage = kP0CursorPage + kP0CursorPages;
 constexpr uint32 kP0StatusPage = kP0RingPage + 1;
 constexpr uint32 kP0TestSourcePage = kP0StatusPage + 1;
 constexpr uint32 kP0TestDestinationPage = kP0TestSourcePage + 1;

@@ -65,17 +65,19 @@ JR_TEST(intel_valleyview_p0, native_layout_is_page_exact)
 {
 	JR_CHECK_EQ(kP0FramebufferBytes, 0x408000u);
 	JR_CHECK_EQ(kP0FramebufferPages, 1032u);
-	JR_CHECK_EQ(kP0PageCount, 1037u);
-	JR_CHECK_EQ(kP0AllocationBytes, 0x40d000u);
-	JR_CHECK_EQ(kP0PrivatePageCount, 5u);
-	JR_CHECK_EQ(kP0PrivateBytes, 0x5000u);
+	JR_CHECK_EQ(kP0CursorPages, 4u);
+	JR_CHECK_EQ(kP0CursorBytes, 0x4000u);
+	JR_CHECK_EQ(kP0PageCount, 1040u);
+	JR_CHECK_EQ(kP0AllocationBytes, 0x410000u);
+	JR_CHECK_EQ(kP0PrivatePageCount, 8u);
+	JR_CHECK_EQ(kP0PrivateBytes, 0x8000u);
 
 	P0Layout layout = {};
 	JR_CHECK(BuildP0Layout(256u * 1024 * 1024, 0, 3u * 1024 * 1024,
 		layout));
-	JR_CHECK_EQ(layout.base, 0x0fbf3000u);
+	JR_CHECK_EQ(layout.base, 0x0fbf0000u);
 	JR_CHECK_EQ(layout.framebuffer, layout.base);
-	JR_CHECK_EQ(layout.cursor, 0x0fffb000u);
+	JR_CHECK_EQ(layout.cursor, 0x0fff8000u);
 	JR_CHECK_EQ(layout.ring, 0x0fffc000u);
 	JR_CHECK_EQ(layout.status, 0x0fffd000u);
 	JR_CHECK_EQ(layout.testSource, 0x0fffe000u);

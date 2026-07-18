@@ -503,7 +503,7 @@ ProgramCursor(ValleyViewDevice& device)
 	const int32 x = device.cursorX - static_cast<int32>(device.cursorHotX);
 	const int32 y = device.cursorY - static_cast<int32>(device.cursorHotY);
 	const uint32 control = device.cursorVisible && !device.softBlanked
-		? valleyview::kCursorMode64TwoColor : 0;
+		? device.cursorMode : 0;
 	WriteMmio(device, valleyview::kCursorControlA, control);
 	WriteMmio(device, valleyview::kCursorPositionA,
 		valleyview::EncodeCursorPosition(x, y));
@@ -516,12 +516,13 @@ void
 InitializeCursorMemory(ValleyViewDevice& device)
 {
 	uint8* cursor = static_cast<uint8*>(device.p0Private);
-	memset(cursor, 0, valleyview::kPageSize);
+	memset(cursor, 0, valleyview::kP0CursorBytes);
 	for (uint32 y = 0; y < valleyview::kCursorMaxHeight; y++)
 		memset(cursor + y * 16, 0xff, 8);
 	memory_write_barrier();
 	WriteMmio(device, valleyview::kCursorPaletteA, 0x00ffffff);
 	WriteMmio(device, valleyview::kCursorPaletteA + 4, 0);
+	device.cursorMode = valleyview::kCursorMode64TwoColor;
 	device.cursorReady = true;
 	ProgramCursor(device);
 }
@@ -730,8 +731,37 @@ GetP0Status(const ValleyViewDevice& device, valleyview::P0Status& status)
 	status.pwmPeriod = device.nativeActive
 		? valleyview::PwmPeriod(ReadMmio(device, valleyview::kPwmControlA))
 		: device.snapshot.pwmPeriod;
+	if (device.registers != NULL) {
+		status.pipeSource = ReadMmio(device, valleyview::kPipeSourceA);
+		status.planeControl = ReadMmio(device, valleyview::kPlaneControlA);
+		status.planeStride = ReadMmio(device, valleyview::kPlaneStrideA);
+		status.planeSurface = ReadMmio(device, valleyview::kPlaneSurfaceA);
+		status.planeSurfaceLive
+			= ReadMmio(device, valleyview::kPlaneSurfaceLiveA);
+		status.panelFitterControl
+			= ReadMmio(device, valleyview::kPanelFitterControl);
+		status.panelFitterProgrammedRatios
+			= ReadMmio(device, valleyview::kPanelFitterProgrammedRatios);
+		status.panelFitterAutoRatios
+			= ReadMmio(device, valleyview::kPanelFitterAutoRatios);
+		status.cursorControl = ReadMmio(device, valleyview::kCursorControlA);
+		status.cursorBase = ReadMmio(device, valleyview::kCursorBaseA);
+		status.cursorPosition = ReadMmio(device,
+			valleyview::kCursorPositionA);
+		status.cursorSurfaceLive = ReadMmio(device,
+			valleyview::kCursorSurfaceLiveA);
+	}
+	status.cursorVisible = device.cursorVisible ? 1 : 0;
 	status.bcsSubmissions = device.bcsSubmissions;
 	status.bcsFailures = device.bcsFailures;
+	status.bcsFillRequests = device.bcsFillRequests;
+	status.bcsBlitRequests = device.bcsBlitRequests;
+	status.cpuFillFallbacks = device.cpuFillFallbacks;
+	status.cpuBlitFallbacks = device.cpuBlitFallbacks;
+	status.cursorShapeUpdates = device.cursorShapeUpdates;
+	status.cursorBitmapUpdates = device.cursorBitmapUpdates;
+	status.cursorMoveUpdates = device.cursorMoveUpdates;
+	status.cursorShowUpdates = device.cursorShowUpdates;
 }
 
 
@@ -835,7 +865,7 @@ SetCursorShape(ValleyViewDevice& device,
 	}
 
 	uint8* cursor = static_cast<uint8*>(device.p0Private);
-	memset(cursor, 0, valleyview::kPageSize);
+	memset(cursor, 0, valleyview::kP0CursorBytes);
 	for (uint32 y = 0; y < valleyview::kCursorMaxHeight; y++)
 		memset(cursor + y * 16, 0xff, 8);
 	const uint32 byteWidth = (request.width + 7) / 8;
@@ -848,6 +878,36 @@ SetCursorShape(ValleyViewDevice& device,
 	memory_write_barrier();
 	device.cursorHotX = request.hotX;
 	device.cursorHotY = request.hotY;
+	device.cursorMode = valleyview::kCursorMode64TwoColor;
+	device.cursorShapeUpdates++;
+	ProgramCursor(device);
+	mutex_unlock(&device.lock);
+	return B_OK;
+}
+
+
+status_t
+SetCursorBitmap(ValleyViewDevice& device,
+	const valleyview::CursorBitmapRequest& request)
+{
+	if (request.width == 0 || request.height == 0
+		|| request.width > valleyview::kCursorMaxWidth
+		|| request.height > valleyview::kCursorMaxHeight
+		|| request.hotX >= request.width || request.hotY >= request.height) {
+		return B_BAD_VALUE;
+	}
+
+	mutex_lock(&device.lock);
+	if (!device.nativeActive || !device.cursorReady) {
+		mutex_unlock(&device.lock);
+		return B_NO_INIT;
+	}
+	memcpy(device.p0Private, request.pixels, valleyview::kP0CursorBytes);
+	memory_write_barrier();
+	device.cursorHotX = request.hotX;
+	device.cursorHotY = request.hotY;
+	device.cursorMode = valleyview::kCursorMode64Argb;
+	device.cursorBitmapUpdates++;
 	ProgramCursor(device);
 	mutex_unlock(&device.lock);
 	return B_OK;
@@ -865,6 +925,7 @@ MoveCursor(ValleyViewDevice& device,
 	}
 	device.cursorX = request.x;
 	device.cursorY = request.y;
+	device.cursorMoveUpdates++;
 	ProgramCursor(device);
 	mutex_unlock(&device.lock);
 	return B_OK;
@@ -881,6 +942,7 @@ ShowCursor(ValleyViewDevice& device,
 		return B_NO_INIT;
 	}
 	device.cursorVisible = request.visible != 0;
+	device.cursorShowUpdates++;
 	ProgramCursor(device);
 	mutex_unlock(&device.lock);
 	return B_OK;

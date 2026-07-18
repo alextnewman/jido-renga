@@ -71,6 +71,7 @@ JR_TEST(intel_valleyview, assigns_stable_private_operations)
 	JR_CHECK_EQ(kBcsFill, 10017);
 	JR_CHECK_EQ(kBcsBlit, 10018);
 	JR_CHECK_EQ(kRunP0SelfTest, 10019);
+	JR_CHECK_EQ(kSetCursorBitmap, 10020);
 	JR_CHECK_NE(kGetDeviceName, kGetDriverStatus);
 	JR_CHECK_NE(kGetDriverStatus, kGetDeviceIdentity);
 }
@@ -84,4 +85,12 @@ JR_TEST(intel_valleyview, validates_gpu_diagnostic_abi)
 	JR_CHECK(IsValidAbiHeader(diagnostics.header, sizeof(diagnostics)));
 	JR_CHECK_EQ(diagnostics.command, 0x42435330u);
 	JR_CHECK_EQ((uint32)kGpuStageRestored, 8u);
+}
+
+
+JR_TEST(intel_valleyview, carries_a_complete_argb_cursor)
+{
+	JR_CHECK_EQ(kCursorBitmapPixels, 4096u);
+	JR_CHECK_EQ(sizeof(((CursorBitmapRequest*)0)->pixels), 16384u);
+	JR_CHECK(sizeof(CursorBitmapRequest) < UINT16_MAX);
 }

@@ -9,6 +9,7 @@
 #include <graphic_driver.h>
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <vm/vm.h>
 
@@ -322,6 +323,29 @@ Control(void* cookie, uint32 operation, void* buffer, size_t length)
 				return B_BAD_VALUE;
 			}
 			return SetCursorShape(*device, request);
+		}
+
+		case valleyview::kSetCursorBitmap:
+		{
+			if (buffer == NULL
+				|| length < sizeof(valleyview::CursorBitmapRequest)) {
+				return B_BAD_VALUE;
+			}
+			valleyview::CursorBitmapRequest* request
+				= static_cast<valleyview::CursorBitmapRequest*>(
+					malloc(sizeof(valleyview::CursorBitmapRequest)));
+			if (request == NULL)
+				return B_NO_MEMORY;
+			status_t status = user_memcpy(request, buffer, sizeof(*request));
+			if (status == B_OK
+				&& !valleyview::IsValidAbiHeader(request->header,
+					sizeof(*request))) {
+				status = B_BAD_VALUE;
+			}
+			if (status == B_OK)
+				status = SetCursorBitmap(*device, *request);
+			free(request);
+			return status;
 		}
 
 		case valleyview::kMoveCursor:

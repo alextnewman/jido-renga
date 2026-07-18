@@ -1157,6 +1157,7 @@ SubmitBcsFill(ValleyViewDevice& device,
 		mutex_unlock(&device.lock);
 		return B_NO_INIT;
 	}
+	device.bcsFillRequests++;
 
 	status_t status = B_NO_INIT;
 	if (device.bcsReady) {
@@ -1193,6 +1194,7 @@ SubmitBcsFill(ValleyViewDevice& device,
 	}
 	if (status != B_OK && !device.gpuFaulted) {
 		CpuFillLocked(device, request);
+		device.cpuFillFallbacks++;
 		status = B_OK;
 	}
 	mutex_unlock(&device.lock);
@@ -1228,6 +1230,7 @@ SubmitBcsBlit(ValleyViewDevice& device,
 		mutex_unlock(&device.lock);
 		return B_NO_INIT;
 	}
+	device.bcsBlitRequests++;
 
 	status_t status = B_NOT_SUPPORTED;
 	if (device.bcsReady) {
@@ -1276,6 +1279,7 @@ SubmitBcsBlit(ValleyViewDevice& device,
 	}
 	if (status != B_OK && !device.gpuFaulted) {
 		CpuBlitLocked(device, request);
+		device.cpuBlitFallbacks++;
 		status = B_OK;
 	}
 	mutex_unlock(&device.lock);

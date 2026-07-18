@@ -3,13 +3,16 @@
 // SPDX-FileContributor: Generated with GitHub Copilot
 
 #include <common/intel_valleyview/FirmwareState.h>
+#include <common/intel_valleyview/P0Core.h>
 #include <common/intel_valleyview/Protocol.h>
 
 #include <Accelerant.h>
+#include <OS.h>
 
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
@@ -204,7 +207,268 @@ PrintP0Status(const valleyview::P0Status& status)
 		" bcs_submissions=%" B_PRIu64 " failures=%" B_PRIu64 "\n",
 		status.pwmDuty, status.pwmPeriod, status.bcsSubmissions,
 		status.bcsFailures);
+	printf("p0_live pipe_source=%#08" B_PRIx32 " plane=%#08" B_PRIx32
+		" stride=%" B_PRIu32 " surface=%#08" B_PRIx32
+		" live=%#08" B_PRIx32 "\n", status.pipeSource,
+		status.planeControl, status.planeStride, status.planeSurface,
+		status.planeSurfaceLive);
+	printf("p0_pfit control=%#08" B_PRIx32 " programmed=%#08" B_PRIx32
+		" auto=%#08" B_PRIx32 "\n", status.panelFitterControl,
+		status.panelFitterProgrammedRatios,
+		status.panelFitterAutoRatios);
+	printf("p0_cursor control=%#08" B_PRIx32 " base=%#08" B_PRIx32
+		" position=%#08" B_PRIx32 " live=%#08" B_PRIx32
+		" visible=%s shape=%" B_PRIu64 " bitmap=%" B_PRIu64
+		" move=%" B_PRIu64 " show=%" B_PRIu64 "\n",
+		status.cursorControl, status.cursorBase, status.cursorPosition,
+		status.cursorSurfaceLive, YesNo(status.cursorVisible != 0),
+		status.cursorShapeUpdates, status.cursorBitmapUpdates,
+		status.cursorMoveUpdates, status.cursorShowUpdates);
+	printf("p0_requests fill=%" B_PRIu64 " blit=%" B_PRIu64
+		" cpu_fill=%" B_PRIu64 " cpu_blit=%" B_PRIu64 "\n",
+		status.bcsFillRequests, status.bcsBlitRequests,
+		status.cpuFillFallbacks, status.cpuBlitFallbacks);
 }
+
+
+status_t
+ReadP0Status(int device, valleyview::P0Status& status)
+{
+	memset(&status, 0, sizeof(status));
+	status_t result = ioctl(device, valleyview::kGetP0Status, &status,
+		sizeof(status));
+	if (result != B_OK)
+		return result;
+	return valleyview::IsValidAbiHeader(status.header, sizeof(status))
+		? B_OK : B_BAD_DATA;
+}
+
+
+double
+MebibytesPerSecond(uint64 bytes, bigtime_t elapsed)
+{
+	return elapsed > 0
+		? static_cast<double>(bytes) * 1000000.0
+			/ (static_cast<double>(elapsed) * 1024.0 * 1024.0)
+		: 0.0;
+}
+
+
+uint32
+GridPixel(uint32 x, uint32 y)
+{
+	if (x == 0 || y == 0 || x == 127 || y == 127)
+		return 0x00ffffff;
+	if (x == y || x + y == 127)
+		return 0x00ffff00;
+	if ((x % 16) == 0 || (y % 16) == 0)
+		return 0x004080ff;
+	const uint32 quadrant = (x >= 64 ? 1 : 0) | (y >= 64 ? 2 : 0);
+	const uint32 colors[4] = {
+		0x00202040, 0x00402020, 0x00204020, 0x00404020
+	};
+	return colors[quadrant];
+}
+
+
+status_t
+RunP0Benchmark(int device, const valleyview::P0Status& initial)
+{
+	constexpr uint32 kWidth = 256;
+	constexpr uint32 kHeight = 128;
+	constexpr uint32 kUploadIterations = 128;
+	constexpr uint32 kRmwIterations = 16;
+	constexpr uint32 kBcsIterations = 64;
+	if ((initial.flags & (valleyview::kP0NativeScanout
+			| valleyview::kP0BcsReady))
+			!= (valleyview::kP0NativeScanout | valleyview::kP0BcsReady)
+		|| initial.width < kWidth || initial.height < kHeight) {
+		return B_NO_INIT;
+	}
+
+	area_info info = {};
+	status_t result = ioctl(device, valleyview::kCloneFramebuffer, &info,
+		sizeof(info));
+	if (result != B_OK)
+		return result;
+	const uint64 requiredSize
+		= static_cast<uint64>(initial.bytesPerRow) * initial.height;
+	if (info.address == NULL || info.size < requiredSize) {
+		delete_area(info.area);
+		return B_BAD_DATA;
+	}
+
+	const size_t tilePixels = static_cast<size_t>(kWidth) * kHeight;
+	const size_t tileBytes = tilePixels * sizeof(uint32);
+	uint32* first = static_cast<uint32*>(malloc(tileBytes));
+	uint32* second = static_cast<uint32*>(malloc(tileBytes));
+	if (first == NULL || second == NULL) {
+		free(first);
+		free(second);
+		delete_area(info.area);
+		return B_NO_MEMORY;
+	}
+	for (size_t index = 0; index < tilePixels; index++) {
+		first[index] = 0x00204080;
+		second[index] = 0x00804020;
+	}
+
+	const uint32 left = 0;
+	const uint32 top = initial.height - kHeight;
+	uint8* framebuffer = static_cast<uint8*>(info.address);
+	const bigtime_t uploadStarted = system_time();
+	for (uint32 iteration = 0; iteration < kUploadIterations; iteration++) {
+		const uint32* source = (iteration & 1) != 0 ? second : first;
+		for (uint32 row = 0; row < kHeight; row++) {
+			memcpy(framebuffer + (top + row) * initial.bytesPerRow
+					+ left * sizeof(uint32),
+				source + row * kWidth, kWidth * sizeof(uint32));
+		}
+		__sync_synchronize();
+	}
+	const bigtime_t uploadElapsed = system_time() - uploadStarted;
+
+	const bigtime_t rmwStarted = system_time();
+	for (uint32 iteration = 0; iteration < kRmwIterations; iteration++) {
+		for (uint32 row = 0; row < kHeight; row++) {
+			volatile uint32* destination
+				= reinterpret_cast<volatile uint32*>(
+					framebuffer + (top + row) * initial.bytesPerRow);
+			for (uint32 x = 0; x < kWidth; x++)
+				destination[x] ^= 0x00ffffff;
+		}
+		__sync_synchronize();
+	}
+	const bigtime_t rmwElapsed = system_time() - rmwStarted;
+
+	valleyview::P0Status before = {};
+	if (result == B_OK)
+		result = ReadP0Status(device, before);
+	valleyview::BcsFillRequest fill = {};
+	fill.header = valleyview::MakeAbiHeader(sizeof(fill));
+	fill.count = 1;
+	fill.rects[0].left = left;
+	fill.rects[0].top = top;
+	fill.rects[0].right = left + kWidth - 1;
+	fill.rects[0].bottom = top + kHeight - 1;
+	const bigtime_t fillStarted = system_time();
+	for (uint32 iteration = 0;
+			result == B_OK && iteration < kBcsIterations; iteration++) {
+		fill.color = (iteration & 1) != 0 ? 0x00306090 : 0x00906030;
+		result = ioctl(device, valleyview::kBcsFill, &fill, sizeof(fill));
+	}
+	const bigtime_t fillElapsed = system_time() - fillStarted;
+	const uint32 finalFillColor = fill.color;
+
+	uint64 fillMismatches = 0;
+	if (result == B_OK) {
+		__sync_synchronize();
+		for (uint32 row = 0; row < kHeight; row++) {
+			const volatile uint32* pixels
+				= reinterpret_cast<const volatile uint32*>(
+					framebuffer + (top + row) * initial.bytesPerRow);
+			for (uint32 x = 0; x < kWidth; x++) {
+				if (pixels[x] != finalFillColor)
+					fillMismatches++;
+			}
+		}
+	}
+
+	for (uint32 row = 0; row < kHeight; row++) {
+		volatile uint32* destination = reinterpret_cast<volatile uint32*>(
+			framebuffer + (top + row) * initial.bytesPerRow);
+		for (uint32 x = 0; x < kWidth / 2; x++)
+			destination[x] = GridPixel(x, row);
+		for (uint32 x = kWidth / 2; x < kWidth; x++)
+			destination[x] = 0;
+	}
+	__sync_synchronize();
+
+	valleyview::BcsBlitRequest blit = {};
+	blit.header = valleyview::MakeAbiHeader(sizeof(blit));
+	blit.count = 1;
+	blit.rects[0].sourceLeft = left;
+	blit.rects[0].sourceTop = top;
+	blit.rects[0].destinationLeft = left + kWidth / 2;
+	blit.rects[0].destinationTop = top;
+	blit.rects[0].width = kWidth / 2 - 1;
+	blit.rects[0].height = kHeight - 1;
+	const bigtime_t blitStarted = system_time();
+	for (uint32 iteration = 0;
+			result == B_OK && iteration < kBcsIterations; iteration++) {
+		result = ioctl(device, valleyview::kBcsBlit, &blit, sizeof(blit));
+	}
+	const bigtime_t blitElapsed = system_time() - blitStarted;
+
+	uint64 blitMismatches = 0;
+	if (result == B_OK) {
+		__sync_synchronize();
+		for (uint32 row = 0; row < kHeight; row++) {
+			const volatile uint32* pixels
+				= reinterpret_cast<const volatile uint32*>(
+					framebuffer + (top + row) * initial.bytesPerRow);
+			for (uint32 x = 0; x < kWidth / 2; x++) {
+				if (pixels[x] != pixels[x + kWidth / 2])
+					blitMismatches++;
+			}
+		}
+	}
+
+	valleyview::P0Status after = {};
+	if (result == B_OK)
+		result = ReadP0Status(device, after);
+	const uint64 uploadBytes = static_cast<uint64>(tileBytes)
+		* kUploadIterations;
+	const uint64 rmwBytes = static_cast<uint64>(tileBytes)
+		* kRmwIterations * 2;
+	const uint64 fillBytes = static_cast<uint64>(tileBytes) * kBcsIterations;
+	const uint64 blitBytes = static_cast<uint64>(tileBytes / 2)
+		* kBcsIterations;
+	printf("p0_benchmark region=%ux%u+%u+%u\n", kWidth, kHeight, left, top);
+	printf("p0_benchmark cpu_upload_us=%" B_PRIdBIGTIME
+		" mib_s=%.1f cpu_rmw_us=%" B_PRIdBIGTIME " effective_mib_s=%.1f\n",
+		uploadElapsed, MebibytesPerSecond(uploadBytes, uploadElapsed),
+		rmwElapsed, MebibytesPerSecond(rmwBytes, rmwElapsed));
+	printf("p0_benchmark bcs_fill_us=%" B_PRIdBIGTIME
+		" mib_s=%.1f verify_mismatches=%" B_PRIu64 "\n", fillElapsed,
+		MebibytesPerSecond(fillBytes, fillElapsed), fillMismatches);
+	printf("p0_benchmark bcs_blit_us=%" B_PRIdBIGTIME
+		" mib_s=%.1f verify_mismatches=%" B_PRIu64 "\n", blitElapsed,
+		MebibytesPerSecond(blitBytes, blitElapsed), blitMismatches);
+	if (result == B_OK) {
+		const uint64 submissions
+			= after.bcsSubmissions - before.bcsSubmissions;
+		const uint64 failures = after.bcsFailures - before.bcsFailures;
+		const uint64 fillRequests
+			= after.bcsFillRequests - before.bcsFillRequests;
+		const uint64 blitRequests
+			= after.bcsBlitRequests - before.bcsBlitRequests;
+		const uint64 fillFallbacks
+			= after.cpuFillFallbacks - before.cpuFillFallbacks;
+		const uint64 blitFallbacks
+			= after.cpuBlitFallbacks - before.cpuBlitFallbacks;
+		const bool bcsReady = (after.flags & valleyview::kP0BcsReady) != 0;
+		printf("p0_benchmark submissions=%" B_PRIu64
+			" failures=%" B_PRIu64 " fill_requests=%" B_PRIu64
+			" blit_requests=%" B_PRIu64 " cpu_fallbacks=%" B_PRIu64
+			"/%" B_PRIu64 " bcs_ready=%s\n",
+			submissions, failures, fillRequests, blitRequests, fillFallbacks,
+			blitFallbacks, bcsReady ? "yes" : "no");
+		if (submissions != 2 * kBcsIterations || failures != 0
+			|| fillRequests != kBcsIterations
+			|| blitRequests != kBcsIterations || fillFallbacks != 0
+			|| blitFallbacks != 0 || !bcsReady || fillMismatches != 0
+			|| blitMismatches != 0) {
+			result = B_BAD_DATA;
+		}
+	}
+
+	free(first);
+	free(second);
+	delete_area(info.area);
+	return result;
+}
+
 
 } // namespace
 
@@ -274,7 +538,8 @@ main(int argc, char** argv)
 		}
 	} else if (argc == 2
 		&& (strcmp(argv[1], "--p0-status") == 0
-			|| strcmp(argv[1], "--p0-test") == 0)) {
+			|| strcmp(argv[1], "--p0-test") == 0
+			|| strcmp(argv[1], "--p0-benchmark") == 0)) {
 		valleyview::P0Status p0 = {};
 		status = ioctl(device, valleyview::kGetP0Status, &p0, sizeof(p0));
 		if (status != B_OK
@@ -286,7 +551,16 @@ main(int argc, char** argv)
 			return 1;
 		}
 		PrintP0Status(p0);
-		if (strcmp(argv[1], "--p0-test") == 0) {
+		if (strcmp(argv[1], "--p0-benchmark") == 0) {
+			status = RunP0Benchmark(device, p0);
+			if (status != B_OK) {
+				fprintf(stderr,
+					"intel_valleyview_probe: P0 benchmark failed: %s\n",
+					strerror(status));
+				close(device);
+				return 1;
+			}
+		} else if (strcmp(argv[1], "--p0-test") == 0) {
 			valleyview::P0SelfTest test = {};
 			test.header = valleyview::MakeAbiHeader(sizeof(test));
 			test.command = valleyview::kP0SelfTestArm;
@@ -350,7 +624,7 @@ main(int argc, char** argv)
 	} else if (argc != 1) {
 		fprintf(stderr, "usage: intel_valleyview_probe"
 			" [--publish|--gpu-diagnostics|--gpu-self-test"
-			"|--p0-status|--p0-test]\n");
+			"|--p0-status|--p0-test|--p0-benchmark]\n");
 		close(device);
 		return 1;
 	}

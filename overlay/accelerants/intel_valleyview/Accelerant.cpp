@@ -416,6 +416,45 @@ SetCursorShape(uint16 width, uint16 height, uint16 hotX, uint16 hotY,
 }
 
 
+status_t
+SetCursorBitmap(uint16 width, uint16 height, uint16 hotX, uint16 hotY,
+	color_space colorSpace, uint16 bytesPerRow, const uint8* bitmapData)
+{
+	if (gInfo == NULL || bitmapData == NULL || width == 0 || height == 0
+		|| width > valleyview::kCursorMaxWidth
+		|| height > valleyview::kCursorMaxHeight || hotX >= width
+		|| hotY >= height || bytesPerRow < width * sizeof(uint32)
+		|| (colorSpace != B_RGBA32 && colorSpace != B_RGB32)) {
+		return B_BAD_VALUE;
+	}
+
+	valleyview::CursorBitmapRequest* request
+		= static_cast<valleyview::CursorBitmapRequest*>(
+			calloc(1, sizeof(valleyview::CursorBitmapRequest)));
+	if (request == NULL)
+		return B_NO_MEMORY;
+	request->header = valleyview::MakeAbiHeader(sizeof(*request));
+	request->width = width;
+	request->height = height;
+	request->hotX = hotX;
+	request->hotY = hotY;
+	for (uint32 y = 0; y < height; y++) {
+		const uint8* source = bitmapData + y * bytesPerRow;
+		for (uint32 x = 0; x < width; x++) {
+			uint32 pixel;
+			memcpy(&pixel, source + x * sizeof(uint32), sizeof(pixel));
+			if (colorSpace == B_RGB32)
+				pixel |= 0xff000000;
+			request->pixels[y * valleyview::kCursorMaxWidth + x] = pixel;
+		}
+	}
+	status_t status = ioctl(gInfo->device, valleyview::kSetCursorBitmap,
+		request, sizeof(*request));
+	free(request);
+	return status;
+}
+
+
 void
 MoveCursor(uint16 x, uint16 y)
 {
@@ -605,6 +644,8 @@ get_accelerant_hook(uint32 feature, void*)
 			return NativeActive() ? (void*)SetDpmsMode : NULL;
 		case B_SET_CURSOR_SHAPE:
 			return NativeActive() ? (void*)SetCursorShape : NULL;
+		case B_SET_CURSOR_BITMAP:
+			return NativeActive() ? (void*)SetCursorBitmap : NULL;
 		case B_MOVE_CURSOR:
 			return NativeActive() ? (void*)MoveCursor : NULL;
 		case B_SHOW_CURSOR:

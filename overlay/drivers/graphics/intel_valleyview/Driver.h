@@ -69,12 +69,21 @@ struct ValleyViewDevice {
 	uint32						savedPwmControl;
 	uint32						cursorHotX;
 	uint32						cursorHotY;
+	uint32						cursorMode;
 	int32						cursorX;
 	int32						cursorY;
 	int32						nativeStatus;
 	int32						bcsStatus;
 	uint64						bcsSubmissions;
 	uint64						bcsFailures;
+	uint64						bcsFillRequests;
+	uint64						bcsBlitRequests;
+	uint64						cpuFillFallbacks;
+	uint64						cpuBlitFallbacks;
+	uint64						cursorShapeUpdates;
+	uint64						cursorBitmapUpdates;
+	uint64						cursorMoveUpdates;
+	uint64						cursorShowUpdates;
 	uint32						bcsSequence;
 	valleyview::FirmwareSnapshot	snapshot;
 };
@@ -107,6 +116,8 @@ status_t SetDpms(ValleyViewDevice& device,
 	const valleyview::DpmsRequest& request);
 status_t SetCursorShape(ValleyViewDevice& device,
 	const valleyview::CursorShapeRequest& request);
+status_t SetCursorBitmap(ValleyViewDevice& device,
+	const valleyview::CursorBitmapRequest& request);
 status_t MoveCursor(ValleyViewDevice& device,
 	const valleyview::CursorMoveRequest& request);
 status_t ShowCursor(ValleyViewDevice& device,
