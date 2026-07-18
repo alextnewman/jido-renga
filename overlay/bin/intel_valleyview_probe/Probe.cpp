@@ -194,15 +194,22 @@ void
 PrintP0Status(const valleyview::P0Status& status)
 {
 	printf("p0 flags=%#08" B_PRIx32 " native_status=%" B_PRId32
-		" bcs_status=%" B_PRId32 " mode=%" B_PRIu32 "x%" B_PRIu32
+		" bcs_status=%" B_PRId32 " present_status=%" B_PRId32
+		"/%" B_PRId32 " mode=%" B_PRIu32 "x%" B_PRIu32
 		" stride=%" B_PRIu32 " dpms=%#08" B_PRIx32 "\n",
-		status.flags, status.nativeStatus, status.bcsStatus, status.width,
+		status.flags, status.nativeStatus, status.bcsStatus,
+		status.presentStatus, status.presentBcsStatus, status.width,
 		status.height, status.bytesPerRow, status.dpmsMode);
-	printf("p0_memory physical=%#" B_PRIx64 " ggtt=%#08" B_PRIx32
-		" pages=%" B_PRIu32 " cursor=%#08" B_PRIx32
-		" ring=%#08" B_PRIx32 " status=%#08" B_PRIx32 "\n",
-		status.physical, status.ggttOffset, status.ggttPages,
-		status.cursorOffset, status.ringOffset, status.statusOffset);
+	printf("p0_memory render=%#" B_PRIx64 "/%#08" B_PRIx32
+		" scanout=%#" B_PRIx64 "/%#08" B_PRIx32 ",%#" B_PRIx64
+		"/%#08" B_PRIx32 " ggtt=%#08" B_PRIx32 " pages=%" B_PRIu32
+		"\n", status.physical, status.framebufferOffset,
+		status.scanoutPhysical[0], status.scanoutOffset[0],
+		status.scanoutPhysical[1], status.scanoutOffset[1],
+		status.ggttOffset, status.ggttPages);
+	printf("p0_private cursor=%#08" B_PRIx32 " ring=%#08" B_PRIx32
+		" status=%#08" B_PRIx32 "\n", status.cursorOffset,
+		status.ringOffset, status.statusOffset);
 	printf("p0_pwm duty=%" B_PRIu32 " period=%" B_PRIu32
 		" bcs_submissions=%" B_PRIu64 " failures=%" B_PRIu64 "\n",
 		status.pwmDuty, status.pwmPeriod, status.bcsSubmissions,
@@ -225,9 +232,20 @@ PrintP0Status(const valleyview::P0Status& status)
 		status.cursorShapeUpdates, status.cursorBitmapUpdates,
 		status.cursorMoveUpdates, status.cursorShowUpdates);
 	printf("p0_requests fill=%" B_PRIu64 " blit=%" B_PRIu64
-		" cpu_fill=%" B_PRIu64 " cpu_blit=%" B_PRIu64 "\n",
-		status.bcsFillRequests, status.bcsBlitRequests,
+		" present=%" B_PRIu64 " cpu_fill=%" B_PRIu64
+		" cpu_blit=%" B_PRIu64 "\n", status.bcsFillRequests,
+		status.bcsBlitRequests, status.bcsPresentRequests,
 		status.cpuFillFallbacks, status.cpuBlitFallbacks);
+	printf("p0_present active=%" B_PRId32 " pending=%" B_PRId32
+		" frames=%" B_PRIu64 " failures=%" B_PRIu64
+		" copies=%" B_PRIu64 "/%" B_PRIu64
+		" copy_us=%" B_PRIu64 "/%" B_PRIu64
+		" flip_us=%" B_PRIu64 "/%" B_PRIu64 "\n",
+		status.activeScanout, status.pendingScanout, status.presentFrames,
+		status.presentFailures, status.presentBcsCopies,
+		status.presentCpuCopies, status.presentCopyLastUs,
+		status.presentCopyMaxUs, status.presentFlipLastUs,
+		status.presentFlipMaxUs);
 }
 
 
@@ -278,10 +296,11 @@ RunP0Benchmark(int device, const valleyview::P0Status& initial)
 	constexpr uint32 kHeight = 128;
 	constexpr uint32 kUploadIterations = 128;
 	constexpr uint32 kRmwIterations = 16;
-	constexpr uint32 kBcsIterations = 64;
+	constexpr uint64 kRequiredPresentFrames = 2;
 	if ((initial.flags & (valleyview::kP0NativeScanout
-			| valleyview::kP0BcsReady))
-			!= (valleyview::kP0NativeScanout | valleyview::kP0BcsReady)
+			| valleyview::kP0PresentReady))
+			!= (valleyview::kP0NativeScanout
+				| valleyview::kP0PresentReady)
 		|| initial.width < kWidth || initial.height < kHeight) {
 		return B_NO_INIT;
 	}
@@ -344,121 +363,67 @@ RunP0Benchmark(int device, const valleyview::P0Status& initial)
 	valleyview::P0Status before = {};
 	if (result == B_OK)
 		result = ReadP0Status(device, before);
-	valleyview::BcsFillRequest fill = {};
-	fill.header = valleyview::MakeAbiHeader(sizeof(fill));
-	fill.count = 1;
-	fill.rects[0].left = left;
-	fill.rects[0].top = top;
-	fill.rects[0].right = left + kWidth - 1;
-	fill.rects[0].bottom = top + kHeight - 1;
-	const bigtime_t fillStarted = system_time();
-	for (uint32 iteration = 0;
-			result == B_OK && iteration < kBcsIterations; iteration++) {
-		fill.color = (iteration & 1) != 0 ? 0x00306090 : 0x00906030;
-		result = ioctl(device, valleyview::kBcsFill, &fill, sizeof(fill));
-	}
-	const bigtime_t fillElapsed = system_time() - fillStarted;
-	const uint32 finalFillColor = fill.color;
-
-	uint64 fillMismatches = 0;
-	if (result == B_OK) {
-		__sync_synchronize();
-		for (uint32 row = 0; row < kHeight; row++) {
-			const volatile uint32* pixels
-				= reinterpret_cast<const volatile uint32*>(
-					framebuffer + (top + row) * initial.bytesPerRow);
-			for (uint32 x = 0; x < kWidth; x++) {
-				if (pixels[x] != finalFillColor)
-					fillMismatches++;
-			}
-		}
-	}
 
 	for (uint32 row = 0; row < kHeight; row++) {
 		volatile uint32* destination = reinterpret_cast<volatile uint32*>(
 			framebuffer + (top + row) * initial.bytesPerRow);
-		for (uint32 x = 0; x < kWidth / 2; x++)
-			destination[x] = GridPixel(x, row);
-		for (uint32 x = kWidth / 2; x < kWidth; x++)
-			destination[x] = 0;
+		for (uint32 x = 0; x < kWidth / 2; x++) {
+			const uint32 pixel = GridPixel(x, row);
+			destination[x] = pixel;
+			destination[x + kWidth / 2] = pixel;
+		}
 	}
 	__sync_synchronize();
 
-	valleyview::BcsBlitRequest blit = {};
-	blit.header = valleyview::MakeAbiHeader(sizeof(blit));
-	blit.count = 1;
-	blit.rects[0].sourceLeft = left;
-	blit.rects[0].sourceTop = top;
-	blit.rects[0].destinationLeft = left + kWidth / 2;
-	blit.rects[0].destinationTop = top;
-	blit.rects[0].width = kWidth / 2 - 1;
-	blit.rects[0].height = kHeight - 1;
-	const bigtime_t blitStarted = system_time();
-	for (uint32 iteration = 0;
-			result == B_OK && iteration < kBcsIterations; iteration++) {
-		result = ioctl(device, valleyview::kBcsBlit, &blit, sizeof(blit));
-	}
-	const bigtime_t blitElapsed = system_time() - blitStarted;
-
-	uint64 blitMismatches = 0;
-	if (result == B_OK) {
-		__sync_synchronize();
-		for (uint32 row = 0; row < kHeight; row++) {
-			const volatile uint32* pixels
-				= reinterpret_cast<const volatile uint32*>(
-					framebuffer + (top + row) * initial.bytesPerRow);
-			for (uint32 x = 0; x < kWidth / 2; x++) {
-				if (pixels[x] != pixels[x + kWidth / 2])
-					blitMismatches++;
-			}
-		}
-	}
-
-	valleyview::P0Status after = {};
-	if (result == B_OK)
+	valleyview::P0Status after = before;
+	const bigtime_t presentStarted = system_time();
+	const bigtime_t presentDeadline = presentStarted + 250000;
+	while (result == B_OK
+		&& after.presentFrames - before.presentFrames
+			< kRequiredPresentFrames
+		&& system_time() < presentDeadline) {
+		snooze(1000);
 		result = ReadP0Status(device, after);
+	}
+	const bigtime_t presentElapsed = system_time() - presentStarted;
 	const uint64 uploadBytes = static_cast<uint64>(tileBytes)
 		* kUploadIterations;
 	const uint64 rmwBytes = static_cast<uint64>(tileBytes)
 		* kRmwIterations * 2;
-	const uint64 fillBytes = static_cast<uint64>(tileBytes) * kBcsIterations;
-	const uint64 blitBytes = static_cast<uint64>(tileBytes / 2)
-		* kBcsIterations;
 	printf("p0_benchmark region=%ux%u+%u+%u\n", kWidth, kHeight, left, top);
-	printf("p0_benchmark cpu_upload_us=%" B_PRIdBIGTIME
+	printf("p0_benchmark shadow_upload_us=%" B_PRIdBIGTIME
 		" mib_s=%.1f cpu_rmw_us=%" B_PRIdBIGTIME " effective_mib_s=%.1f\n",
 		uploadElapsed, MebibytesPerSecond(uploadBytes, uploadElapsed),
 		rmwElapsed, MebibytesPerSecond(rmwBytes, rmwElapsed));
-	printf("p0_benchmark bcs_fill_us=%" B_PRIdBIGTIME
-		" mib_s=%.1f verify_mismatches=%" B_PRIu64 "\n", fillElapsed,
-		MebibytesPerSecond(fillBytes, fillElapsed), fillMismatches);
-	printf("p0_benchmark bcs_blit_us=%" B_PRIdBIGTIME
-		" mib_s=%.1f verify_mismatches=%" B_PRIu64 "\n", blitElapsed,
-		MebibytesPerSecond(blitBytes, blitElapsed), blitMismatches);
 	if (result == B_OK) {
-		const uint64 submissions
-			= after.bcsSubmissions - before.bcsSubmissions;
-		const uint64 failures = after.bcsFailures - before.bcsFailures;
-		const uint64 fillRequests
-			= after.bcsFillRequests - before.bcsFillRequests;
-		const uint64 blitRequests
-			= after.bcsBlitRequests - before.bcsBlitRequests;
-		const uint64 fillFallbacks
-			= after.cpuFillFallbacks - before.cpuFillFallbacks;
-		const uint64 blitFallbacks
-			= after.cpuBlitFallbacks - before.cpuBlitFallbacks;
-		const bool bcsReady = (after.flags & valleyview::kP0BcsReady) != 0;
-		printf("p0_benchmark submissions=%" B_PRIu64
-			" failures=%" B_PRIu64 " fill_requests=%" B_PRIu64
-			" blit_requests=%" B_PRIu64 " cpu_fallbacks=%" B_PRIu64
-			"/%" B_PRIu64 " bcs_ready=%s\n",
-			submissions, failures, fillRequests, blitRequests, fillFallbacks,
-			blitFallbacks, bcsReady ? "yes" : "no");
-		if (submissions != 2 * kBcsIterations || failures != 0
-			|| fillRequests != kBcsIterations
-			|| blitRequests != kBcsIterations || fillFallbacks != 0
-			|| blitFallbacks != 0 || !bcsReady || fillMismatches != 0
-			|| blitMismatches != 0) {
+		const uint64 frames = after.presentFrames - before.presentFrames;
+		const uint64 failures
+			= after.presentFailures - before.presentFailures;
+		const uint64 bcsCopies
+			= after.presentBcsCopies - before.presentBcsCopies;
+		const uint64 cpuCopies
+			= after.presentCpuCopies - before.presentCpuCopies;
+		const bool presentReady
+			= (after.flags & valleyview::kP0PresentReady) != 0;
+		const bool liveMatches = after.activeScanout >= 0
+			&& after.activeScanout < 2
+			&& (after.planeSurfaceLive & ~valleyview::kPageMask)
+				== after.scanoutOffset[after.activeScanout];
+		printf("p0_benchmark present_wait_us=%" B_PRIdBIGTIME
+			" frames=%" B_PRIu64 " failures=%" B_PRIu64
+			" copies=%" B_PRIu64 "/%" B_PRIu64
+			" mode=%s active=%" B_PRId32 " pending=%" B_PRId32 "\n",
+			presentElapsed, frames, failures, bcsCopies, cpuCopies,
+			(after.flags & valleyview::kP0PresentBcs) != 0 ? "bcs" : "cpu",
+			after.activeScanout, after.pendingScanout);
+		printf("p0_benchmark copy_us=%" B_PRIu64 "/%" B_PRIu64
+			" flip_us=%" B_PRIu64 "/%" B_PRIu64
+			" live_matches=%s\n", after.presentCopyLastUs,
+			after.presentCopyMaxUs, after.presentFlipLastUs,
+			after.presentFlipMaxUs, YesNo(liveMatches));
+		if (frames < kRequiredPresentFrames || failures != 0
+			|| bcsCopies + cpuCopies == 0 || !presentReady
+			|| !liveMatches) {
 			result = B_BAD_DATA;
 		}
 	}

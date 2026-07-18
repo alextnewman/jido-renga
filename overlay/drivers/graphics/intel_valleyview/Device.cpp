@@ -123,7 +123,8 @@ Control(void* cookie, uint32 operation, void* buffer, size_t length)
 					| valleyview::kCapabilityModeset
 					| valleyview::kCapabilityBacklight
 					| valleyview::kCapabilityCursor
-					| valleyview::kCapabilityDpms;
+					| valleyview::kCapabilityDpms
+					| valleyview::kCapabilityHardwarePresent;
 				status.displayState = device->softBlanked
 					? valleyview::kSoftBlankedNative : valleyview::kActive;
 			} else if (device->snapshot.adoptionStatus == B_OK) {

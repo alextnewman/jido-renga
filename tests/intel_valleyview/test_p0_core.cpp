@@ -67,16 +67,18 @@ JR_TEST(intel_valleyview_p0, native_layout_is_page_exact)
 	JR_CHECK_EQ(kP0FramebufferPages, 1032u);
 	JR_CHECK_EQ(kP0CursorPages, 4u);
 	JR_CHECK_EQ(kP0CursorBytes, 0x4000u);
-	JR_CHECK_EQ(kP0PageCount, 1040u);
-	JR_CHECK_EQ(kP0AllocationBytes, 0x410000u);
+	JR_CHECK_EQ(kP0PageCount, 3104u);
+	JR_CHECK_EQ(kP0AllocationBytes, 0xc20000u);
 	JR_CHECK_EQ(kP0PrivatePageCount, 8u);
 	JR_CHECK_EQ(kP0PrivateBytes, 0x8000u);
 
 	P0Layout layout = {};
 	JR_CHECK(BuildP0Layout(256u * 1024 * 1024, 0, 3u * 1024 * 1024,
 		layout));
-	JR_CHECK_EQ(layout.base, 0x0fbf0000u);
+	JR_CHECK_EQ(layout.base, 0x0f3e0000u);
 	JR_CHECK_EQ(layout.framebuffer, layout.base);
+	JR_CHECK_EQ(layout.scanout[0], 0x0f7e8000u);
+	JR_CHECK_EQ(layout.scanout[1], 0x0fbf0000u);
 	JR_CHECK_EQ(layout.cursor, 0x0fff8000u);
 	JR_CHECK_EQ(layout.ring, 0x0fffc000u);
 	JR_CHECK_EQ(layout.status, 0x0fffd000u);
@@ -84,13 +86,24 @@ JR_TEST(intel_valleyview_p0, native_layout_is_page_exact)
 	JR_CHECK_EQ(layout.testDestination, 0x0ffff000u);
 
 	uint64 physical = 0;
-	JR_CHECK(P0PagePhysical(0x1000000, 0x2000000, 0, physical));
+	JR_CHECK(P0PagePhysical(0x1000000, 0x2000000, 0x3000000,
+		0x4000000, 0, physical));
 	JR_CHECK_EQ(physical, 0x1000000ull);
-	JR_CHECK(P0PagePhysical(0x1000000, 0x2000000,
-		kP0FramebufferPages, physical));
+	JR_CHECK(P0PagePhysical(0x1000000, 0x2000000, 0x3000000,
+		0x4000000, kP0Scanout0Page, physical));
 	JR_CHECK_EQ(physical, 0x2000000ull);
-	JR_CHECK(!P0PagePhysical(0x1000000, 0x2000000, kP0PageCount,
-		physical));
+	JR_CHECK(P0PagePhysical(0x1000000, 0x2000000, 0x3000000,
+		0x4000000, kP0Scanout1Page, physical));
+	JR_CHECK_EQ(physical, 0x3000000ull);
+	JR_CHECK(P0PagePhysical(0x1000000, 0x2000000, 0x3000000,
+		0x4000000, kP0CursorPage, physical));
+	JR_CHECK_EQ(physical, 0x4000000ull);
+	JR_CHECK(!P0PagePhysical(0x1000000, 0x2000000, 0x3000000,
+		0x4000000, kP0PageCount, physical));
+	JR_CHECK(P0PageSnooped(kP0RenderPage));
+	JR_CHECK(P0PageSnooped(kP0FramebufferPages - 1));
+	JR_CHECK(!P0PageSnooped(kP0Scanout0Page));
+	JR_CHECK(!P0PageSnooped(kP0CursorPage));
 }
 
 

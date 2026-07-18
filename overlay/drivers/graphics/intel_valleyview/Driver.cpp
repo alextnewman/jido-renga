@@ -389,9 +389,16 @@ InitDriver(device_node* node, void** cookie)
 	device->registerArea = -1;
 	device->sharedArea = -1;
 	device->framebufferArea = -1;
+	device->scanoutArea[0] = -1;
+	device->scanoutArea[1] = -1;
 	device->p0PrivateArea = -1;
 	device->nativeStatus = B_NO_INIT;
 	device->bcsStatus = B_NO_INIT;
+	device->presentStatus = B_NO_INIT;
+	device->presentBcsStatus = B_NO_INIT;
+	device->presentThread = -1;
+	device->activeScanout = -1;
+	device->pendingScanout = -1;
 	device_node* parent = gDeviceManager->get_parent_node(node);
 	if (parent == NULL) {
 		free(device);
@@ -418,6 +425,8 @@ InitDriver(device_node* node, void** cookie)
 	device->enabled = settings.enabled;
 	device->allowModeset = settings.enabled && settings.allowModeset;
 	mutex_init(&device->lock, "intel_valleyview device");
+	mutex_init(&device->presentLock, "intel_valleyview present");
+	mutex_init(&device->bcsLock, "intel_valleyview BCS");
 
 	device->snapshot.header
 		= valleyview::MakeAbiHeader(sizeof(device->snapshot));
@@ -475,18 +484,14 @@ UninitDriver(void* cookie)
 	if (device->sharedArea >= B_OK)
 		delete_area(device->sharedArea);
 	ShutdownP0(*device);
-	if (device->p0PrivateArea >= B_OK
-		&& !device->p0MemoryQuarantined) {
-		delete_area(device->p0PrivateArea);
-	}
-	if (device->framebufferArea >= B_OK
-		&& !device->p0MemoryQuarantined) {
-		delete_area(device->framebufferArea);
-	}
+	if (!device->p0MemoryQuarantined)
+		ReleaseP0Areas(*device);
 	if (device->gpuTestArea >= B_OK && !device->gpuFaulted)
 		delete_area(device->gpuTestArea);
 	if (device->registerArea >= B_OK)
 		delete_area(device->registerArea);
+	mutex_destroy(&device->bcsLock);
+	mutex_destroy(&device->presentLock);
 	mutex_destroy(&device->lock);
 	free(device);
 }
@@ -580,18 +585,8 @@ PublishValleyViewGraphics(ValleyViewDevice& device)
 			status_t status = device.sharedArea;
 			device.sharedArea = -1;
 			ShutdownP0(device);
-			if (device.p0PrivateArea >= B_OK
-				&& !device.p0MemoryQuarantined) {
-				delete_area(device.p0PrivateArea);
-				device.p0PrivateArea = -1;
-				device.p0Private = NULL;
-			}
-			if (device.framebufferArea >= B_OK
-				&& !device.p0MemoryQuarantined) {
-				delete_area(device.framebufferArea);
-				device.framebufferArea = -1;
-			}
-			device.framebuffer = NULL;
+			if (!device.p0MemoryQuarantined)
+				ReleaseP0Areas(device);
 			mutex_unlock(&device.lock);
 			return status;
 		}
@@ -641,18 +636,8 @@ PublishValleyViewGraphics(ValleyViewDevice& device)
 			device.sharedInfo = NULL;
 		}
 		ShutdownP0(device);
-		if (device.p0PrivateArea >= B_OK
-			&& !device.p0MemoryQuarantined) {
-			delete_area(device.p0PrivateArea);
-			device.p0PrivateArea = -1;
-			device.p0Private = NULL;
-		}
-		if (device.framebufferArea >= B_OK
-			&& !device.p0MemoryQuarantined) {
-			delete_area(device.framebufferArea);
-			device.framebufferArea = -1;
-		}
-		device.framebuffer = NULL;
+		if (!device.p0MemoryQuarantined)
+			ReleaseP0Areas(device);
 	}
 	mutex_unlock(&device.lock);
 	return status;

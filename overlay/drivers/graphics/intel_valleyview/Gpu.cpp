@@ -701,6 +701,7 @@ cleanup:
 	if (status != B_OK) {
 		device.bcsFailures++;
 		device.bcsReady = false;
+		device.bcsStatus = status;
 		dprintf("intel_valleyview: BCS submission failed: %" B_PRId32
 			" reset=%s restore=%" B_PRId32 "\n", status,
 			resetBcs ? "yes" : "no", cleanupStatus);
@@ -778,6 +779,7 @@ CaptureGpuDiagnostics(ValleyViewDevice& device,
 	diagnostics.status = B_NO_INIT;
 
 	mutex_lock(&device.lock);
+	mutex_lock(&device.bcsLock);
 	diagnostics.generation = device.gpuTestGeneration;
 
 	volatile uint8* registers = NULL;
@@ -814,6 +816,7 @@ CaptureGpuDiagnostics(ValleyViewDevice& device,
 		delete_area(registerArea);
 
 	diagnostics.status = status;
+	mutex_unlock(&device.bcsLock);
 	mutex_unlock(&device.lock);
 	return status;
 }
@@ -837,6 +840,7 @@ RunGpuSelfTest(ValleyViewDevice& device,
 		mutex_unlock(&device.lock);
 		return diagnostics.status;
 	}
+	mutex_lock(&device.bcsLock);
 
 	const bigtime_t started = system_time();
 	volatile uint8* registers = NULL;
@@ -1024,6 +1028,7 @@ cleanup:
 	diagnostics.elapsedUs = elapsed > UINT32_MAX
 		? UINT32_MAX : static_cast<uint32>(elapsed);
 	diagnostics.status = status;
+	mutex_unlock(&device.bcsLock);
 	mutex_unlock(&device.lock);
 	return status;
 }
@@ -1034,6 +1039,12 @@ InitializeBcsRuntime(ValleyViewDevice& device)
 {
 	if (!device.nativeActive || device.p0Private == NULL
 		|| device.gpuFaulted || device.p0MemoryQuarantined) {
+		return B_NO_INIT;
+	}
+	mutex_lock(&device.bcsLock);
+	if (!device.nativeActive || device.p0Private == NULL
+		|| device.gpuFaulted || device.p0MemoryQuarantined) {
+		mutex_unlock(&device.bcsLock);
 		return B_NO_INIT;
 	}
 
@@ -1060,8 +1071,10 @@ InitializeBcsRuntime(ValleyViewDevice& device)
 		valleyview::kPageSize / sizeof(uint32), device.p0Layout.testSource,
 		device.p0Layout.testDestination, device.p0Layout.status,
 		valleyview::kGpuTestPattern, valleyview::kGpuCompletionMarker);
-	if (count != valleyview::kBcsSelfTestCommandCount)
+	if (count != valleyview::kBcsSelfTestCommandCount) {
+		mutex_unlock(&device.bcsLock);
 		return B_BAD_DATA;
+	}
 	memory_write_barrier();
 
 	status_t status = SubmitBcsCommandsLocked(device,
@@ -1080,6 +1093,7 @@ InitializeBcsRuntime(ValleyViewDevice& device)
 
 	device.bcsStatus = status;
 	device.bcsReady = status == B_OK;
+	mutex_unlock(&device.bcsLock);
 	return status;
 }
 
@@ -1087,9 +1101,12 @@ InitializeBcsRuntime(ValleyViewDevice& device)
 status_t
 QuiesceBcsRuntime(ValleyViewDevice& device)
 {
+	mutex_lock(&device.bcsLock);
 	device.bcsReady = false;
-	if (device.registers == NULL)
+	if (device.registers == NULL) {
+		mutex_unlock(&device.bcsLock);
 		return B_NO_INIT;
+	}
 
 	volatile uint8* registers = device.registers;
 	valleyview::GpuDiagnostics diagnostics = {};
@@ -1132,6 +1149,53 @@ QuiesceBcsRuntime(ValleyViewDevice& device)
 	if (status == B_OK)
 		status = cleanupStatus;
 	device.bcsStatus = status;
+	mutex_unlock(&device.bcsLock);
+	return status;
+}
+
+
+status_t
+SubmitBcsPresent(ValleyViewDevice& device, uint32 sourceOffset,
+	uint32 destinationOffset)
+{
+	if (sourceOffset != device.p0Layout.framebuffer
+		|| (destinationOffset != device.p0Layout.scanout[0]
+			&& destinationOffset != device.p0Layout.scanout[1])) {
+		return B_BAD_VALUE;
+	}
+
+	mutex_lock(&device.bcsLock);
+	if (!device.nativeActive || !device.bcsReady
+		|| device.p0Private == NULL || device.gpuFaulted
+		|| device.p0MemoryQuarantined) {
+		mutex_unlock(&device.bcsLock);
+		return B_NO_INIT;
+	}
+	device.bcsPresentRequests++;
+
+	uint32* ring = static_cast<uint32*>(device.p0Private)
+		+ (device.p0Layout.ring - device.p0Layout.cursor) / sizeof(uint32);
+	memset(ring, 0, valleyview::kPageSize);
+	size_t count = 0;
+	status_t status = valleyview::AppendBcsCopy(ring,
+		valleyview::kPageSize / sizeof(uint32), count, sourceOffset,
+		destinationOffset, valleyview::kP0BytesPerRow, 0, 0, 0, 0,
+		valleyview::kP0Width - 1, valleyview::kP0Height - 1)
+		? B_OK : B_BUFFER_OVERFLOW;
+
+	const uint32 marker
+		= 0xb3000000u | (++device.bcsSequence & 0x0fffffff);
+	if (status == B_OK
+		&& !valleyview::AppendBcsCompletion(ring,
+			valleyview::kPageSize / sizeof(uint32), count, marker)) {
+		status = B_BUFFER_OVERFLOW;
+	}
+	if (status == B_OK) {
+		memory_write_barrier();
+		status = SubmitBcsCommandsLocked(device,
+			static_cast<uint32>(count * sizeof(uint32)), marker);
+	}
+	mutex_unlock(&device.bcsLock);
 	return status;
 }
 
@@ -1157,6 +1221,7 @@ SubmitBcsFill(ValleyViewDevice& device,
 		mutex_unlock(&device.lock);
 		return B_NO_INIT;
 	}
+	mutex_lock(&device.bcsLock);
 	device.bcsFillRequests++;
 
 	status_t status = B_NO_INIT;
@@ -1197,6 +1262,7 @@ SubmitBcsFill(ValleyViewDevice& device,
 		device.cpuFillFallbacks++;
 		status = B_OK;
 	}
+	mutex_unlock(&device.bcsLock);
 	mutex_unlock(&device.lock);
 	return status;
 }
@@ -1230,6 +1296,7 @@ SubmitBcsBlit(ValleyViewDevice& device,
 		mutex_unlock(&device.lock);
 		return B_NO_INIT;
 	}
+	mutex_lock(&device.bcsLock);
 	device.bcsBlitRequests++;
 
 	status_t status = B_NOT_SUPPORTED;
@@ -1255,6 +1322,7 @@ SubmitBcsBlit(ValleyViewDevice& device,
 			if (overlap
 				|| !valleyview::AppendBcsCopy(ring,
 					valleyview::kPageSize / sizeof(uint32), count,
+					device.p0Layout.framebuffer,
 					device.p0Layout.framebuffer,
 					valleyview::kP0BytesPerRow, rect.sourceLeft,
 					rect.sourceTop, rect.destinationLeft,
@@ -1282,6 +1350,7 @@ SubmitBcsBlit(ValleyViewDevice& device,
 		device.cpuBlitFallbacks++;
 		status = B_OK;
 	}
+	mutex_unlock(&device.bcsLock);
 	mutex_unlock(&device.lock);
 	return status;
 }

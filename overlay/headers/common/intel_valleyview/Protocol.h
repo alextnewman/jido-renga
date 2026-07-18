@@ -13,7 +13,7 @@ constexpr uint16 kIntelVendorId = 0x8086;
 constexpr uint16 kWinkyDeviceId = 0x0f31;
 
 constexpr uint32 kProtocolMagic = 0x564c5657;
-constexpr uint16 kProtocolVersion = 9;
+constexpr uint16 kProtocolVersion = 10;
 
 constexpr bool kDefaultEnabled = true;
 constexpr bool kDefaultAllowModeset = true;
@@ -61,7 +61,8 @@ enum Capability : uint32 {
 	kCapabilityDpms = 1u << 4,
 	kCapabilityVblank = 1u << 5,
 	kCapabilityGpuDiagnostics = 1u << 6,
-	kCapabilityBcsSelfTest = 1u << 7
+	kCapabilityBcsSelfTest = 1u << 7,
+	kCapabilityHardwarePresent = 1u << 8
 };
 
 enum FirmwareSnapshotFlag : uint32 {
@@ -296,7 +297,10 @@ enum P0RuntimeFlag : uint32 {
 	kP0BcsReady = 1u << 3,
 	kP0CursorReady = 1u << 4,
 	kP0SoftBlanked = 1u << 5,
-	kP0Faulted = 1u << 6
+	kP0Faulted = 1u << 6,
+	kP0PresentReady = 1u << 7,
+	kP0PresentBcs = 1u << 8,
+	kP0PresentPending = 1u << 9
 };
 
 struct P0Status {
@@ -304,15 +308,22 @@ struct P0Status {
 	uint32		flags;
 	int32		nativeStatus;
 	int32		bcsStatus;
+	int32		presentStatus;
+	int32		presentBcsStatus;
 	uint32		width;
 	uint32		height;
 	uint32		bytesPerRow;
 	uint32		ggttOffset;
 	uint32		ggttPages;
 	uint64		physical;
+	uint64		scanoutPhysical[2];
+	uint32		framebufferOffset;
+	uint32		scanoutOffset[2];
 	uint32		cursorOffset;
 	uint32		ringOffset;
 	uint32		statusOffset;
+	int32		activeScanout;
+	int32		pendingScanout;
 	uint32		dpmsMode;
 	uint32		pwmDuty;
 	uint32		pwmPeriod;
@@ -333,8 +344,17 @@ struct P0Status {
 	uint64		bcsFailures;
 	uint64		bcsFillRequests;
 	uint64		bcsBlitRequests;
+	uint64		bcsPresentRequests;
 	uint64		cpuFillFallbacks;
 	uint64		cpuBlitFallbacks;
+	uint64		presentFrames;
+	uint64		presentFailures;
+	uint64		presentBcsCopies;
+	uint64		presentCpuCopies;
+	uint64		presentCopyLastUs;
+	uint64		presentCopyMaxUs;
+	uint64		presentFlipLastUs;
+	uint64		presentFlipMaxUs;
 	uint64		cursorShapeUpdates;
 	uint64		cursorBitmapUpdates;
 	uint64		cursorMoveUpdates;

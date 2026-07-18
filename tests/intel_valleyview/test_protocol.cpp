@@ -31,6 +31,7 @@ JR_TEST(intel_valleyview, defaults_to_the_safe_disabled_policy)
 
 JR_TEST(intel_valleyview, validates_versioned_abi_headers_exactly)
 {
+	JR_CHECK_EQ(kProtocolVersion, 10u);
 	const AbiHeader valid = MakeAbiHeader(sizeof(DriverStatus));
 	JR_CHECK(IsValidAbiHeader(valid, sizeof(DriverStatus)));
 
@@ -85,6 +86,15 @@ JR_TEST(intel_valleyview, validates_gpu_diagnostic_abi)
 	JR_CHECK(IsValidAbiHeader(diagnostics.header, sizeof(diagnostics)));
 	JR_CHECK_EQ(diagnostics.command, 0x42435330u);
 	JR_CHECK_EQ((uint32)kGpuStageRestored, 8u);
+}
+
+
+JR_TEST(intel_valleyview, reports_the_page_flip_present_contract)
+{
+	JR_CHECK_NE(kP0PresentReady, kP0PresentBcs);
+	JR_CHECK_NE(kP0PresentBcs, kP0PresentPending);
+	JR_CHECK_EQ(kCapabilityHardwarePresent, 1u << 8);
+	JR_CHECK(sizeof(P0Status) < UINT16_MAX);
 }
 
 

@@ -107,8 +107,8 @@ JR_TEST(intel_valleyview_gpu, builds_runtime_fill_and_copy_commands)
 	size_t count = 0;
 	JR_CHECK(AppendBcsFill(commands, 18, count, 0x100000, 5504,
 		0x11223344, 3, 4, 9, 12));
-	JR_CHECK(AppendBcsCopy(commands, 18, count, 0x100000, 5504,
-		20, 30, 40, 50, 7, 8));
+	JR_CHECK(AppendBcsCopy(commands, 18, count, 0x100000, 0x200000,
+		5504, 20, 30, 40, 50, 7, 8));
 	JR_CHECK(AppendBcsCompletion(commands, 18, count, 0x12345678));
 	JR_CHECK_EQ(count, 18u);
 	JR_CHECK_EQ(commands[0], 0x54300004u);
@@ -119,7 +119,9 @@ JR_TEST(intel_valleyview_gpu, builds_runtime_fill_and_copy_commands)
 	JR_CHECK_EQ(commands[6], 0x54f00006u);
 	JR_CHECK_EQ(commands[8], 0x00320028u);
 	JR_CHECK_EQ(commands[9], 0x003b0030u);
+	JR_CHECK_EQ(commands[10], 0x00200000u);
 	JR_CHECK_EQ(commands[11], 0x001e0014u);
+	JR_CHECK_EQ(commands[13], 0x00100000u);
 	JR_CHECK_EQ(commands[14], 0x13204001u);
 	JR_CHECK_EQ(commands[16], 0x12345678u);
 }

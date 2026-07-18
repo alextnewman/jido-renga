@@ -185,9 +185,9 @@ AppendBcsFill(uint32* commands, size_t capacity, size_t& count,
 
 inline bool
 AppendBcsCopy(uint32* commands, size_t capacity, size_t& count,
-	uint32 framebufferOffset, uint32 stride, uint16 sourceLeft,
-	uint16 sourceTop, uint16 destinationLeft, uint16 destinationTop,
-	uint16 width, uint16 height)
+	uint32 sourceOffset, uint32 destinationOffset, uint32 stride,
+	uint16 sourceLeft, uint16 sourceTop, uint16 destinationLeft,
+	uint16 destinationTop, uint16 width, uint16 height)
 {
 	if (commands == NULL || count > capacity || capacity - count < 8
 		|| stride == 0 || width == UINT16_MAX || height == UINT16_MAX) {
@@ -201,11 +201,11 @@ AppendBcsCopy(uint32* commands, size_t capacity, size_t& count,
 	commands[count++] = (static_cast<uint32>(
 			destinationTop + height + 1) << 16)
 		| static_cast<uint16>(destinationLeft + width + 1);
-	commands[count++] = framebufferOffset;
+	commands[count++] = destinationOffset;
 	commands[count++] = (static_cast<uint32>(sourceTop) << 16)
 		| sourceLeft;
 	commands[count++] = stride;
-	commands[count++] = framebufferOffset;
+	commands[count++] = sourceOffset;
 	return true;
 }
 

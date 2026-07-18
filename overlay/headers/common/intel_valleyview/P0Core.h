@@ -15,7 +15,13 @@ constexpr uint32 kP0BytesPerRow = 5504;
 constexpr uint32 kP0FramebufferBytes = kP0BytesPerRow * kP0Height;
 constexpr uint32 kP0FramebufferPages
 	= kP0FramebufferBytes / kPageSize;
-constexpr uint32 kP0CursorPage = kP0FramebufferPages;
+constexpr uint32 kP0RenderPage = 0;
+constexpr uint32 kP0Scanout0Page
+	= kP0RenderPage + kP0FramebufferPages;
+constexpr uint32 kP0Scanout1Page
+	= kP0Scanout0Page + kP0FramebufferPages;
+constexpr uint32 kP0CursorPage
+	= kP0Scanout1Page + kP0FramebufferPages;
 constexpr uint32 kP0CursorPages = 4;
 constexpr uint32 kP0CursorBytes = kP0CursorPages * kPageSize;
 constexpr uint32 kP0RingPage = kP0CursorPage + kP0CursorPages;
@@ -24,7 +30,7 @@ constexpr uint32 kP0TestSourcePage = kP0StatusPage + 1;
 constexpr uint32 kP0TestDestinationPage = kP0TestSourcePage + 1;
 constexpr uint32 kP0PageCount = kP0TestDestinationPage + 1;
 constexpr uint32 kP0AllocationBytes = kP0PageCount * kPageSize;
-constexpr uint32 kP0PrivatePageCount = kP0PageCount - kP0FramebufferPages;
+constexpr uint32 kP0PrivatePageCount = kP0PageCount - kP0CursorPage;
 constexpr uint32 kP0PrivateBytes = kP0PrivatePageCount * kPageSize;
 
 constexpr uint32 kWinkyFirmwareWidth = 1024;
@@ -54,6 +60,7 @@ constexpr uint16 kWinkyPwmPeriod = 7812;
 struct P0Layout {
 	uint32	base;
 	uint32	framebuffer;
+	uint32	scanout[2];
 	uint32	cursor;
 	uint32	ring;
 	uint32	status;
@@ -127,21 +134,37 @@ IsWinkyP0TakeoverState(const FirmwareSnapshot& snapshot)
 
 
 inline bool
-P0PagePhysical(uint64 framebufferPhysical, uint64 privatePhysical,
-	uint32 page, uint64& physical)
+P0PagePhysical(uint64 framebufferPhysical, uint64 scanout0Physical,
+	uint64 scanout1Physical, uint64 privatePhysical, uint32 page,
+	uint64& physical)
 {
 	if (page >= kP0PageCount
 		|| (framebufferPhysical & kPageMask) != 0
+		|| (scanout0Physical & kPageMask) != 0
+		|| (scanout1Physical & kPageMask) != 0
 		|| (privatePhysical & kPageMask) != 0) {
 		return false;
 	}
 	if (page < kP0FramebufferPages)
 		physical = framebufferPhysical + page * kPageSize;
-	else {
+	else if (page < kP0Scanout1Page) {
+		physical = scanout0Physical
+			+ (page - kP0Scanout0Page) * kPageSize;
+	} else if (page < kP0CursorPage) {
+		physical = scanout1Physical
+			+ (page - kP0Scanout1Page) * kPageSize;
+	} else {
 		physical = privatePhysical
-			+ (page - kP0FramebufferPages) * kPageSize;
+			+ (page - kP0CursorPage) * kPageSize;
 	}
 	return physical < 0x100000000ull;
+}
+
+
+inline bool
+P0PageSnooped(uint32 page)
+{
+	return page < kP0FramebufferPages;
 }
 
 
@@ -160,6 +183,8 @@ BuildP0Layout(uint64 gmadrSize, uint64 liveOffset, uint64 liveLength,
 
 	layout.base = static_cast<uint32>(base);
 	layout.framebuffer = layout.base;
+	layout.scanout[0] = layout.base + kP0Scanout0Page * kPageSize;
+	layout.scanout[1] = layout.base + kP0Scanout1Page * kPageSize;
 	layout.cursor = layout.base + kP0CursorPage * kPageSize;
 	layout.ring = layout.base + kP0RingPage * kPageSize;
 	layout.status = layout.base + kP0StatusPage * kPageSize;

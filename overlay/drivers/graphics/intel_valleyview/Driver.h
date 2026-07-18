@@ -26,6 +26,8 @@ struct ValleyViewDevice {
 	pci_device*				pciDevice;
 	pci_info					pciInfo;
 	mutex						lock;
+	mutex						presentLock;
+	mutex						bcsLock;
 	int32						openCount;
 	bool						enabled;
 	bool						allowModeset;
@@ -47,6 +49,9 @@ struct ValleyViewDevice {
 	void*						framebuffer;
 	phys_addr_t					p0Physical;
 	uint32						p0Size;
+	area_id						scanoutArea[2];
+	void*						scanout[2];
+	phys_addr_t					scanoutPhysical[2];
 	area_id						p0PrivateArea;
 	void*						p0Private;
 	phys_addr_t					p0PrivatePhysical;
@@ -74,12 +79,31 @@ struct ValleyViewDevice {
 	int32						cursorY;
 	int32						nativeStatus;
 	int32						bcsStatus;
+	int32						presentStatus;
+	int32						presentBcsStatus;
+	thread_id					presentThread;
+	bool						presentRunning;
+	bool						presentEnabled;
+	bool						presentUsesBcs;
+	bool						presentPendingTimedOut;
+	int32						activeScanout;
+	int32						pendingScanout;
+	bigtime_t					presentFlipStarted;
 	uint64						bcsSubmissions;
 	uint64						bcsFailures;
 	uint64						bcsFillRequests;
 	uint64						bcsBlitRequests;
+	uint64						bcsPresentRequests;
 	uint64						cpuFillFallbacks;
 	uint64						cpuBlitFallbacks;
+	uint64						presentFrames;
+	uint64						presentFailures;
+	uint64						presentBcsCopies;
+	uint64						presentCpuCopies;
+	uint64						presentCopyLastUs;
+	uint64						presentCopyMaxUs;
+	uint64						presentFlipLastUs;
+	uint64						presentFlipMaxUs;
 	uint64						cursorShapeUpdates;
 	uint64						cursorBitmapUpdates;
 	uint64						cursorMoveUpdates;
@@ -99,10 +123,13 @@ status_t RunGpuSelfTest(ValleyViewDevice& device,
 	valleyview::GpuDiagnostics& diagnostics);
 status_t InitializeP0(ValleyViewDevice& device);
 status_t ShutdownP0(ValleyViewDevice& device);
+void ReleaseP0Areas(ValleyViewDevice& device);
 status_t ValidateP0FirmwareState(const ValleyViewDevice& device);
-void GetP0Status(const ValleyViewDevice& device, valleyview::P0Status& status);
+void GetP0Status(ValleyViewDevice& device, valleyview::P0Status& status);
 status_t InitializeBcsRuntime(ValleyViewDevice& device);
 status_t QuiesceBcsRuntime(ValleyViewDevice& device);
+status_t SubmitBcsPresent(ValleyViewDevice& device, uint32 sourceOffset,
+	uint32 destinationOffset);
 status_t SubmitBcsFill(ValleyViewDevice& device,
 	const valleyview::BcsFillRequest& request);
 status_t SubmitBcsBlit(ValleyViewDevice& device,
