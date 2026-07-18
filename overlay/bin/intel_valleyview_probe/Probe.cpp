@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
 // SPDX-License-Identifier: MIT
-// SPDX-FileContributor: Generated with GPT-5.6 Sol
-// SPDX-FileContributor: Generated with Claude Opus 4.8
+// SPDX-FileContributor: Generated with GitHub Copilot
 
 #include <common/intel_valleyview/FirmwareState.h>
 #include <common/intel_valleyview/Protocol.h>
