@@ -50,6 +50,8 @@ LICENSES/   REUSE license texts
 
 The full procedure is in
 [`skills/jido-renga-overlay-build/SKILL.md`](skills/jido-renga-overlay-build/SKILL.md).
+ValleyView graphics work must also preserve the proven contracts in
+[`skills/intel-valleyview-p0/SKILL.md`](skills/intel-valleyview-p0/SKILL.md).
 
 Quick build:
 
@@ -59,8 +61,9 @@ mkdir generated.x86_64 && cd generated.x86_64
 ../haiku/configure --cross-tools-source ../buildtools --build-cross-tools x86_64
 cd .. && tools/weave generated.x86_64
 cd generated.x86_64
-../tools/jr-jam -q i2c_guarded iosf_mbi sdhci_embedded \
-  cros_ec_keyboard i2c_atmel_mxt
+../tools/jr-jam -q gpio byt_gpio i2c_guarded iosf_mbi sdhci_embedded \
+  cros_ec_keyboard i2c_atmel_mxt byt_max98090 intel_valleyview \
+  intel_valleyview.accelerant intel_valleyview_probe
 ```
 
 ## Licensing and attribution

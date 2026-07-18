@@ -46,6 +46,7 @@ The first BSP targets the Samsung Chromebook 2 `XE500C12`, ChromeOS board
 | `byt_gpio` | Interrupt-driven GPIO controller | Bay Trail `INT33FC`/`INT33B2` |
 | `iosf_mbi` | Shared IOSF sideband access | Bay Trail transaction router |
 | `sdhci_embedded` | eMMC and removable-SD host controller | ACPI `80860F14`, `80860F16` |
+| `intel_valleyview` | Native P0 graphics, BCS page-flip presentation, and ARGB cursor | ValleyView `8086:0f31`, eDP on DP_C |
 | `cros_ec_keyboard` | 8042-compatible EC keyboard | ACPI `GOOG000A` |
 | `i2c_atmel_mxt` | Atmel maXTouch touchpad | ACPI `ATML0000` |
 | `byt_max98090` | Internal audio (SST + MAX98090) | SST `80860F28`, I2C `193C9890` |
@@ -54,6 +55,15 @@ Winky boots Haiku from removable SD, identifies and uses its eMMC, supports
 installation to eMMC, and provides working keyboard and touchpad input. SD hot
 insertion, automatic mounting, repeated removal/reinsertion, and logical eject
 are hardware-validated.
+
+The `intel_valleyview` driver provides a native 1366x768 desktop on Winky. It
+hands app_server a cached shadow framebuffer, copies complete frames with BCS
+into alternating write-combined scanouts, and latches each finished surface at
+vblank. The display never scans the buffer being drawn or copied. A 64x64 ARGB
+hardware cursor, PWM brightness, and soft DPMS complete the P0 path. This
+architecture is hardware-validated for fast, smooth window, text, and cursor
+motion without the transient block shimmer of direct live-framebuffer updates.
+
 The audio driver implements the complete legacy Intel SST/MRFLD playback path:
 firmware loading, codec initialization, 10-command route configuration, stream
 allocation/start/stop/free, and `B_MULTI_BUFFER_EXCHANGE` with period-elapsed
@@ -114,7 +124,8 @@ cd ..
 tools/weave generated.x86_64
 cd generated.x86_64
 ../tools/jr-jam -q gpio byt_gpio i2c_guarded iosf_mbi sdhci_embedded \
-  cros_ec_keyboard i2c_atmel_mxt byt_max98090
+  cros_ec_keyboard i2c_atmel_mxt byt_max98090 intel_valleyview \
+  intel_valleyview.accelerant intel_valleyview_probe
 ```
 
 Build a bootable desktop image with:
@@ -180,6 +191,7 @@ LICENSES/   REUSE license texts
 
 Useful references:
 
+- [`docs/drivers/intel_valleyview.md`](docs/drivers/intel_valleyview.md)
 - [`docs/drivers/cros_ec_keyboard.md`](docs/drivers/cros_ec_keyboard.md)
 - [`docs/drivers/i2c_atmel_mxt.md`](docs/drivers/i2c_atmel_mxt.md)
 - [`docs/drivers/byt_max98090.md`](docs/drivers/byt_max98090.md)

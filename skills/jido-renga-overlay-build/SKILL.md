@@ -85,8 +85,9 @@ tools/weave generated.x86_64
 
 # 3. Build from inside the build dir, via the jr-jam wrapper.
 cd generated.x86_64
-../tools/jr-jam -q i2c_guarded iosf_mbi sdhci_embedded \
-  cros_ec_keyboard i2c_atmel_mxt
+../tools/jr-jam -q gpio byt_gpio i2c_guarded iosf_mbi sdhci_embedded \
+  cros_ec_keyboard i2c_atmel_mxt byt_max98090 intel_valleyview \
+  intel_valleyview.accelerant intel_valleyview_probe
 
 # 4. (optional) Fold the selected BSP's add-ons into a bootable anyboot image
 #    instead of building them loose. The overlay composes each into haiku.hpkg
@@ -125,6 +126,20 @@ set the pointer back to T5 before every follow-up message read. T5 is a FIFO-lik
 object, not linear memory after the first message; an addressless continuation
 can lose a contact release. Keep runtime and initialization drains on the shared
 `MxtMessageReadStep()` contract and its host tests.
+
+### ValleyView P0 presentation invariant
+
+`intel_valleyview` does not expose its live scanout to app_server. The
+app_server-facing framebuffer is a cached, snooped shadow. A serialized present
+worker copies each complete frame into the inactive write-combined scanout and
+does not reuse that scanout until `DSPASURFLIVE` confirms the page flip. This
+shadow/copy/confirmed-flip architecture is hardware-validated on Winky and must
+remain the baseline.
+
+Graphics changes must also follow
+[`skills/intel-valleyview-p0/SKILL.md`](../intel-valleyview-p0/SKILL.md), which
+records the GGTT cache policy, lock order, BCS completion contract, DPMS
+ownership rules, quarantine requirements, and hardware validation procedure.
 
 ## The derivative-revision seam
 
@@ -264,8 +279,9 @@ git diff --check
 
 # Cross-link every overlay module used by the BSP.
 cd generated.x86_64
-../tools/jr-jam -q i2c_guarded iosf_mbi sdhci_embedded \
-  cros_ec_keyboard i2c_atmel_mxt
+../tools/jr-jam -q gpio byt_gpio i2c_guarded iosf_mbi sdhci_embedded \
+  cros_ec_keyboard i2c_atmel_mxt byt_max98090 intel_valleyview \
+  intel_valleyview.accelerant intel_valleyview_probe
 
 # Compose the real package/image, not only loose add-ons.
 ../tools/jr-jam -q @nightly-anyboot
@@ -275,7 +291,7 @@ package_tool=$(find objects/linux -path '*/tools/package/package' \
   -type f -print -quit)
 "$package_tool" list -p \
   objects/haiku/x86_64/packaging/packages/haiku.hpkg \
-  | grep -E 'add-ons/kernel/(boot|bus_managers|busses/mmc|drivers/input)'
+  | grep -E 'add-ons/(accelerants|kernel/(boot|bus_managers|busses/mmc|drivers/(graphics|input)))|bin/intel_valleyview_probe'
 ```
 
 For Winky, require all of these:
@@ -284,6 +300,9 @@ For Winky, require all of these:
 - `add-ons/kernel/bus_managers/i2c`
 - `add-ons/kernel/bus_managers/iosf_mbi`
 - `add-ons/kernel/busses/mmc/sdhci_embedded`
+- `add-ons/kernel/drivers/graphics/intel_valleyview`
+- `add-ons/accelerants/intel_valleyview.accelerant`
+- `bin/intel_valleyview_probe`
 - `add-ons/kernel/drivers/input/i2c_atmel_mxt`
 - `add-ons/kernel/drivers/input/i2c_elan`
 - no stock `add-ons/kernel/busses/mmc/sdhci`
