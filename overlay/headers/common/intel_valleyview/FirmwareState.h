@@ -70,6 +70,7 @@ constexpr uint32 kGen7PteSize = 4;
 constexpr uint32 kGen7PtePresent = 1u << 0;
 constexpr uint32 kGen7PtePhysMask = 0xfffff000u;
 constexpr uint32 kPageMask = 0xfffu;
+constexpr uint32 kPageSize = kPageMask + 1;
 
 constexpr size_t kOpRegionSize = 8 * 1024;
 constexpr uint32 kOpRegionAsls = 0xfc;
@@ -190,6 +191,13 @@ DecodePtePhysical(uint32 pte)
 }
 
 
+inline bool
+RangeFits(uint64 offset, uint64 length, uint64 size)
+{
+	return length != 0 && offset <= size && length <= size - offset;
+}
+
+
 inline void
 DecodeFirmwareSnapshot(FirmwareSnapshot& snapshot)
 {
@@ -198,7 +206,8 @@ DecodeFirmwareSnapshot(FirmwareSnapshot& snapshot)
 		| kSnapshotPortEnabled | kSnapshotPpsOn | kSnapshotPpsReady
 		| kSnapshotPwmEnabled | kSnapshotCursorEnabled
 		| kSnapshotPanelFitterEnabled | kSnapshotBootFramebuffer
-		| kSnapshotAdoptionCompatible | kSnapshotScanoutMatchesBoot);
+		| kSnapshotAdoptionCompatible | kSnapshotScanoutMatchesBoot
+		| kSnapshotGttRangePresent);
 
 	snapshot.hDisplay = DecodeLowSize(snapshot.hTotal);
 	snapshot.hTotalPixels = DecodeHighSize(snapshot.hTotal);
@@ -243,25 +252,37 @@ DecodeFirmwareSnapshot(FirmwareSnapshot& snapshot)
 		snapshot.flags |= kSnapshotBootFramebuffer;
 	}
 
-	// Resolve the live scanout's physical page via the GTT PTE that the
-	// firmware programmed for the plane's GGTT offset, and require it to name
-	// the same page the boot loader reported. This proves the framebuffer we
-	// would adopt is the surface PIPE A is actually displaying, so a mismatch
-	// fails closed to the generic framebuffer instead of handing app_server a
-	// buffer that is never scanned out.
+	// FRAME_BUFFER_BOOT_INFO names the CPU-visible GMADR aperture, while the
+	// GTT PTE names its backing stolen-memory page. Prove ownership in the
+	// aperture domain: the boot address must exactly equal GMADR plus the live
+	// DSPSURF and DSPLINOFF values, and the complete buffer must fit in BAR2.
+	const uint64 scanoutOffset
+		= static_cast<uint64>(snapshot.planeGgttOffset)
+			+ snapshot.planeLinearOffset;
+	if (snapshot.gmadrBase != 0
+		&& scanoutOffset <= UINT64_MAX - snapshot.gmadrBase) {
+		snapshot.scanoutAperture = snapshot.gmadrBase + scanoutOffset;
+	} else
+		snapshot.scanoutAperture = 0;
+
 	snapshot.scanoutPhysical = DecodePtePhysical(snapshot.gttPte);
-	if (snapshot.scanoutPhysical != 0
-		&& (snapshot.scanoutPhysical & ~static_cast<uint64>(kPageMask))
-			== (snapshot.bootFramebufferPhysical
-				& ~static_cast<uint64>(kPageMask))) {
+	if (snapshot.scanoutAperture != 0
+		&& snapshot.scanoutAperture == snapshot.bootFramebufferPhysical
+		&& RangeFits(scanoutOffset, snapshot.bootFramebufferSize,
+			snapshot.gmadrSize)) {
 		snapshot.flags |= kSnapshotScanoutMatchesBoot;
 	}
+
+	if (snapshot.gttRequiredPages != 0
+		&& snapshot.gttPresentPages == snapshot.gttRequiredPages)
+		snapshot.flags |= kSnapshotGttRangePresent;
 
 	const uint32 requiredState = kSnapshotMmioMapped
 		| kSnapshotDpllEnabled | kSnapshotDpllLocked
 		| kSnapshotPipeEnabled | kSnapshotPlaneEnabled
 		| kSnapshotPortEnabled | kSnapshotPpsOn | kSnapshotPpsReady
-		| kSnapshotBootFramebuffer | kSnapshotScanoutMatchesBoot;
+		| kSnapshotBootFramebuffer | kSnapshotScanoutMatchesBoot
+		| kSnapshotGttRangePresent;
 	if ((snapshot.flags & requiredState) == requiredState
 		&& snapshot.bootWidth == snapshot.sourceWidth
 		&& snapshot.bootHeight == snapshot.sourceHeight

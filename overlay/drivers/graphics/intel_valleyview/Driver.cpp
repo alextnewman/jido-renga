@@ -123,7 +123,7 @@ CaptureMmio(ValleyViewDevice& device)
 	snapshot.cursorBase = ReadMmio(registers, valleyview::kCursorBaseA);
 	snapshot.cursorPosition = ReadMmio(registers, valleyview::kCursorPositionA);
 
-	// GMADR (BAR2 on Gen4+) is the CPU aperture; recorded for diagnostics only.
+	// GMADR (BAR2 on Gen4+) is the CPU-visible GGTT aperture.
 	if ((device.pciInfo.u.h0.base_register_flags[2] & PCI_address_space) == 0) {
 		uint64 gmadr = device.pciInfo.u.h0.base_registers[2];
 		if ((device.pciInfo.u.h0.base_register_flags[2] & PCI_address_type)
@@ -131,18 +131,41 @@ CaptureMmio(ValleyViewDevice& device)
 			gmadr |= (uint64)device.pciInfo.u.h0.base_registers[3] << 32;
 		}
 		snapshot.gmadrBase = gmadr;
+		snapshot.gmadrSize = device.pciInfo.u.h0.base_register_sizes[2];
 	}
 
-	// Read the GTT PTE that maps the plane's live GGTT page. The GTT lives in
-	// the upper half of this same read-only BAR mapping; a short or missing
-	// mapping simply leaves gttPte zero, which fails the adoption gate closed.
-	snapshot.planeGgttOffset = snapshot.planeAddressVlv & ~valleyview::kPageMask;
-	const uint64 pteByteOffset = valleyview::kGttOffsetInBar
-		+ static_cast<uint64>(snapshot.planeGgttOffset >> 12)
-			* valleyview::kGen7PteSize;
-	if (pteByteOffset + valleyview::kGen7PteSize <= size) {
-		snapshot.gttPte
-			= ReadMmio(registers, static_cast<uint32>(pteByteOffset));
+	// Linux's firmware-state readout uses DSPSURF plus DSPLINOFF for display
+	// version 4+, including ValleyView. Validate every GTT entry covering the
+	// linear scanout footprint; PTE backing addresses are diagnostic only.
+	snapshot.planeGgttOffset = snapshot.planeSurface
+		& ~valleyview::kPageMask;
+	const uint64 scanoutOffset
+		= static_cast<uint64>(snapshot.planeGgttOffset)
+			+ snapshot.planeLinearOffset;
+	const uint64 footprint = static_cast<uint64>(snapshot.planeStride)
+		* ((snapshot.pipeSource & 0xffff) + 1);
+	const uint64 firstPage = scanoutOffset / valleyview::kPageSize;
+	const uint64 pageOffset = scanoutOffset & valleyview::kPageMask;
+	if (footprint != 0 && footprint <= UINT64_MAX - pageOffset) {
+		const uint64 pageCount = (pageOffset + footprint
+				+ valleyview::kPageMask) / valleyview::kPageSize;
+		const uint64 firstPteOffset = valleyview::kGttOffsetInBar
+			+ firstPage * valleyview::kGen7PteSize;
+		const uint64 pteBytes = pageCount * valleyview::kGen7PteSize;
+		if (pageCount <= UINT32_MAX
+			&& valleyview::RangeFits(firstPteOffset, pteBytes, size)) {
+			snapshot.gttRequiredPages = static_cast<uint32>(pageCount);
+			for (uint32 index = 0; index < snapshot.gttRequiredPages;
+					index++) {
+				const uint32 pte = ReadMmio(registers,
+					static_cast<uint32>(firstPteOffset
+						+ index * valleyview::kGen7PteSize));
+				if (index == 0)
+					snapshot.gttPte = pte;
+				if ((pte & valleyview::kGen7PtePresent) != 0)
+					snapshot.gttPresentPages++;
+			}
+		}
 	}
 	delete_area(area);
 

@@ -68,10 +68,16 @@ PrintSnapshot(const valleyview::FirmwareSnapshot& snapshot)
 		snapshot.planeSurface, snapshot.planeSurfaceLive,
 		snapshot.planeAddressVlv, snapshot.planeLinearOffset,
 		snapshot.planeTileOffset);
-	printf("scanout gmadr=%#" B_PRIx64 " ggtt_offset=%#08" B_PRIx32
-		" pte=%#08" B_PRIx32 " physical=%#" B_PRIx64 " matches_boot=%s\n",
-		snapshot.gmadrBase, snapshot.planeGgttOffset, snapshot.gttPte,
-		snapshot.scanoutPhysical,
+	printf("scanout gmadr=%#" B_PRIx64 " size=%#" B_PRIx64
+		" ggtt_offset=%#08" B_PRIx32 " aperture=%#" B_PRIx64
+		" pte=%#08" B_PRIx32 " backing=%#" B_PRIx64
+		" pages=%" B_PRIu32 "/%" B_PRIu32
+		" present=%s matches_boot=%s\n",
+		snapshot.gmadrBase, snapshot.gmadrSize, snapshot.planeGgttOffset,
+		snapshot.scanoutAperture, snapshot.gttPte,
+		snapshot.scanoutPhysical, snapshot.gttPresentPages,
+		snapshot.gttRequiredPages,
+		YesNo((snapshot.flags & valleyview::kSnapshotGttRangePresent) != 0),
 		YesNo((snapshot.flags & valleyview::kSnapshotScanoutMatchesBoot) != 0));
 	printf("panel_fitter control=%#08" B_PRIx32 " enabled=%s programmed=%#08"
 		B_PRIx32 " auto=%#08" B_PRIx32 "\n", snapshot.panelFitterControl,

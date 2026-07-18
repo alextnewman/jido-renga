@@ -89,27 +89,37 @@ JR_TEST(intel_valleyview_firmware, requires_exact_linear_boot_scanout_for_adopti
 	snapshot.bootHeight = 768;
 	snapshot.bootDepth = 32;
 	snapshot.bootBytesPerRow = 4096;
-	// GTT PTE resolving to the same physical page the boot loader reported.
-	snapshot.gttPte = 0x80000000u | kGen7PtePresent;
+	snapshot.gmadrBase = 0x80000000;
+	snapshot.gmadrSize = 256u * 1024 * 1024;
+	snapshot.gttPte = 0x70000000u | kGen7PtePresent;
+	snapshot.gttRequiredPages = 768;
+	snapshot.gttPresentPages = 768;
 
 	DecodeFirmwareSnapshot(snapshot);
-	JR_CHECK_EQ(snapshot.scanoutPhysical, 0x80000000ull);
+	JR_CHECK_EQ(snapshot.scanoutAperture, 0x80000000ull);
+	JR_CHECK_EQ(snapshot.scanoutPhysical, 0x70000000ull);
 	JR_CHECK((snapshot.flags & kSnapshotScanoutMatchesBoot) != 0);
+	JR_CHECK((snapshot.flags & kSnapshotGttRangePresent) != 0);
 	JR_CHECK((snapshot.flags & kSnapshotAdoptionCompatible) != 0);
 
-	// A PTE naming a different page must fail the gate closed.
-	snapshot.gttPte = 0x70000000u | kGen7PtePresent;
+	// PTE backing is a distinct address domain and need not equal GMADR.
+	snapshot.gttPte = 0x60000000u | kGen7PtePresent;
+	DecodeFirmwareSnapshot(snapshot);
+	JR_CHECK((snapshot.flags & kSnapshotAdoptionCompatible) != 0);
+
+	// A different aperture address must fail the gate closed.
+	snapshot.bootFramebufferPhysical = 0x81000000;
 	DecodeFirmwareSnapshot(snapshot);
 	JR_CHECK((snapshot.flags & kSnapshotScanoutMatchesBoot) == 0);
 	JR_CHECK((snapshot.flags & kSnapshotAdoptionCompatible) == 0);
 
-	// An absent PTE (bit 0 clear) resolves to no physical page.
-	snapshot.gttPte = 0x80000000u;
+	snapshot.bootFramebufferPhysical = 0x80000000;
+	snapshot.gttPresentPages = 767;
 	DecodeFirmwareSnapshot(snapshot);
-	JR_CHECK_EQ(snapshot.scanoutPhysical, 0ull);
+	JR_CHECK((snapshot.flags & kSnapshotGttRangePresent) == 0);
 	JR_CHECK((snapshot.flags & kSnapshotAdoptionCompatible) == 0);
 
-	snapshot.gttPte = 0x80000000u | kGen7PtePresent;
+	snapshot.gttPresentPages = 768;
 	snapshot.bootBytesPerRow = 4092;
 	DecodeFirmwareSnapshot(snapshot);
 	JR_CHECK((snapshot.flags & kSnapshotAdoptionCompatible) == 0);
@@ -118,6 +128,50 @@ JR_TEST(intel_valleyview_firmware, requires_exact_linear_boot_scanout_for_adopti
 	snapshot.planeControl |= kPlaneTiled;
 	DecodeFirmwareSnapshot(snapshot);
 	JR_CHECK((snapshot.flags & kSnapshotAdoptionCompatible) == 0);
+
+	snapshot.planeControl &= ~kPlaneTiled;
+	snapshot.bootFramebufferPhysical = 0x8ff00000;
+	snapshot.bootFramebufferSize = 2u * 1024 * 1024;
+	DecodeFirmwareSnapshot(snapshot);
+	JR_CHECK((snapshot.flags & kSnapshotScanoutMatchesBoot) == 0);
+}
+
+
+JR_TEST(intel_valleyview_firmware, resolves_nonzero_ggtt_offset_into_aperture)
+{
+	// A firmware scanout parked at a nonzero GGTT offset must resolve to
+	// GMADR base plus that offset (plus any linear offset) in the aperture
+	// domain, independent of the unrelated PTE backing page.
+	FirmwareSnapshot snapshot = {};
+	snapshot.flags = kSnapshotMmioMapped;
+	snapshot.dpllA = kDpllVcoEnable | kDpllLock;
+	snapshot.pipeSource = (1023u << 16) | 767u;
+	snapshot.pipeConfig = kPipeEnable;
+	snapshot.planeControl = kPlaneEnable | kPlaneFormatBgrx888;
+	snapshot.planeStride = 4096;
+	// planeGgttOffset is what DecodeFirmwareSnapshot actually consumes; the
+	// driver derives it from planeSurface (masked to a page boundary) before
+	// calling this pure function, so the test supplies it pre-derived too.
+	snapshot.planeGgttOffset = 0x00200000;
+	snapshot.planeLinearOffset = 0;
+	snapshot.dpC = kDpPortEnable;
+	snapshot.ppsStatus = kPpsOn | kPpsReady;
+	snapshot.bootFramebufferStatus = B_OK;
+	snapshot.bootFramebufferPhysical = 0xd0200000;
+	snapshot.bootFramebufferSize = 4096u * 768;
+	snapshot.bootWidth = 1024;
+	snapshot.bootHeight = 768;
+	snapshot.bootDepth = 32;
+	snapshot.bootBytesPerRow = 4096;
+	snapshot.gmadrBase = 0xd0000000;
+	snapshot.gmadrSize = 256u * 1024 * 1024;
+	snapshot.gttRequiredPages = 768;
+	snapshot.gttPresentPages = 768;
+
+	DecodeFirmwareSnapshot(snapshot);
+	JR_CHECK_EQ(snapshot.scanoutAperture, 0xd0200000ull);
+	JR_CHECK((snapshot.flags & kSnapshotScanoutMatchesBoot) != 0);
+	JR_CHECK((snapshot.flags & kSnapshotAdoptionCompatible) != 0);
 }
 
 
