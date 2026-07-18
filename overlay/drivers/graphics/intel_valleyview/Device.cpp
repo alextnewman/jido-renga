@@ -5,6 +5,7 @@
 #include "Driver.h"
 
 #include <common/intel_valleyview/Protocol.h>
+#include <common/intel_valleyview/RenderProtocol.h>
 
 #include <graphic_driver.h>
 
@@ -445,6 +446,44 @@ Control(void* cookie, uint32 operation, void* buffer, size_t length)
 			test.flags = test.after.flags;
 			status_t copyStatus = user_memcpy(buffer, &test, sizeof(test));
 			return copyStatus == B_OK ? status : copyStatus;
+		}
+
+		case valleyview::kGetRenderDeviceInfo:
+		{
+			if (buffer == NULL
+				|| length < sizeof(valleyview::RenderDeviceInfo)) {
+				return B_BAD_VALUE;
+			}
+
+			valleyview::RenderDeviceInfo info = {};
+			info.header = valleyview::MakeRenderAbiHeader(sizeof(info));
+			info.status = B_NOT_SUPPORTED;
+			info.vendorId = device->pciInfo.vendor_id;
+			info.deviceId = device->pciInfo.device_id;
+			info.revision = device->pciInfo.revision;
+			info.graphicsGeneration = 7;
+			info.gpuAddressBits = 32;
+			info.pageSize = valleyview::kPageSize;
+			info.capabilities = valleyview::kRenderCapabilityDeviceInfo;
+
+			mutex_lock(&device->lock);
+			info.apertureBase = device->snapshot.gmadrBase;
+			info.apertureSize = device->snapshot.gmadrSize;
+			if (info.apertureSize != 0)
+				info.deviceFlags |= valleyview::kRenderDeviceGgtt;
+			info.deviceFlags |= valleyview::kRenderDeviceNoLlc;
+			mutex_lock(&device->bcsLock);
+			if (device->bcsReady)
+				info.provenEngines |= valleyview::kRenderEngineBcs;
+			mutex_unlock(&device->bcsLock);
+			if (device->nativeActive) {
+				info.deviceFlags |= valleyview::kRenderDeviceDisplayReserved;
+				info.displayReservedOffset = device->p0Layout.base;
+				info.displayReservedSize = valleyview::kP0AllocationBytes;
+			}
+			mutex_unlock(&device->lock);
+
+			return user_memcpy(buffer, &info, sizeof(info));
 		}
 
 		default:

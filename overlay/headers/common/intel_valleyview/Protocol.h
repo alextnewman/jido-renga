@@ -40,7 +40,8 @@ enum {
 	kBcsFill,
 	kBcsBlit,
 	kRunP0SelfTest,
-	kSetCursorBitmap
+	kSetCursorBitmap,
+	kGetRenderDeviceInfo
 };
 
 enum DisplayState : uint32 {

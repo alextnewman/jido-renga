@@ -73,6 +73,7 @@ JR_TEST(intel_valleyview, assigns_stable_private_operations)
 	JR_CHECK_EQ(kBcsBlit, 10018);
 	JR_CHECK_EQ(kRunP0SelfTest, 10019);
 	JR_CHECK_EQ(kSetCursorBitmap, 10020);
+	JR_CHECK_EQ(kGetRenderDeviceInfo, 10021);
 	JR_CHECK_NE(kGetDeviceName, kGetDriverStatus);
 	JR_CHECK_NE(kGetDriverStatus, kGetDeviceIdentity);
 }

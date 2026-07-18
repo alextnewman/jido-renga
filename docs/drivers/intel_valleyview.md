@@ -155,6 +155,26 @@ scanout matches `DSPASURFLIVE`.
 `intel_valleyview_probe --p0-test` reruns the private BCS fill/copy self-test
 under the same serialization used by presentation.
 
+## Render boundary
+
+The kernel driver exposes a separately versioned `kGetRenderDeviceInfo` query
+for hardware-renderer discovery. It reports the ValleyView generation, GGTT
+aperture, no-LLC cache model, P0's reserved aperture range, and the distinction
+between engines proven by kernel diagnostics and engines available for
+userspace submission.
+
+The current render status is deliberately `B_NOT_SUPPORTED`. Only device
+discovery is advertised; buffer objects, CPU mappings, GPU address spaces,
+cache-domain transitions, tiled buffers, render contexts, isolated RCS
+submission, completion fences, reset recovery, and drawable presentation are
+not yet exposed. `IsRenderReady()` requires all of those services and an RCS
+submission engine, so a hardware OpenGL add-on cannot mistake the proven
+kernel-owned BCS path for a safe Crocus transport. The image continues to use
+Mesa's Software Pipe OpenGL add-on.
+
+`intel_valleyview_probe --render-info` prints this boundary without attempting
+submission or changing GPU state.
+
 ## Current support
 
 The driver currently supports only the hardware-validated Winky configuration:

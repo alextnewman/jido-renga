@@ -5,6 +5,7 @@
 #include <common/intel_valleyview/FirmwareState.h>
 #include <common/intel_valleyview/P0Core.h>
 #include <common/intel_valleyview/Protocol.h>
+#include <common/intel_valleyview/RenderProtocol.h>
 
 #include <Accelerant.h>
 #include <OS.h>
@@ -246,6 +247,27 @@ PrintP0Status(const valleyview::P0Status& status)
 		status.presentCpuCopies, status.presentCopyLastUs,
 		status.presentCopyMaxUs, status.presentFlipLastUs,
 		status.presentFlipMaxUs);
+}
+
+
+void
+PrintRenderDeviceInfo(const valleyview::RenderDeviceInfo& info)
+{
+	printf("render status=%" B_PRId32 " ready=%s generation=%u"
+		" address_bits=%u device=%04x:%04x revision=%u\n",
+		info.status, YesNo(valleyview::IsRenderReady(info)),
+		info.graphicsGeneration, info.gpuAddressBits, info.vendorId,
+		info.deviceId, info.revision);
+	printf("render_memory aperture=%#" B_PRIx64 "/%#" B_PRIx64
+		" display_reserved=%#" B_PRIx64 "/%#" B_PRIx64
+		" page_size=%" B_PRIu32 " flags=%#08" B_PRIx32 "\n",
+		info.apertureBase, info.apertureSize, info.displayReservedOffset,
+		info.displayReservedSize, info.pageSize, info.deviceFlags);
+	printf("render_contract capabilities=%#016" B_PRIx64
+		" required=%#016" B_PRIx64 " proven_engines=%#08" B_PRIx32
+		" submission_engines=%#08" B_PRIx32 "\n",
+		info.capabilities, valleyview::kRenderRequiredCapabilities,
+		info.provenEngines, info.submissionEngines);
 }
 
 
@@ -501,6 +523,20 @@ main(int argc, char** argv)
 			close(device);
 			return 1;
 		}
+	} else if (argc == 2 && strcmp(argv[1], "--render-info") == 0) {
+		valleyview::RenderDeviceInfo info = {};
+		status = ioctl(device, valleyview::kGetRenderDeviceInfo, &info,
+			sizeof(info));
+		if (status != B_OK
+			|| !valleyview::IsValidRenderAbiHeader(info.header,
+				sizeof(info))) {
+			fprintf(stderr,
+				"intel_valleyview_probe: render info failed: %s\n",
+				strerror(status));
+			close(device);
+			return 1;
+		}
+		PrintRenderDeviceInfo(info);
 	} else if (argc == 2
 		&& (strcmp(argv[1], "--p0-status") == 0
 			|| strcmp(argv[1], "--p0-test") == 0
@@ -589,7 +625,7 @@ main(int argc, char** argv)
 	} else if (argc != 1) {
 		fprintf(stderr, "usage: intel_valleyview_probe"
 			" [--publish|--gpu-diagnostics|--gpu-self-test"
-			"|--p0-status|--p0-test|--p0-benchmark]\n");
+			"|--render-info|--p0-status|--p0-test|--p0-benchmark]\n");
 		close(device);
 		return 1;
 	}

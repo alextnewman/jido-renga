@@ -52,6 +52,8 @@ The full procedure is in
 [`skills/jido-renga-overlay-build/SKILL.md`](skills/jido-renga-overlay-build/SKILL.md).
 ValleyView graphics work must also preserve the proven contracts in
 [`skills/intel-valleyview-p0/SKILL.md`](skills/intel-valleyview-p0/SKILL.md).
+Crocus work must also follow the fail-closed render gates in
+[`skills/intel-valleyview-crocus/SKILL.md`](skills/intel-valleyview-crocus/SKILL.md).
 
 Quick build:
 
