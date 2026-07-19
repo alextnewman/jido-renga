@@ -74,6 +74,11 @@ JR_TEST(intel_valleyview, assigns_stable_private_operations)
 	JR_CHECK_EQ(kRunP0SelfTest, 10019);
 	JR_CHECK_EQ(kSetCursorBitmap, 10020);
 	JR_CHECK_EQ(kGetRenderDeviceInfo, 10021);
+	JR_CHECK_EQ(kRenderCreateBuffer, 10022);
+	JR_CHECK_EQ(kRenderMapBuffer, 10023);
+	JR_CHECK_EQ(kRenderCloseBuffer, 10024);
+	JR_CHECK_EQ(kRenderSetBufferDomain, 10025);
+	JR_CHECK_EQ(kRunRenderMemoryTest, 10026);
 	JR_CHECK_NE(kGetDeviceName, kGetDriverStatus);
 	JR_CHECK_NE(kGetDriverStatus, kGetDeviceIdentity);
 }

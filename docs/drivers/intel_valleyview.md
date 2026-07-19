@@ -163,17 +163,45 @@ aperture, no-LLC cache model, P0's reserved aperture range, and the distinction
 between engines proven by kernel diagnostics and engines available for
 userspace submission.
 
-The current render status is deliberately `B_NOT_SUPPORTED`. Only device
-discovery is advertised; buffer objects, CPU mappings, GPU address spaces,
-cache-domain transitions, tiled buffers, render contexts, isolated RCS
-submission, completion fences, reset recovery, and drawable presentation are
-not yet exposed. `IsRenderReady()` requires all of those services and an RCS
-submission engine, so a hardware OpenGL add-on cannot mistake the proven
-kernel-owned BCS path for a safe Crocus transport. The image continues to use
-Mesa's Software Pipe OpenGL add-on.
+The current render status remains deliberately `B_NOT_SUPPORTED`.
+`IsRenderReady()` additionally requires tiled buffers, render contexts,
+isolated RCS submission, completion fences, command isolation, reset recovery,
+and drawable presentation. A hardware OpenGL add-on therefore cannot mistake
+the proven kernel-owned BCS path for a complete Crocus transport. The image
+continues to use Mesa's Software Pipe OpenGL add-on.
 
 `intel_valleyview_probe --render-info` prints this boundary without attempting
 submission or changing GPU state.
+
+### Linear render-memory substrate
+
+When native P0 is healthy, the discovery query advertises per-open buffer
+objects, driver-owned CPU mappings, GGTT addresses, and cache-domain
+transitions.
+Each client is limited to 64 buffers, 16 MiB per buffer, and 64 MiB total.
+Buffers use fragmented pages locked below 4 GiB rather than requiring
+physically contiguous allocations.
+
+The GGTT allocator recognizes free space by the exact firmware scratch PTE
+saved during P0 takeover. It excludes GGTT address zero and the complete P0
+range, saves every displaced scratch entry, installs snooped writable PTEs, and
+verifies both installation and exact restoration. Buffer pages are quarantined
+rather than freed if restoration cannot be proven.
+
+Current buffers are linear, write-back CPU mappings with snooped GGTT entries.
+Mappings are non-transferable kernel areas revoked when their handle or client
+closes. Teardown detaches every inherited clone from the backing cache before
+releasing BO accounting, so forked mappings cannot retain pinned pages. Their
+tracked domains are CPU and the kernel-owned BCS. BCS submission remains
+synchronous under `bcsLock`; userspace cannot provide commands.
+
+`intel_valleyview_probe --render-memory-test` creates two client-owned buffers,
+clones both into the process, writes coordinate-dependent source and destination
+patterns, confirms that userspace cannot delete the driver-owned mappings,
+cycles their domains, performs a kernel-generated one-page BCS copy, verifies
+both mappings, restores their GGTT entries, and closes the handles. The BCS
+data path is hardware-validated on Winky while native P0 presentation remains
+active and fault-free.
 
 ## Current support
 

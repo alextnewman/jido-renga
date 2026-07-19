@@ -425,6 +425,7 @@ InitDriver(device_node* node, void** cookie)
 	device->enabled = settings.enabled;
 	device->allowModeset = settings.enabled && settings.allowModeset;
 	mutex_init(&device->lock, "intel_valleyview device");
+	mutex_init(&device->renderLock, "intel_valleyview render");
 	mutex_init(&device->presentLock, "intel_valleyview present");
 	mutex_init(&device->bcsLock, "intel_valleyview BCS");
 
@@ -492,6 +493,7 @@ UninitDriver(void* cookie)
 		delete_area(device->registerArea);
 	mutex_destroy(&device->bcsLock);
 	mutex_destroy(&device->presentLock);
+	mutex_destroy(&device->renderLock);
 	mutex_destroy(&device->lock);
 	free(device);
 }

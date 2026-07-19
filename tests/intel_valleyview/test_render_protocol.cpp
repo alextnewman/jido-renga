@@ -13,8 +13,11 @@ using namespace valleyview;
 JR_TEST(intel_valleyview, validates_the_render_discovery_abi)
 {
 	JR_CHECK_EQ(kRenderProtocolMagic, 0x564c5652u);
-	JR_CHECK_EQ(kRenderProtocolVersion, 1u);
+	JR_CHECK_EQ(kRenderProtocolVersion, 2u);
 	JR_CHECK(sizeof(RenderDeviceInfo) < UINT16_MAX);
+	JR_CHECK(sizeof(RenderBufferCreate) < UINT16_MAX);
+	JR_CHECK(sizeof(RenderBufferMap) < UINT16_MAX);
+	JR_CHECK(sizeof(RenderMemoryTest) < UINT16_MAX);
 
 	const RenderAbiHeader valid = MakeRenderAbiHeader(
 		sizeof(RenderDeviceInfo));

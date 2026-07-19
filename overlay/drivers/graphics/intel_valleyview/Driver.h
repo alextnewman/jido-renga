@@ -11,6 +11,7 @@
 #include <common/intel_valleyview/DisplaySharedInfo.h>
 #include <common/intel_valleyview/P0Core.h>
 #include <common/intel_valleyview/Protocol.h>
+#include <common/intel_valleyview/RenderProtocol.h>
 
 
 constexpr const char* kValleyViewDriverModuleName
@@ -20,12 +21,40 @@ constexpr const char* kValleyViewDeviceModuleName
 constexpr const char* kValleyViewAccelerantName
 	= "intel_valleyview.accelerant";
 
+struct ValleyViewDevice;
+
+struct ValleyViewRenderBuffer {
+	area_id					area;
+	void*					address;
+	area_id					mappingArea;
+	team_id					mappingTeam;
+	uint64*					physicalPages;
+	uint32*					savedPtes;
+	uint64					size;
+	uint32					pageCount;
+	uint32					handle;
+	uint32					flags;
+	uint32					ggttOffset;
+	valleyview::RenderBufferDomain domain;
+	bool					quarantined;
+	ValleyViewRenderBuffer*	next;
+};
+
+struct ValleyViewClient {
+	ValleyViewDevice*		device;
+	ValleyViewRenderBuffer*	buffers;
+	uint64					allocatedBytes;
+	uint32					bufferCount;
+	uint32					nextHandle;
+};
+
 struct ValleyViewDevice {
 	device_node*				node;
 	pci_device_module_info*	pci;
 	pci_device*				pciDevice;
 	pci_info					pciInfo;
 	mutex						lock;
+	mutex						renderLock;
 	mutex						presentLock;
 	mutex						bcsLock;
 	int32						openCount;
@@ -39,6 +68,7 @@ struct ValleyViewDevice {
 	bool						softBlanked;
 	bool						cursorVisible;
 	bool						p0MemoryQuarantined;
+	bool						renderMemoryQuarantined;
 	uint32						gpuTestGeneration;
 	area_id						gpuTestArea;
 	area_id						registerArea;
@@ -108,6 +138,8 @@ struct ValleyViewDevice {
 	uint64						cursorBitmapUpdates;
 	uint64						cursorMoveUpdates;
 	uint64						cursorShowUpdates;
+	uint64						renderMemoryTests;
+	uint64						renderMemoryFailures;
 	uint32						bcsSequence;
 	valleyview::FirmwareSnapshot	snapshot;
 };
@@ -149,5 +181,23 @@ status_t MoveCursor(ValleyViewDevice& device,
 	const valleyview::CursorMoveRequest& request);
 status_t ShowCursor(ValleyViewDevice& device,
 	const valleyview::CursorShowRequest& request);
+status_t CreateRenderBuffer(ValleyViewClient& client,
+	valleyview::RenderBufferCreate& request);
+status_t MapRenderBuffer(ValleyViewClient& client,
+	valleyview::RenderBufferMap& request);
+status_t DiscardRenderBufferMapping(ValleyViewClient& client, uint32 handle,
+	area_id area);
+status_t CloseRenderBuffer(ValleyViewClient& client, uint32 handle);
+status_t SetRenderBufferDomain(ValleyViewClient& client,
+	valleyview::RenderBufferSetDomain& request);
+status_t RunRenderMemoryTest(ValleyViewClient& client,
+	valleyview::RenderMemoryTest& test);
+void DestroyRenderClient(ValleyViewClient& client);
+status_t BindRenderBufferGgtt(ValleyViewDevice& device,
+	ValleyViewRenderBuffer& buffer);
+status_t UnbindRenderBufferGgtt(ValleyViewDevice& device,
+	ValleyViewRenderBuffer& buffer);
+status_t SubmitRenderBcsCopy(ValleyViewDevice& device, uint32 sourceOffset,
+	uint32 destinationOffset, uint32& completionMarker);
 
 #endif

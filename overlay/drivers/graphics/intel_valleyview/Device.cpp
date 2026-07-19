@@ -5,6 +5,7 @@
 #include "Driver.h"
 
 #include <common/intel_valleyview/Protocol.h>
+#include <common/intel_valleyview/RenderMemoryCore.h>
 #include <common/intel_valleyview/RenderProtocol.h>
 
 #include <graphic_driver.h>
@@ -56,11 +57,17 @@ Open(void* deviceCookie, const char*, int, void** cookie)
 		return B_BAD_VALUE;
 
 	ValleyViewDevice* device = (ValleyViewDevice*)deviceCookie;
+	ValleyViewClient* client = static_cast<ValleyViewClient*>(
+		calloc(1, sizeof(ValleyViewClient)));
+	if (client == NULL)
+		return B_NO_MEMORY;
+	client->device = device;
+
 	mutex_lock(&device->lock);
 	device->openCount++;
 	mutex_unlock(&device->lock);
 
-	*cookie = device;
+	*cookie = client;
 	return B_OK;
 }
 
@@ -75,9 +82,13 @@ Close(void*)
 status_t
 Free(void* cookie)
 {
-	ValleyViewDevice* device = (ValleyViewDevice*)cookie;
-	if (device == NULL)
+	ValleyViewClient* client = static_cast<ValleyViewClient*>(cookie);
+	if (client == NULL || client->device == NULL)
 		return B_BAD_VALUE;
+	ValleyViewDevice* device = client->device;
+
+	DestroyRenderClient(*client);
+	free(client);
 
 	mutex_lock(&device->lock);
 	if (device->openCount <= 0) {
@@ -93,9 +104,10 @@ Free(void* cookie)
 status_t
 Control(void* cookie, uint32 operation, void* buffer, size_t length)
 {
-	ValleyViewDevice* device = (ValleyViewDevice*)cookie;
-	if (device == NULL)
+	ValleyViewClient* client = static_cast<ValleyViewClient*>(cookie);
+	if (client == NULL || client->device == NULL)
 		return B_BAD_VALUE;
+	ValleyViewDevice* device = client->device;
 
 	switch (operation) {
 		case B_GET_ACCELERANT_SIGNATURE:
@@ -467,11 +479,21 @@ Control(void* cookie, uint32 operation, void* buffer, size_t length)
 			info.capabilities = valleyview::kRenderCapabilityDeviceInfo;
 
 			mutex_lock(&device->lock);
+			mutex_lock(&device->renderLock);
 			info.apertureBase = device->snapshot.gmadrBase;
 			info.apertureSize = device->snapshot.gmadrSize;
 			if (info.apertureSize != 0)
 				info.deviceFlags |= valleyview::kRenderDeviceGgtt;
 			info.deviceFlags |= valleyview::kRenderDeviceNoLlc;
+			if (device->nativeActive && !device->gpuFaulted
+				&& !device->p0MemoryQuarantined
+				&& !device->renderMemoryQuarantined) {
+				info.capabilities
+					|= valleyview::kRenderCapabilityBufferObjects
+						| valleyview::kRenderCapabilityCpuMappings
+						| valleyview::kRenderCapabilityGpuAddressSpaces
+						| valleyview::kRenderCapabilityCacheDomains;
+			}
 			mutex_lock(&device->bcsLock);
 			if (device->bcsReady)
 				info.provenEngines |= valleyview::kRenderEngineBcs;
@@ -481,9 +503,118 @@ Control(void* cookie, uint32 operation, void* buffer, size_t length)
 				info.displayReservedOffset = device->p0Layout.base;
 				info.displayReservedSize = valleyview::kP0AllocationBytes;
 			}
+			mutex_unlock(&device->renderLock);
 			mutex_unlock(&device->lock);
 
 			return user_memcpy(buffer, &info, sizeof(info));
+		}
+
+		case valleyview::kRenderCreateBuffer:
+		{
+			if (buffer == NULL
+				|| length < sizeof(valleyview::RenderBufferCreate)) {
+				return B_BAD_VALUE;
+			}
+			valleyview::RenderBufferCreate request;
+			status_t status = user_memcpy(&request, buffer, sizeof(request));
+			if (status != B_OK)
+				return status;
+			if (!valleyview::IsValidRenderAbiHeader(request.header,
+					sizeof(request))) {
+				return B_BAD_VALUE;
+			}
+			status = CreateRenderBuffer(*client, request);
+			if (status != B_OK)
+				return status;
+			status = user_memcpy(buffer, &request, sizeof(request));
+			if (status != B_OK)
+				CloseRenderBuffer(*client, request.handle);
+			return status;
+		}
+
+		case valleyview::kRenderMapBuffer:
+		{
+			if (buffer == NULL
+				|| length < sizeof(valleyview::RenderBufferMap)) {
+				return B_BAD_VALUE;
+			}
+			valleyview::RenderBufferMap request;
+			status_t status = user_memcpy(&request, buffer, sizeof(request));
+			if (status != B_OK)
+				return status;
+			if (!valleyview::IsValidRenderAbiHeader(request.header,
+					sizeof(request))) {
+				return B_BAD_VALUE;
+			}
+			status = MapRenderBuffer(*client, request);
+			if (status != B_OK)
+				return status;
+			status = user_memcpy(buffer, &request, sizeof(request));
+			if (status != B_OK) {
+				status_t cleanupStatus = DiscardRenderBufferMapping(*client,
+					request.handle, request.area);
+				if (cleanupStatus != B_OK) {
+					dprintf("intel_valleyview: render mapping cleanup failed: %"
+						B_PRId32 "\n", cleanupStatus);
+				}
+			}
+			return status;
+		}
+
+		case valleyview::kRenderCloseBuffer:
+		{
+			if (buffer == NULL
+				|| length < sizeof(valleyview::RenderBufferClose)) {
+				return B_BAD_VALUE;
+			}
+			valleyview::RenderBufferClose request;
+			status_t status = user_memcpy(&request, buffer, sizeof(request));
+			if (status != B_OK)
+				return status;
+			if (!valleyview::IsValidRenderAbiHeader(request.header,
+					sizeof(request))) {
+				return B_BAD_VALUE;
+			}
+			return CloseRenderBuffer(*client, request.handle);
+		}
+
+		case valleyview::kRenderSetBufferDomain:
+		{
+			if (buffer == NULL
+				|| length < sizeof(valleyview::RenderBufferSetDomain)) {
+				return B_BAD_VALUE;
+			}
+			valleyview::RenderBufferSetDomain request;
+			status_t status = user_memcpy(&request, buffer, sizeof(request));
+			if (status != B_OK)
+				return status;
+			if (!valleyview::IsValidRenderAbiHeader(request.header,
+					sizeof(request))) {
+				return B_BAD_VALUE;
+			}
+			status = SetRenderBufferDomain(*client, request);
+			if (status != B_OK)
+				return status;
+			return user_memcpy(buffer, &request, sizeof(request));
+		}
+
+		case valleyview::kRunRenderMemoryTest:
+		{
+			if (buffer == NULL
+				|| length < sizeof(valleyview::RenderMemoryTest)) {
+				return B_BAD_VALUE;
+			}
+			valleyview::RenderMemoryTest test;
+			status_t status = user_memcpy(&test, buffer, sizeof(test));
+			if (status != B_OK)
+				return status;
+			if (!valleyview::IsValidRenderAbiHeader(test.header,
+					sizeof(test))) {
+				return B_BAD_VALUE;
+			}
+			status = RunRenderMemoryTest(*client, test);
+			status_t copyStatus = user_memcpy(buffer, &test, sizeof(test));
+			return copyStatus == B_OK ? status : copyStatus;
 		}
 
 		default:

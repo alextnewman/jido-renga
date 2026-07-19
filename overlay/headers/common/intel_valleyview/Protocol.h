@@ -41,7 +41,12 @@ enum {
 	kBcsBlit,
 	kRunP0SelfTest,
 	kSetCursorBitmap,
-	kGetRenderDeviceInfo
+	kGetRenderDeviceInfo,
+	kRenderCreateBuffer,
+	kRenderMapBuffer,
+	kRenderCloseBuffer,
+	kRenderSetBufferDomain,
+	kRunRenderMemoryTest
 };
 
 enum DisplayState : uint32 {

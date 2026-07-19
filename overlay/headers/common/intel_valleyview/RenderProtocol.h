@@ -10,7 +10,7 @@
 namespace valleyview {
 
 constexpr uint32 kRenderProtocolMagic = 0x564c5652;
-constexpr uint16 kRenderProtocolVersion = 1;
+constexpr uint16 kRenderProtocolVersion = 2;
 
 enum RenderDeviceFlag : uint32 {
 	kRenderDeviceGgtt = 1u << 0,
@@ -37,6 +37,24 @@ enum RenderCapability : uint64 {
 	kRenderCapabilityCommandIsolation = 1ull << 9,
 	kRenderCapabilityResetRecovery = 1ull << 10,
 	kRenderCapabilityDrawablePresent = 1ull << 11
+};
+
+enum RenderBufferFlag : uint32 {
+	kRenderBufferCpuCached = 1u << 0
+};
+
+constexpr uint32 kRenderSupportedBufferFlags = kRenderBufferCpuCached;
+
+enum RenderBufferDomain : uint32 {
+	kRenderDomainCpu = 1,
+	kRenderDomainBcs = 2
+};
+
+enum RenderMemoryTestStage : uint32 {
+	kRenderMemoryTestNone = 0,
+	kRenderMemoryTestInputsVerified,
+	kRenderMemoryTestCommandsCompleted,
+	kRenderMemoryTestOutputVerified
 };
 
 constexpr uint64 kRenderRequiredCapabilities
@@ -77,6 +95,52 @@ struct RenderDeviceInfo {
 	uint64			displayReservedOffset;
 	uint64			displayReservedSize;
 	uint64			reserved[4];
+};
+
+struct RenderBufferCreate {
+	RenderAbiHeader	header;
+	uint64			requestedSize;
+	uint64			size;
+	uint64			gpuOffset;
+	uint32			flags;
+	uint32			handle;
+};
+
+struct RenderBufferMap {
+	RenderAbiHeader	header;
+	uint32			handle;
+	uint32			flags;
+	int32			area;
+	uint32			reserved;
+	uint64			address;
+	uint64			size;
+};
+
+struct RenderBufferClose {
+	RenderAbiHeader	header;
+	uint32			handle;
+	uint32			reserved;
+};
+
+struct RenderBufferSetDomain {
+	RenderAbiHeader	header;
+	uint32			handle;
+	RenderBufferDomain domain;
+	RenderBufferDomain previousDomain;
+	uint32			reserved;
+};
+
+struct RenderMemoryTest {
+	RenderAbiHeader		header;
+	uint32				sourceHandle;
+	uint32				destinationHandle;
+	uint32				seed;
+	RenderMemoryTestStage	stage;
+	int32					status;
+	uint32				completionMarker;
+	uint32				mismatchOffset;
+	uint32				observed;
+	uint64				elapsedUs;
 };
 
 

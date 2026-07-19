@@ -5,6 +5,7 @@
 #include "Driver.h"
 
 #include <common/intel_valleyview/GpuCore.h>
+#include <common/intel_valleyview/RenderMemoryCore.h>
 
 #include <KernelExport.h>
 
@@ -179,6 +180,16 @@ WriteTestPtes(volatile uint8* registers, uint32 ggttOffset,
 		WriteMmio(registers, valleyview::kGttOffsetInBar
 			+ (firstIndex + index) * valleyview::kGen7PteSize, ptes[index]);
 	}
+	memory_write_barrier();
+	WriteMmio(registers, valleyview::kGfxFlushControl,
+		valleyview::kGfxFlushEnable);
+	ReadMmio(registers, valleyview::kGfxFlushControl);
+}
+
+
+void
+FlushGgtt(volatile uint8* registers)
+{
 	memory_write_barrier();
 	WriteMmio(registers, valleyview::kGfxFlushControl,
 		valleyview::kGfxFlushEnable);
@@ -768,6 +779,214 @@ CpuBlitLocked(ValleyViewDevice& device,
 
 
 } // namespace
+
+
+status_t
+BindRenderBufferGgtt(ValleyViewDevice& device,
+	ValleyViewRenderBuffer& buffer)
+{
+	if (buffer.pageCount == 0 || buffer.physicalPages == NULL
+		|| buffer.savedPtes == NULL
+		|| buffer.ggttOffset != valleyview::kInvalidRenderGgttOffset) {
+		return B_BAD_VALUE;
+	}
+
+	mutex_lock(&device.bcsLock);
+	if (!device.nativeActive || device.registers == NULL || device.gpuFaulted
+		|| device.p0MemoryQuarantined || device.renderMemoryQuarantined
+		|| device.p0SavedPtes == NULL) {
+		mutex_unlock(&device.bcsLock);
+		return B_NO_INIT;
+	}
+
+	const uint32 endPage = device.p0Layout.base / valleyview::kPageSize;
+	const uint64 pteCapacity = device.snapshot.mmioSize
+			> valleyview::kGttOffsetInBar
+		? (device.snapshot.mmioSize - valleyview::kGttOffsetInBar)
+			/ valleyview::kGen7PteSize
+		: 0;
+	valleyview::RenderGgttSearch search;
+	if (endPage > pteCapacity
+		|| !valleyview::InitializeRenderGgttSearch(search,
+			valleyview::kRenderFirstGgttPage, endPage,
+			buffer.pageCount, device.p0SavedPtes[0])) {
+		mutex_unlock(&device.bcsLock);
+		return B_BAD_DATA;
+	}
+
+	for (uint32 page = search.firstPage; page < search.endPage; page++) {
+		const uint32 pte = ReadMmio(device.registers,
+			valleyview::kGttOffsetInBar
+				+ page * valleyview::kGen7PteSize);
+		if (valleyview::AdvanceRenderGgttSearch(search, page, pte))
+			break;
+	}
+	if (!search.found) {
+		mutex_unlock(&device.bcsLock);
+		return B_NO_MEMORY;
+	}
+
+	const uint32 firstPage = search.offset / valleyview::kPageSize;
+	for (uint32 page = 0; page < buffer.pageCount; page++) {
+		const uint32 pte = ReadMmio(device.registers,
+			valleyview::kGttOffsetInBar
+				+ (firstPage + page) * valleyview::kGen7PteSize);
+		if (pte != search.freePte) {
+			mutex_unlock(&device.bcsLock);
+			return B_BUSY;
+		}
+		buffer.savedPtes[page] = pte;
+	}
+
+	status_t status = B_OK;
+	for (uint32 page = 0; page < buffer.pageCount; page++) {
+		uint32 pte;
+		if (!valleyview::EncodeBytPte(buffer.physicalPages[page], true,
+				true, pte)) {
+			status = B_BAD_DATA;
+			break;
+		}
+		WriteMmio(device.registers, valleyview::kGttOffsetInBar
+			+ (firstPage + page) * valleyview::kGen7PteSize, pte);
+	}
+	FlushGgtt(device.registers);
+
+	if (status == B_OK) {
+		for (uint32 page = 0; page < buffer.pageCount; page++) {
+			uint32 expected = 0;
+			if (!valleyview::EncodeBytPte(buffer.physicalPages[page], true,
+					true, expected)) {
+				status = B_BAD_DATA;
+				break;
+			}
+			if (ReadMmio(device.registers, valleyview::kGttOffsetInBar
+					+ (firstPage + page) * valleyview::kGen7PteSize)
+					!= expected) {
+				status = B_IO_ERROR;
+				break;
+			}
+		}
+	}
+
+	if (status != B_OK) {
+		for (uint32 page = 0; page < buffer.pageCount; page++) {
+			WriteMmio(device.registers, valleyview::kGttOffsetInBar
+				+ (firstPage + page) * valleyview::kGen7PteSize,
+				buffer.savedPtes[page]);
+		}
+		FlushGgtt(device.registers);
+		for (uint32 page = 0; page < buffer.pageCount; page++) {
+			if (ReadMmio(device.registers, valleyview::kGttOffsetInBar
+					+ (firstPage + page) * valleyview::kGen7PteSize)
+					!= buffer.savedPtes[page]) {
+				buffer.quarantined = true;
+				device.renderMemoryQuarantined = true;
+				break;
+			}
+		}
+		mutex_unlock(&device.bcsLock);
+		return status;
+	}
+
+	buffer.ggttOffset = search.offset;
+	mutex_unlock(&device.bcsLock);
+	return B_OK;
+}
+
+
+status_t
+UnbindRenderBufferGgtt(ValleyViewDevice& device,
+	ValleyViewRenderBuffer& buffer)
+{
+	if (buffer.ggttOffset == valleyview::kInvalidRenderGgttOffset)
+		return buffer.quarantined ? B_IO_ERROR : B_OK;
+	if (buffer.savedPtes == NULL || buffer.pageCount == 0)
+		return B_BAD_VALUE;
+
+	mutex_lock(&device.bcsLock);
+	if (device.registers == NULL) {
+		buffer.quarantined = true;
+		device.renderMemoryQuarantined = true;
+		mutex_unlock(&device.bcsLock);
+		return B_NO_INIT;
+	}
+
+	const uint32 firstPage = buffer.ggttOffset / valleyview::kPageSize;
+	for (uint32 page = 0; page < buffer.pageCount; page++) {
+		WriteMmio(device.registers, valleyview::kGttOffsetInBar
+			+ (firstPage + page) * valleyview::kGen7PteSize,
+			buffer.savedPtes[page]);
+	}
+	FlushGgtt(device.registers);
+
+	status_t status = B_OK;
+	for (uint32 page = 0; page < buffer.pageCount; page++) {
+		if (ReadMmio(device.registers, valleyview::kGttOffsetInBar
+				+ (firstPage + page) * valleyview::kGen7PteSize)
+				!= buffer.savedPtes[page]) {
+			status = B_IO_ERROR;
+			break;
+		}
+	}
+	if (status == B_OK)
+		buffer.ggttOffset = valleyview::kInvalidRenderGgttOffset;
+	else {
+		buffer.quarantined = true;
+		device.renderMemoryQuarantined = true;
+	}
+	mutex_unlock(&device.bcsLock);
+	return status;
+}
+
+
+status_t
+SubmitRenderBcsCopy(ValleyViewDevice& device, uint32 sourceOffset,
+	uint32 destinationOffset, uint32& completionMarker)
+{
+	if ((sourceOffset & valleyview::kPageMask) != 0
+		|| (destinationOffset & valleyview::kPageMask) != 0
+		|| sourceOffset == destinationOffset
+		|| static_cast<uint64>(sourceOffset)
+				+ valleyview::kRenderMemoryTestBytes > device.p0Layout.base
+		|| static_cast<uint64>(destinationOffset)
+				+ valleyview::kRenderMemoryTestBytes > device.p0Layout.base) {
+		return B_BAD_VALUE;
+	}
+
+	mutex_lock(&device.bcsLock);
+	if (!device.nativeActive || !device.bcsReady
+		|| device.p0Private == NULL || device.gpuFaulted
+		|| device.p0MemoryQuarantined || device.renderMemoryQuarantined) {
+		mutex_unlock(&device.bcsLock);
+		return B_NO_INIT;
+	}
+
+	uint32* ring = static_cast<uint32*>(device.p0Private)
+		+ (device.p0Layout.ring - device.p0Layout.cursor) / sizeof(uint32);
+	memset(ring, 0, valleyview::kPageSize);
+	size_t count = 0;
+	status_t status = valleyview::AppendBcsCopy(ring,
+		valleyview::kPageSize / sizeof(uint32), count, sourceOffset,
+		destinationOffset, valleyview::kRenderMemoryTestStride, 0, 0, 0, 0,
+		valleyview::kRenderMemoryTestWidth - 1,
+		valleyview::kRenderMemoryTestHeight - 1)
+		? B_OK : B_BUFFER_OVERFLOW;
+	completionMarker = 0xc3000000u
+		| (++device.bcsSequence & 0x0fffffff);
+	if (status == B_OK
+		&& !valleyview::AppendBcsCompletion(ring,
+			valleyview::kPageSize / sizeof(uint32), count,
+			completionMarker)) {
+		status = B_BUFFER_OVERFLOW;
+	}
+	if (status == B_OK) {
+		memory_write_barrier();
+		status = SubmitBcsCommandsLocked(device,
+			static_cast<uint32>(count * sizeof(uint32)), completionMarker);
+	}
+	mutex_unlock(&device.bcsLock);
+	return status;
+}
 
 
 status_t

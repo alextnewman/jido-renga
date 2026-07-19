@@ -5,6 +5,7 @@
 #include <common/intel_valleyview/FirmwareState.h>
 #include <common/intel_valleyview/P0Core.h>
 #include <common/intel_valleyview/Protocol.h>
+#include <common/intel_valleyview/RenderMemoryCore.h>
 #include <common/intel_valleyview/RenderProtocol.h>
 
 #include <Accelerant.h>
@@ -272,6 +273,176 @@ PrintRenderDeviceInfo(const valleyview::RenderDeviceInfo& info)
 
 
 status_t
+CloseRenderBuffer(int device, uint32 handle)
+{
+	if (handle == 0)
+		return B_OK;
+	valleyview::RenderBufferClose request = {};
+	request.header = valleyview::MakeRenderAbiHeader(sizeof(request));
+	request.handle = handle;
+	return ioctl(device, valleyview::kRenderCloseBuffer, &request,
+		sizeof(request));
+}
+
+
+status_t
+CycleRenderBufferDomain(int device, uint32 handle)
+{
+	valleyview::RenderBufferSetDomain request = {};
+	request.header = valleyview::MakeRenderAbiHeader(sizeof(request));
+	request.handle = handle;
+	request.domain = valleyview::kRenderDomainBcs;
+	status_t status = ioctl(device, valleyview::kRenderSetBufferDomain,
+		&request, sizeof(request));
+	if (status != B_OK || request.previousDomain != valleyview::kRenderDomainCpu)
+		return status == B_OK ? B_BAD_DATA : status;
+
+	request.header = valleyview::MakeRenderAbiHeader(sizeof(request));
+	request.domain = valleyview::kRenderDomainCpu;
+	status = ioctl(device, valleyview::kRenderSetBufferDomain, &request,
+		sizeof(request));
+	if (status != B_OK
+		|| request.previousDomain != valleyview::kRenderDomainBcs) {
+		return status == B_OK ? B_BAD_DATA : status;
+	}
+	return B_OK;
+}
+
+
+status_t
+RunRenderMemoryProbe(int device)
+{
+	valleyview::RenderBufferCreate source = {};
+	valleyview::RenderBufferCreate destination = {};
+	valleyview::RenderBufferMap sourceMap = {};
+	valleyview::RenderBufferMap destinationMap = {};
+	sourceMap.area = -1;
+	destinationMap.area = -1;
+	status_t status = B_OK;
+
+	source.header = valleyview::MakeRenderAbiHeader(sizeof(source));
+	source.requestedSize = valleyview::kRenderMemoryTestBytes;
+	source.flags = valleyview::kRenderBufferCpuCached;
+	status = ioctl(device, valleyview::kRenderCreateBuffer, &source,
+		sizeof(source));
+	if (status != B_OK)
+		goto cleanup;
+
+	destination.header = valleyview::MakeRenderAbiHeader(sizeof(destination));
+	destination.requestedSize = valleyview::kRenderMemoryTestBytes;
+	destination.flags = valleyview::kRenderBufferCpuCached;
+	status = ioctl(device, valleyview::kRenderCreateBuffer, &destination,
+		sizeof(destination));
+	if (status != B_OK)
+		goto cleanup;
+
+	sourceMap.header = valleyview::MakeRenderAbiHeader(sizeof(sourceMap));
+	sourceMap.handle = source.handle;
+	status = ioctl(device, valleyview::kRenderMapBuffer, &sourceMap,
+		sizeof(sourceMap));
+	if (status != B_OK)
+		goto cleanup;
+
+	destinationMap.header
+		= valleyview::MakeRenderAbiHeader(sizeof(destinationMap));
+	destinationMap.handle = destination.handle;
+	status = ioctl(device, valleyview::kRenderMapBuffer, &destinationMap,
+		sizeof(destinationMap));
+	if (status != B_OK)
+		goto cleanup;
+
+	{
+		const status_t sourceDeleteStatus = delete_area(sourceMap.area);
+		const status_t destinationDeleteStatus
+			= delete_area(destinationMap.area);
+		if (sourceDeleteStatus != B_NOT_ALLOWED
+			|| destinationDeleteStatus != B_NOT_ALLOWED) {
+			status = B_BAD_DATA;
+			goto cleanup;
+		}
+	}
+
+	if (sourceMap.address == 0 || destinationMap.address == 0
+		|| sourceMap.size < valleyview::kRenderMemoryTestBytes
+		|| destinationMap.size < valleyview::kRenderMemoryTestBytes) {
+		status = B_BAD_DATA;
+		goto cleanup;
+	}
+
+	{
+		uint32* sourceWords = reinterpret_cast<uint32*>(
+			static_cast<addr_t>(sourceMap.address));
+		uint32* destinationWords = reinterpret_cast<uint32*>(
+			static_cast<addr_t>(destinationMap.address));
+		for (uint32 index = 0;
+				index < valleyview::kRenderMemoryTestWords; index++) {
+			sourceWords[index] = valleyview::RenderMemoryTestWord(index,
+				valleyview::kRenderMemoryTestDefaultSeed);
+			destinationWords[index]
+				= valleyview::RenderMemoryTestDestinationWord(index,
+					valleyview::kRenderMemoryTestDefaultSeed);
+		}
+		__sync_synchronize();
+	}
+
+	status = CycleRenderBufferDomain(device, source.handle);
+	if (status == B_OK)
+		status = CycleRenderBufferDomain(device, destination.handle);
+	if (status != B_OK)
+		goto cleanup;
+
+	{
+		valleyview::RenderMemoryTest test = {};
+		test.header = valleyview::MakeRenderAbiHeader(sizeof(test));
+		test.sourceHandle = source.handle;
+		test.destinationHandle = destination.handle;
+		test.seed = valleyview::kRenderMemoryTestDefaultSeed;
+		status = ioctl(device, valleyview::kRunRenderMemoryTest, &test,
+			sizeof(test));
+		printf("render_memory_test status=%" B_PRId32 " stage=%u"
+			" marker=%#08" B_PRIx32 " elapsed_us=%" B_PRIu64
+			" mismatch=%#" B_PRIx32 "/%#08" B_PRIx32 "\n",
+			test.status, test.stage, test.completionMarker, test.elapsedUs,
+			test.mismatchOffset, test.observed);
+		if (status == B_OK && test.status != B_OK)
+			status = test.status;
+		if (status != B_OK)
+			goto cleanup;
+	}
+
+	{
+		const uint32* destinationWords = reinterpret_cast<const uint32*>(
+			static_cast<addr_t>(destinationMap.address));
+		for (uint32 index = 0;
+				index < valleyview::kRenderMemoryTestWords; index++) {
+			const uint32 expected = valleyview::RenderMemoryTestWord(index,
+				valleyview::kRenderMemoryTestDefaultSeed);
+			if (destinationWords[index] != expected) {
+				status = B_BAD_DATA;
+				break;
+			}
+		}
+	}
+	if (status == B_OK) {
+		printf("render_memory handles=%" B_PRIu32 "/%" B_PRIu32
+			" ggtt=%#08" B_PRIx64 "/%#08" B_PRIx64
+			" size=%" B_PRIu64 " mapping_owned=yes verified=yes\n",
+			source.handle, destination.handle, source.gpuOffset,
+			destination.gpuOffset, source.size);
+	}
+
+cleanup:
+	status_t closeStatus = CloseRenderBuffer(device, destination.handle);
+	if (status == B_OK)
+		status = closeStatus;
+	closeStatus = CloseRenderBuffer(device, source.handle);
+	if (status == B_OK)
+		status = closeStatus;
+	return status;
+}
+
+
+status_t
 ReadP0Status(int device, valleyview::P0Status& status)
 {
 	memset(&status, 0, sizeof(status));
@@ -523,6 +694,16 @@ main(int argc, char** argv)
 			close(device);
 			return 1;
 		}
+	} else if (argc == 2
+		&& strcmp(argv[1], "--render-memory-test") == 0) {
+		status = RunRenderMemoryProbe(device);
+		if (status != B_OK) {
+			fprintf(stderr,
+				"intel_valleyview_probe: render memory test failed: %s\n",
+				strerror(status));
+			close(device);
+			return 1;
+		}
 	} else if (argc == 2 && strcmp(argv[1], "--render-info") == 0) {
 		valleyview::RenderDeviceInfo info = {};
 		status = ioctl(device, valleyview::kGetRenderDeviceInfo, &info,
@@ -625,7 +806,8 @@ main(int argc, char** argv)
 	} else if (argc != 1) {
 		fprintf(stderr, "usage: intel_valleyview_probe"
 			" [--publish|--gpu-diagnostics|--gpu-self-test"
-			"|--render-info|--p0-status|--p0-test|--p0-benchmark]\n");
+			"|--render-info|--render-memory-test"
+			"|--p0-status|--p0-test|--p0-benchmark]\n");
 		close(device);
 		return 1;
 	}
