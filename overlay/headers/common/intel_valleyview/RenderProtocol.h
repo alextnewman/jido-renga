@@ -4,13 +4,14 @@
 #ifndef INTEL_VALLEYVIEW_RENDER_PROTOCOL_H
 #define INTEL_VALLEYVIEW_RENDER_PROTOCOL_H
 
-#include <SupportDefs.h>
+#include <common/intel_valleyview/Protocol.h>
+#include <common/intel_valleyview/RcsCore.h>
 
 
 namespace valleyview {
 
 constexpr uint32 kRenderProtocolMagic = 0x564c5652;
-constexpr uint16 kRenderProtocolVersion = 2;
+constexpr uint16 kRenderProtocolVersion = 3;
 
 enum RenderDeviceFlag : uint32 {
 	kRenderDeviceGgtt = 1u << 0,
@@ -141,6 +142,85 @@ struct RenderMemoryTest {
 	uint32				mismatchOffset;
 	uint32				observed;
 	uint64				elapsedUs;
+};
+
+
+constexpr uint32 kRcsDiagnosticArm = 0x52435330;
+
+enum RcsDiagnosticStage : uint32 {
+	kRcsStageNone = 0,
+	kRcsStageMemoryAllocated,
+	kRcsStageGgttBound,
+	kRcsStageSnapshot,
+	kRcsStageForcewakeAcquired,
+	kRcsStageTlbFlushed,
+	kRcsStageRingStarted,
+	kRcsStageCommandsCompleted,
+	kRcsStageOutputVerified,
+	kRcsStageRestored
+};
+
+enum RcsDiagnosticFlag : uint32 {
+	kRcsMemoryAllocated = 1u << 0,
+	kRcsGgttBound = 1u << 1,
+	kRcsSnapshotCaptured = 1u << 2,
+	kRcsRingAvailable = 1u << 3,
+	kRcsForcewakeAcquired = 1u << 4,
+	kRcsTlbFlushed = 1u << 5,
+	kRcsRingStarted = 1u << 6,
+	kRcsBatchMarkerVerified = 1u << 7,
+	kRcsCompletionVerified = 1u << 8,
+	kRcsTimestampVerified = 1u << 9,
+	kRcsRingRestored = 1u << 10,
+	kRcsGgttRestored = 1u << 11,
+	kRcsDisplayUnchanged = 1u << 12,
+	kRcsBcsUnchanged = 1u << 13,
+	kRcsResetPerformed = 1u << 14,
+	kRcsFaultCaptured = 1u << 15
+};
+
+struct RcsDiagnostic {
+	RenderAbiHeader			header;
+	uint32					command;
+	int32					status;
+	RcsDiagnosticStage		stage;
+	uint32					flags;
+	uint32					ringOffset;
+	uint32					statusOffset;
+	uint32					batchOffset;
+	uint32					resultOffset;
+	uint32					ringTailBytes;
+	uint32					batchBytes;
+	uint32					batchMarker;
+	uint32					completionMarker;
+	uint32					observedBatchMarker;
+	uint32					observedCompletionMarker;
+	uint32					timestampBefore;
+	uint32					observedTimestamp;
+	uint32					timestampAfter;
+	uint32					reserved0;
+	uint64					elapsedUs;
+	uint64					testCount;
+	uint64					failureCount;
+	uint64					resetCount;
+	uint64					displaySignatureBefore;
+	uint64					displaySignatureAfter;
+	int32					resetStatus;
+	int32					ringRestoreStatus;
+	int32					ggttRestoreStatus;
+	int32					forcewakeReleaseStatus;
+	int32					wakeRestoreStatus;
+	uint32					reserved1[3];
+	uint32					pteBefore[kRcsTestPageCount];
+	uint32					pteBound[kRcsTestPageCount];
+	uint32					pteAfter[kRcsTestPageCount];
+	GpuRegisterSnapshot		globalBefore;
+	GpuRegisterSnapshot		globalFault;
+	GpuRegisterSnapshot		globalAfter;
+	RcsRegisterSnapshot		before;
+	RcsRegisterSnapshot		active;
+	RcsRegisterSnapshot		fault;
+	RcsRegisterSnapshot		after;
 };
 
 

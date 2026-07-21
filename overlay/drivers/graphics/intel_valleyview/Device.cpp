@@ -497,6 +497,8 @@ Control(void* cookie, uint32 operation, void* buffer, size_t length)
 			mutex_lock(&device->bcsLock);
 			if (device->bcsReady)
 				info.provenEngines |= valleyview::kRenderEngineBcs;
+			if (device->rcsReady)
+				info.provenEngines |= valleyview::kRenderEngineRcs;
 			mutex_unlock(&device->bcsLock);
 			if (device->nativeActive) {
 				info.deviceFlags |= valleyview::kRenderDeviceDisplayReserved;
@@ -614,6 +616,27 @@ Control(void* cookie, uint32 operation, void* buffer, size_t length)
 			}
 			status = RunRenderMemoryTest(*client, test);
 			status_t copyStatus = user_memcpy(buffer, &test, sizeof(test));
+			return copyStatus == B_OK ? status : copyStatus;
+		}
+
+		case valleyview::kRunRcsDiagnostic:
+		{
+			if (buffer == NULL
+				|| length < sizeof(valleyview::RcsDiagnostic)) {
+				return B_BAD_VALUE;
+			}
+			valleyview::RcsDiagnostic diagnostics;
+			status_t status = user_memcpy(&diagnostics, buffer,
+				sizeof(diagnostics));
+			if (status != B_OK)
+				return status;
+			if (!valleyview::IsValidRenderAbiHeader(diagnostics.header,
+					sizeof(diagnostics))) {
+				return B_BAD_VALUE;
+			}
+			status = RunRcsDiagnostic(*client, diagnostics);
+			status_t copyStatus = user_memcpy(buffer, &diagnostics,
+				sizeof(diagnostics));
 			return copyStatus == B_OK ? status : copyStatus;
 		}
 

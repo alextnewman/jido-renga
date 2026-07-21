@@ -115,8 +115,12 @@ status_t
 AllocateRenderMemory(ValleyViewRenderBuffer& buffer)
 {
 	char name[B_OS_NAME_LENGTH];
-	snprintf(name, sizeof(name), "intel_valleyview render BO %" B_PRIu32,
-		buffer.handle);
+	if (buffer.handle == 0)
+		strlcpy(name, "intel_valleyview RCS diagnostic", sizeof(name));
+	else {
+		snprintf(name, sizeof(name), "intel_valleyview render BO %" B_PRIu32,
+			buffer.handle);
+	}
 	buffer.address = NULL;
 	buffer.area = create_area(name, &buffer.address, B_ANY_KERNEL_ADDRESS,
 		buffer.size, B_32_BIT_FULL_LOCK,
@@ -192,6 +196,67 @@ ReleaseRenderBuffer(ValleyViewDevice& device,
 	free(buffer->physicalPages);
 	free(buffer);
 	return status;
+}
+
+
+status_t
+CreateInternalRenderBuffer(ValleyViewDevice& device, uint64 size,
+	ValleyViewRenderBuffer*& buffer, valleyview::RcsDiagnostic& diagnostics)
+{
+	buffer = static_cast<ValleyViewRenderBuffer*>(
+		calloc(1, sizeof(ValleyViewRenderBuffer)));
+	if (buffer == NULL)
+		return B_NO_MEMORY;
+
+	buffer->area = -1;
+	buffer->mappingArea = -1;
+	buffer->mappingTeam = -1;
+	buffer->size = size;
+	buffer->pageCount = static_cast<uint32>(size / valleyview::kPageSize);
+	buffer->flags = valleyview::kRenderBufferCpuCached;
+	buffer->ggttOffset = valleyview::kInvalidRenderGgttOffset;
+	buffer->domain = valleyview::kRenderDomainCpu;
+
+	status_t status = AllocateRenderMemory(*buffer);
+	if (status == B_OK) {
+		diagnostics.flags |= valleyview::kRcsMemoryAllocated;
+		diagnostics.stage = valleyview::kRcsStageMemoryAllocated;
+		status = BindRenderBufferGgtt(device, *buffer);
+	}
+	if (status == B_OK) {
+		diagnostics.flags |= valleyview::kRcsGgttBound;
+		diagnostics.stage = valleyview::kRcsStageGgttBound;
+	}
+	if (status != B_OK) {
+		if (buffer->ggttOffset != valleyview::kInvalidRenderGgttOffset)
+			UnbindRenderBufferGgtt(device, *buffer);
+		if (buffer->area >= B_OK && !buffer->quarantined)
+			delete_area(buffer->area);
+		free(buffer->savedPtes);
+		free(buffer->physicalPages);
+		free(buffer);
+		buffer = NULL;
+	}
+	return status;
+}
+
+
+status_t
+DestroyInternalRenderBuffer(ValleyViewDevice& device,
+	ValleyViewRenderBuffer*& buffer, status_t& ggttStatus,
+	uint32* observedPtes)
+{
+	if (buffer == NULL) {
+		ggttStatus = B_OK;
+		return B_OK;
+	}
+
+	ggttStatus = buffer->quarantined
+		? B_NOT_ALLOWED
+		: UnbindRenderBufferGgtt(device, *buffer, observedPtes);
+	status_t status = ReleaseRenderBuffer(device, buffer);
+	buffer = NULL;
+	return ggttStatus != B_OK ? ggttStatus : status;
 }
 
 
@@ -497,6 +562,98 @@ RunRenderMemoryTest(ValleyViewClient& client,
 	test.elapsedUs = elapsed > 0 ? static_cast<uint64>(elapsed) : 0;
 	test.status = status;
 	UnlockRenderDevice(device);
+	return status;
+}
+
+
+status_t
+RunRcsDiagnostic(ValleyViewClient& client,
+	valleyview::RcsDiagnostic& diagnostics)
+{
+	const uint32 command = diagnostics.command;
+	memset(&diagnostics, 0, sizeof(diagnostics));
+	diagnostics.header = valleyview::MakeRenderAbiHeader(sizeof(diagnostics));
+	diagnostics.command = command;
+	diagnostics.status = B_NO_INIT;
+	diagnostics.resetStatus = B_NO_INIT;
+	diagnostics.ringRestoreStatus = B_NO_INIT;
+	diagnostics.ggttRestoreStatus = B_NO_INIT;
+	diagnostics.forcewakeReleaseStatus = B_NO_INIT;
+	diagnostics.wakeRestoreStatus = B_NO_INIT;
+	if (command != valleyview::kRcsDiagnosticArm) {
+		diagnostics.status = B_BAD_VALUE;
+		return diagnostics.status;
+	}
+
+	ValleyViewDevice& device = *client.device;
+	mutex_lock(&device.lock);
+	mutex_lock(&device.renderLock);
+	if (!device.nativeActive || device.registers == NULL || device.gpuFaulted
+		|| device.p0MemoryQuarantined || device.renderMemoryQuarantined) {
+		mutex_unlock(&device.renderLock);
+		mutex_unlock(&device.lock);
+		return diagnostics.status;
+	}
+
+	const bigtime_t started = system_time();
+	ValleyViewRenderBuffer* buffer = NULL;
+	status_t status = CreateInternalRenderBuffer(device,
+		valleyview::kRcsTestBytes, buffer, diagnostics);
+	if (status == B_OK) {
+		diagnostics.ringOffset = buffer->ggttOffset
+			+ valleyview::kRcsRingPage * valleyview::kPageSize;
+		diagnostics.statusOffset = buffer->ggttOffset
+			+ valleyview::kRcsStatusPage * valleyview::kPageSize;
+		diagnostics.batchOffset = buffer->ggttOffset
+			+ valleyview::kRcsBatchPage * valleyview::kPageSize;
+		diagnostics.resultOffset = buffer->ggttOffset
+			+ valleyview::kRcsResultPage * valleyview::kPageSize;
+		for (uint32 page = 0; page < valleyview::kRcsTestPageCount;
+				page++) {
+			diagnostics.pteBefore[page] = buffer->savedPtes[page];
+			if (!valleyview::EncodeBytPte(buffer->physicalPages[page], true,
+					true, diagnostics.pteBound[page])) {
+				status = B_BAD_DATA;
+				break;
+			}
+		}
+	}
+	if (status == B_OK) {
+		mutex_unlock(&device.renderLock);
+		mutex_lock(&device.presentLock);
+		status = ExecuteRcsDiagnostic(device, *buffer, diagnostics);
+		mutex_unlock(&device.presentLock);
+		mutex_lock(&device.renderLock);
+	}
+
+	status_t cleanupStatus = DestroyInternalRenderBuffer(device, buffer,
+		diagnostics.ggttRestoreStatus, diagnostics.pteAfter);
+	if ((diagnostics.flags & valleyview::kRcsGgttBound) != 0
+		&& diagnostics.ggttRestoreStatus == B_OK) {
+		diagnostics.flags |= valleyview::kRcsGgttRestored;
+		if (diagnostics.stage >= valleyview::kRcsStageOutputVerified)
+			diagnostics.stage = valleyview::kRcsStageRestored;
+	}
+	if (cleanupStatus != B_OK)
+		status = cleanupStatus;
+
+	device.rcsTests++;
+	if (status == B_OK) {
+		device.rcsReady = true;
+		device.rcsStatus = B_OK;
+	} else {
+		device.rcsReady = false;
+		device.rcsFailures++;
+		device.rcsStatus = status;
+	}
+	const bigtime_t elapsed = system_time() - started;
+	diagnostics.elapsedUs = elapsed > 0 ? static_cast<uint64>(elapsed) : 0;
+	diagnostics.testCount = device.rcsTests;
+	diagnostics.failureCount = device.rcsFailures;
+	diagnostics.resetCount = device.rcsResets;
+	diagnostics.status = status;
+	mutex_unlock(&device.renderLock);
+	mutex_unlock(&device.lock);
 	return status;
 }
 

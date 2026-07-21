@@ -272,6 +272,124 @@ PrintRenderDeviceInfo(const valleyview::RenderDeviceInfo& info)
 }
 
 
+void
+PrintRcsRegisterSnapshot(const char* label,
+	const valleyview::RcsRegisterSnapshot& snapshot)
+{
+	printf("rcs_%s tail=%#08" B_PRIx32 " head=%#08" B_PRIx32
+		" start=%#08" B_PRIx32 " control=%#08" B_PRIx32
+		" hws=%#08" B_PRIx32 " mi_mode=%#08" B_PRIx32
+		" mode=%#08" B_PRIx32 " instpm=%#08" B_PRIx32 "\n",
+		label, snapshot.tail, snapshot.head, snapshot.start, snapshot.control,
+		snapshot.hws, snapshot.miMode, snapshot.mode, snapshot.instpm);
+	printf("rcs_state_%s acthd=%#08" B_PRIx32 " ipehr=%#08" B_PRIx32
+		" ipeir=%#08" B_PRIx32 " instdone=%#08" B_PRIx32
+		" bbstate=%#08" B_PRIx32 " bbaddr=%#08" B_PRIx32
+		" timestamp=%#08" B_PRIx32 " fault=%#08" B_PRIx32 "\n",
+		label, snapshot.acthd, snapshot.ipehr, snapshot.ipeir,
+		snapshot.instdone, snapshot.bbstate, snapshot.bbaddr,
+		snapshot.timestamp, snapshot.faultRegister);
+	printf("rcs_context_%s control=%#08" B_PRIx32 " status=%#08" B_PRIx32
+		" ccid=%#08" B_PRIx32 " pp_dir=%#08" B_PRIx32 "/%#08"
+		B_PRIx32 "\n",
+		label, snapshot.contextControl, snapshot.contextStatus,
+		snapshot.ccid, snapshot.ppDirDclv, snapshot.ppDirBase);
+	printf("rcs_fault_%s valid=%s space=%s address=%#08" B_PRIx32
+		" source=%" B_PRIu32 " type=%" B_PRIu32 "\n",
+		label, YesNo(valleyview::RcsFaultIsValid(snapshot.faultRegister)),
+		(snapshot.faultRegister & valleyview::kRcsFaultGgtt) != 0
+			? "ggtt" : "ppgtt",
+		valleyview::RcsFaultAddress(snapshot.faultRegister),
+		valleyview::RcsFaultSource(snapshot.faultRegister),
+		valleyview::RcsFaultType(snapshot.faultRegister));
+}
+
+
+void
+PrintRcsDiagnostic(const valleyview::RcsDiagnostic& diagnostics)
+{
+	printf("rcs_test status=%" B_PRId32 " stage=%u flags=%#08" B_PRIx32
+		" elapsed_us=%" B_PRIu64 " cleanup=%" B_PRId32 "/%" B_PRId32
+		"/%" B_PRId32 "/%" B_PRId32 "/%" B_PRId32 "\n",
+		diagnostics.status, diagnostics.stage, diagnostics.flags,
+		diagnostics.elapsedUs, diagnostics.resetStatus,
+		diagnostics.ringRestoreStatus, diagnostics.ggttRestoreStatus,
+		diagnostics.forcewakeReleaseStatus,
+		diagnostics.wakeRestoreStatus);
+	printf("rcs_memory ring=%#08" B_PRIx32 " status=%#08" B_PRIx32
+		" batch=%#08" B_PRIx32 "/%" B_PRIu32
+		" result=%#08" B_PRIx32 " tail=%" B_PRIu32 "\n",
+		diagnostics.ringOffset, diagnostics.statusOffset,
+		diagnostics.batchOffset, diagnostics.batchBytes,
+		diagnostics.resultOffset, diagnostics.ringTailBytes);
+	printf("rcs_markers batch=%#08" B_PRIx32 "/%#08" B_PRIx32
+		" completion=%#08" B_PRIx32 "/%#08" B_PRIx32
+		" timestamp=%#08" B_PRIx32 "/%#08" B_PRIx32 "/%#08"
+		B_PRIx32 "\n",
+		diagnostics.batchMarker, diagnostics.observedBatchMarker,
+		diagnostics.completionMarker,
+		diagnostics.observedCompletionMarker,
+		diagnostics.timestampBefore, diagnostics.observedTimestamp,
+		diagnostics.timestampAfter);
+	printf("rcs_counts tests=%" B_PRIu64 " failures=%" B_PRIu64
+		" resets=%" B_PRIu64 " display=%#" B_PRIx64 "/%#" B_PRIx64 "\n",
+		diagnostics.testCount, diagnostics.failureCount,
+		diagnostics.resetCount, diagnostics.displaySignatureBefore,
+		diagnostics.displaySignatureAfter);
+	printf("rcs_ptes before=%#08" B_PRIx32 ",%#08" B_PRIx32
+		",%#08" B_PRIx32 ",%#08" B_PRIx32
+		" bound=%#08" B_PRIx32 ",%#08" B_PRIx32
+		",%#08" B_PRIx32 ",%#08" B_PRIx32
+		" after=%#08" B_PRIx32 ",%#08" B_PRIx32
+		",%#08" B_PRIx32 ",%#08" B_PRIx32 "\n",
+		diagnostics.pteBefore[0], diagnostics.pteBefore[1],
+		diagnostics.pteBefore[2], diagnostics.pteBefore[3],
+		diagnostics.pteBound[0], diagnostics.pteBound[1],
+		diagnostics.pteBound[2], diagnostics.pteBound[3],
+		diagnostics.pteAfter[0], diagnostics.pteAfter[1],
+		diagnostics.pteAfter[2], diagnostics.pteAfter[3]);
+	PrintGpuRegisterSnapshot("rcs_global_before", diagnostics.globalBefore);
+	PrintRcsRegisterSnapshot("before", diagnostics.before);
+	PrintRcsRegisterSnapshot("active", diagnostics.active);
+	if ((diagnostics.flags & valleyview::kRcsFaultCaptured) != 0) {
+		PrintGpuRegisterSnapshot("rcs_global_fault", diagnostics.globalFault);
+		PrintRcsRegisterSnapshot("fault", diagnostics.fault);
+	}
+	PrintRcsRegisterSnapshot("after", diagnostics.after);
+	PrintGpuRegisterSnapshot("rcs_global_after", diagnostics.globalAfter);
+}
+
+
+status_t
+ReadRenderDeviceInfo(int device, valleyview::RenderDeviceInfo& info)
+{
+	memset(&info, 0, sizeof(info));
+	status_t status = ioctl(device, valleyview::kGetRenderDeviceInfo, &info,
+		sizeof(info));
+	if (status != B_OK)
+		return status;
+	return valleyview::IsValidRenderAbiHeader(info.header, sizeof(info))
+		? B_OK : B_BAD_DATA;
+}
+
+
+status_t
+RunRcsProbe(int device)
+{
+	valleyview::RcsDiagnostic diagnostics = {};
+	diagnostics.header = valleyview::MakeRenderAbiHeader(sizeof(diagnostics));
+	diagnostics.command = valleyview::kRcsDiagnosticArm;
+	status_t status = ioctl(device, valleyview::kRunRcsDiagnostic,
+		&diagnostics, sizeof(diagnostics));
+	if (!valleyview::IsValidRenderAbiHeader(diagnostics.header,
+			sizeof(diagnostics))) {
+		return status == B_OK ? B_BAD_DATA : status;
+	}
+	PrintRcsDiagnostic(diagnostics);
+	return status == B_OK ? diagnostics.status : status;
+}
+
+
 status_t
 CloseRenderBuffer(int device, uint32 handle)
 {
@@ -452,6 +570,80 @@ ReadP0Status(int device, valleyview::P0Status& status)
 		return result;
 	return valleyview::IsValidAbiHeader(status.header, sizeof(status))
 		? B_OK : B_BAD_DATA;
+}
+
+
+bool
+P0TransportHealthy(const valleyview::P0Status& before,
+	const valleyview::P0Status& after)
+{
+	const uint32 required = valleyview::kP0NativeScanout
+		| valleyview::kP0BcsReady | valleyview::kP0PresentReady
+		| valleyview::kP0PresentBcs;
+	return (after.flags & required) == required
+		&& (after.flags & valleyview::kP0Faulted) == 0
+		&& after.nativeStatus == B_OK
+		&& after.bcsStatus == B_OK
+		&& after.presentStatus == B_OK
+		&& after.presentBcsStatus == B_OK
+		&& after.bcsFailures == before.bcsFailures
+		&& after.presentFailures == before.presentFailures
+		&& after.bcsSubmissions > before.bcsSubmissions;
+}
+
+
+status_t
+RunRenderTransportProbe(int device)
+{
+	valleyview::RenderDeviceInfo info = {};
+	status_t infoStatus = ReadRenderDeviceInfo(device, info);
+	if (infoStatus == B_OK)
+		PrintRenderDeviceInfo(info);
+
+	valleyview::P0Status before = {};
+	status_t beforeStatus = ReadP0Status(device, before);
+	if (beforeStatus == B_OK) {
+		printf("render_transport phase=p0_before\n");
+		PrintP0Status(before);
+	}
+
+	status_t memoryStatus = RunRenderMemoryProbe(device);
+	status_t rcsStatus = RunRcsProbe(device);
+
+	valleyview::RenderDeviceInfo afterInfo = {};
+	status_t afterInfoStatus = ReadRenderDeviceInfo(device, afterInfo);
+	if (afterInfoStatus == B_OK) {
+		printf("render_transport phase=render_after\n");
+		PrintRenderDeviceInfo(afterInfo);
+	}
+	const bool rcsProven = afterInfoStatus == B_OK
+		&& (afterInfo.provenEngines & valleyview::kRenderEngineRcs) != 0;
+
+	valleyview::P0Status after = {};
+	status_t afterStatus = ReadP0Status(device, after);
+	if (afterStatus == B_OK) {
+		printf("render_transport phase=p0_after\n");
+		PrintP0Status(after);
+	}
+	const bool p0Healthy = beforeStatus == B_OK && afterStatus == B_OK
+		&& P0TransportHealthy(before, after);
+	printf("render_transport info=%s memory=%s rcs=%s proven=%s p0=%s\n",
+		YesNo(infoStatus == B_OK), YesNo(memoryStatus == B_OK),
+		YesNo(rcsStatus == B_OK), YesNo(rcsProven), YesNo(p0Healthy));
+
+	if (infoStatus != B_OK)
+		return infoStatus;
+	if (beforeStatus != B_OK)
+		return beforeStatus;
+	if (memoryStatus != B_OK)
+		return memoryStatus;
+	if (rcsStatus != B_OK)
+		return rcsStatus;
+	if (!rcsProven)
+		return afterInfoStatus == B_OK ? B_BAD_DATA : afterInfoStatus;
+	if (afterStatus != B_OK)
+		return afterStatus;
+	return p0Healthy ? B_OK : B_BAD_DATA;
 }
 
 
@@ -704,13 +896,29 @@ main(int argc, char** argv)
 			close(device);
 			return 1;
 		}
+	} else if (argc == 2 && strcmp(argv[1], "--rcs-test") == 0) {
+		status = RunRcsProbe(device);
+		if (status != B_OK) {
+			fprintf(stderr,
+				"intel_valleyview_probe: RCS diagnostic failed: %s\n",
+				strerror(status));
+			close(device);
+			return 1;
+		}
+	} else if (argc == 2
+		&& strcmp(argv[1], "--render-transport-test") == 0) {
+		status = RunRenderTransportProbe(device);
+		if (status != B_OK) {
+			fprintf(stderr,
+				"intel_valleyview_probe: render transport failed: %s\n",
+				strerror(status));
+			close(device);
+			return 1;
+		}
 	} else if (argc == 2 && strcmp(argv[1], "--render-info") == 0) {
 		valleyview::RenderDeviceInfo info = {};
-		status = ioctl(device, valleyview::kGetRenderDeviceInfo, &info,
-			sizeof(info));
-		if (status != B_OK
-			|| !valleyview::IsValidRenderAbiHeader(info.header,
-				sizeof(info))) {
+		status = ReadRenderDeviceInfo(device, info);
+		if (status != B_OK) {
 			fprintf(stderr,
 				"intel_valleyview_probe: render info failed: %s\n",
 				strerror(status));
@@ -806,7 +1014,8 @@ main(int argc, char** argv)
 	} else if (argc != 1) {
 		fprintf(stderr, "usage: intel_valleyview_probe"
 			" [--publish|--gpu-diagnostics|--gpu-self-test"
-			"|--render-info|--render-memory-test"
+			"|--render-info|--render-memory-test|--rcs-test"
+			"|--render-transport-test"
 			"|--p0-status|--p0-test|--p0-benchmark]\n");
 		close(device);
 		return 1;

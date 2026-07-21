@@ -13,7 +13,7 @@ constexpr uint16 kIntelVendorId = 0x8086;
 constexpr uint16 kWinkyDeviceId = 0x0f31;
 
 constexpr uint32 kProtocolMagic = 0x564c5657;
-constexpr uint16 kProtocolVersion = 10;
+constexpr uint16 kProtocolVersion = 11;
 
 constexpr bool kDefaultEnabled = true;
 constexpr bool kDefaultAllowModeset = true;
@@ -46,7 +46,8 @@ enum {
 	kRenderMapBuffer,
 	kRenderCloseBuffer,
 	kRenderSetBufferDomain,
-	kRunRenderMemoryTest
+	kRunRenderMemoryTest,
+	kRunRcsDiagnostic
 };
 
 enum DisplayState : uint32 {

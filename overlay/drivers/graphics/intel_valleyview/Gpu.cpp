@@ -5,6 +5,7 @@
 #include "Driver.h"
 
 #include <common/intel_valleyview/GpuCore.h>
+#include <common/intel_valleyview/RcsCore.h>
 #include <common/intel_valleyview/RenderMemoryCore.h>
 
 #include <KernelExport.h>
@@ -116,6 +117,53 @@ ReadGpuRegisters(const volatile uint8* registers,
 	snapshot.bcsIpehr = ReadMmio(registers, valleyview::kRingIpehr);
 	snapshot.bcsIpeir = ReadMmio(registers, valleyview::kRingIpeir);
 	snapshot.bcsInstdone = ReadMmio(registers, valleyview::kRingInstdone);
+}
+
+
+void
+ReadRcsRegisters(const volatile uint8* registers,
+	valleyview::RcsRegisterSnapshot& snapshot)
+{
+	snapshot.tail = ReadMmio(registers, valleyview::kRcsRingTail);
+	snapshot.head = ReadMmio(registers, valleyview::kRcsRingHead);
+	snapshot.start = ReadMmio(registers, valleyview::kRcsRingStart);
+	snapshot.control = ReadMmio(registers, valleyview::kRcsRingControl);
+	snapshot.hws = ReadMmio(registers, valleyview::kRcsRingHws);
+	snapshot.miMode = ReadMmio(registers, valleyview::kRcsRingMiMode);
+	snapshot.mode = ReadMmio(registers, valleyview::kRcsRingMode);
+	snapshot.instpm = ReadMmio(registers, valleyview::kRcsRingInstpm);
+	snapshot.acthd = ReadMmio(registers, valleyview::kRcsRingActhd);
+	snapshot.ipehr = ReadMmio(registers, valleyview::kRcsRingIpehr);
+	snapshot.ipeir = ReadMmio(registers, valleyview::kRcsRingIpeir);
+	snapshot.instdone = ReadMmio(registers, valleyview::kRcsRingInstdone);
+	snapshot.bbstate = ReadMmio(registers, valleyview::kRcsRingBbstate);
+	snapshot.bbaddr = ReadMmio(registers, valleyview::kRcsRingBbaddr);
+	snapshot.ccid = ReadMmio(registers, valleyview::kRcsRingCcid);
+	snapshot.faultRegister = ReadMmio(registers,
+		valleyview::kRcsRingFault);
+	snapshot.contextControl = ReadMmio(registers,
+		valleyview::kRcsRingContextControl);
+	snapshot.contextStatus = ReadMmio(registers,
+		valleyview::kRcsRingContextStatus);
+	snapshot.ppDirDclv = ReadMmio(registers,
+		valleyview::kRcsRingPpDirDclv);
+	snapshot.ppDirBase = ReadMmio(registers,
+		valleyview::kRcsRingPpDirBase);
+	snapshot.timestamp = ReadMmio(registers, valleyview::kRcsRingTimestamp);
+}
+
+
+bool
+BcsStateUnchanged(const valleyview::GpuRegisterSnapshot& before,
+	const valleyview::GpuRegisterSnapshot& after)
+{
+	return before.bcsTail == after.bcsTail
+		&& before.bcsHead == after.bcsHead
+		&& before.bcsStart == after.bcsStart
+		&& before.bcsControl == after.bcsControl
+		&& before.bcsHws == after.bcsHws
+		&& before.bcsMiMode == after.bcsMiMode
+		&& before.bcsMode == after.bcsMode;
 }
 
 
@@ -546,6 +594,229 @@ RestoreBcsRing(volatile uint8* registers,
 }
 
 
+status_t
+PrepareRcsMemory(ValleyViewRenderBuffer& buffer,
+	valleyview::RcsDiagnostic& diagnostics)
+{
+	if (buffer.address == NULL
+		|| buffer.size < valleyview::kRcsTestBytes
+		|| buffer.ggttOffset == valleyview::kInvalidRenderGgttOffset) {
+		return B_BAD_VALUE;
+	}
+
+	uint32* memory = static_cast<uint32*>(buffer.address);
+	memset(memory, 0, valleyview::kRcsTestBytes);
+	uint32* ring = memory + valleyview::kRcsRingPage
+		* valleyview::kPageSize / sizeof(uint32);
+	uint32* batch = memory + valleyview::kRcsBatchPage
+		* valleyview::kPageSize / sizeof(uint32);
+	uint32* result = memory + valleyview::kRcsResultPage
+		* valleyview::kPageSize / sizeof(uint32);
+	for (uint32 index = 0;
+			index < valleyview::kPageSize / sizeof(uint32); index++) {
+		result[index] = valleyview::kRcsResultSentinel;
+	}
+
+	const size_t batchCount = valleyview::BuildRcsDiagnosticBatch(batch,
+		valleyview::kPageSize / sizeof(uint32), diagnostics.resultOffset,
+		valleyview::kRcsBatchMarker);
+	const size_t ringCount = valleyview::BuildRcsDiagnosticRing(ring,
+		valleyview::kPageSize / sizeof(uint32), diagnostics.batchOffset,
+		diagnostics.resultOffset, valleyview::kRcsCompletionMarker);
+	if (batchCount != valleyview::kRcsBatchCommandCount
+		|| ringCount != valleyview::kRcsRingCommandCount) {
+		return B_BAD_DATA;
+	}
+
+	diagnostics.batchMarker = valleyview::kRcsBatchMarker;
+	diagnostics.completionMarker = valleyview::kRcsCompletionMarker;
+	diagnostics.batchBytes
+		= static_cast<uint32>(batchCount * sizeof(uint32));
+	diagnostics.ringTailBytes
+		= static_cast<uint32>(ringCount * sizeof(uint32));
+	memory_write_barrier();
+	return B_OK;
+}
+
+
+status_t
+FlushRcsTlb(volatile uint8* registers)
+{
+	const uint32 bits = valleyview::kRcsInstpmTlbInvalidate
+		| valleyview::kRcsInstpmSyncFlush;
+	status_t status = WriteGt(registers, valleyview::kRcsRingInstpm,
+		(bits << 16) | bits);
+	if (status != B_OK)
+		return status;
+	ReadMmio(registers, valleyview::kRcsRingInstpm);
+	return WaitForMask(registers, valleyview::kRcsRingInstpm,
+		valleyview::kRcsInstpmSyncFlush, 0, kResetTimeoutUs);
+}
+
+
+status_t
+PrepareRcsRing(volatile uint8* registers, uint32 ringOffset,
+	uint32 statusOffset)
+{
+	status_t status = WriteGt(registers, valleyview::kRcsRingControl, 0);
+	if (status != B_OK)
+		return status;
+	ReadMmio(registers, valleyview::kRcsRingControl);
+
+	status = WriteGt(registers, valleyview::kRcsRingHead, 0);
+	if (status == B_OK)
+		status = WriteGt(registers, valleyview::kRcsRingTail, 0);
+	if (status == B_OK)
+		status = WriteGt(registers, valleyview::kRcsRingStart, ringOffset);
+	if (status == B_OK)
+		status = WriteGt(registers, valleyview::kRcsRingHws, statusOffset);
+	if (status != B_OK)
+		return status;
+	ReadMmio(registers, valleyview::kRcsRingHws);
+	return B_OK;
+}
+
+
+status_t
+EnableRcsRing(volatile uint8* registers, uint32 tailBytes)
+{
+	status_t status = WriteGt(registers, valleyview::kRcsRingControl,
+		valleyview::kRingValid);
+	if (status != B_OK)
+		return status;
+	if ((ReadMmio(registers, valleyview::kRcsRingControl)
+			& valleyview::kRingValid) == 0) {
+		return B_IO_ERROR;
+	}
+
+	status = WriteGt(registers, valleyview::kRcsRingTail, tailBytes);
+	ReadMmio(registers, valleyview::kRcsRingTail);
+	return status;
+}
+
+
+status_t
+WaitForRcsCompletion(const uint32* result, uint32 marker)
+{
+	const volatile uint32* value = result
+		+ valleyview::kRcsCompletionOffset / sizeof(uint32);
+	const bigtime_t deadline = system_time() + kRingTimeoutUs;
+	do {
+		memory_read_barrier();
+		if (*value == marker)
+			return B_OK;
+		snooze(10);
+	} while (system_time() < deadline);
+	return B_TIMED_OUT;
+}
+
+
+status_t
+WaitForRcsIdle(const volatile uint8* registers)
+{
+	const bigtime_t deadline = system_time() + kRingTimeoutUs;
+	do {
+		const uint32 head = ReadMmio(registers, valleyview::kRcsRingHead)
+			& valleyview::kRingAddressMask;
+		const uint32 tail = ReadMmio(registers, valleyview::kRcsRingTail)
+			& valleyview::kRingAddressMask;
+		if (head == tail)
+			return B_OK;
+		snooze(10);
+	} while (system_time() < deadline);
+	return B_TIMED_OUT;
+}
+
+
+status_t
+ResetRcs(volatile uint8* registers)
+{
+	for (uint32 pass = 0; pass < 2; pass++) {
+		WriteMmio(registers, valleyview::kGen6Gdrst,
+			valleyview::kGen6ResetRender);
+		status_t status = WaitForMask(registers, valleyview::kGen6Gdrst,
+			valleyview::kGen6ResetRender, 0, kResetTimeoutUs);
+		if (status != B_OK)
+			return status;
+	}
+	snooze(50);
+	return B_OK;
+}
+
+
+status_t
+RestoreRcsRing(volatile uint8* registers,
+	const valleyview::RcsRegisterSnapshot& original, bool reset,
+	status_t& resetStatus, bool& ringSafe,
+	valleyview::RcsDiagnostic& diagnostics)
+{
+	ringSafe = false;
+	status_t status = B_OK;
+	status_t cleanupFailure = B_OK;
+	if (!reset) {
+		status = WaitForRcsIdle(registers);
+		if (status == B_OK) {
+			status = WriteGt(registers, valleyview::kRcsRingControl, 0);
+		}
+		if (status == B_OK)
+			ReadMmio(registers, valleyview::kRcsRingControl);
+		else {
+			cleanupFailure = status;
+			if ((diagnostics.flags & valleyview::kRcsFaultCaptured) == 0) {
+				ReadGpuRegisters(registers, diagnostics.globalFault);
+				ReadRcsRegisters(registers, diagnostics.fault);
+				diagnostics.flags |= valleyview::kRcsFaultCaptured;
+			}
+		}
+	}
+	if (status != B_OK || reset) {
+		resetStatus = ResetRcs(registers);
+		if (resetStatus != B_OK)
+			return resetStatus;
+	}
+
+	status = WriteGt(registers, valleyview::kRcsRingControl, 0);
+	if (status == B_OK) {
+		status = WriteGt(registers, valleyview::kRcsRingStart,
+			original.start);
+	}
+	if (status == B_OK)
+		status = WriteGt(registers, valleyview::kRcsRingHws, original.hws);
+	if (status == B_OK)
+		status = WriteGt(registers, valleyview::kRcsRingHead, original.head);
+	if (status == B_OK)
+		status = WriteGt(registers, valleyview::kRcsRingTail, original.tail);
+	if (status == B_OK)
+		status = FlushRcsTlb(registers);
+	if (status == B_OK) {
+		status = WriteGt(registers, valleyview::kRcsRingControl,
+			original.control);
+	}
+	if (status != B_OK) {
+		if ((diagnostics.flags & valleyview::kRcsFaultCaptured) == 0) {
+			ReadGpuRegisters(registers, diagnostics.globalFault);
+			ReadRcsRegisters(registers, diagnostics.fault);
+			diagnostics.flags |= valleyview::kRcsFaultCaptured;
+		}
+		return status;
+	}
+	ReadMmio(registers, valleyview::kRcsRingControl);
+
+	valleyview::RcsRegisterSnapshot observed = {};
+	ReadRcsRegisters(registers, observed);
+	ringSafe = valleyview::IsRcsRingRestored(original, observed);
+	if (!ringSafe) {
+		if ((diagnostics.flags & valleyview::kRcsFaultCaptured) == 0) {
+			ReadGpuRegisters(registers, diagnostics.globalFault);
+			diagnostics.fault = observed;
+			diagnostics.flags |= valleyview::kRcsFaultCaptured;
+		}
+		return B_IO_ERROR;
+	}
+	return cleanupFailure;
+}
+
+
 bool
 VerifyPage(const uint32* page, uint32 sentinel, uint32& mismatchOffset,
 	uint32& observed)
@@ -896,7 +1167,7 @@ BindRenderBufferGgtt(ValleyViewDevice& device,
 
 status_t
 UnbindRenderBufferGgtt(ValleyViewDevice& device,
-	ValleyViewRenderBuffer& buffer)
+	ValleyViewRenderBuffer& buffer, uint32* observedPtes)
 {
 	if (buffer.ggttOffset == valleyview::kInvalidRenderGgttOffset)
 		return buffer.quarantined ? B_IO_ERROR : B_OK;
@@ -921,12 +1192,13 @@ UnbindRenderBufferGgtt(ValleyViewDevice& device,
 
 	status_t status = B_OK;
 	for (uint32 page = 0; page < buffer.pageCount; page++) {
-		if (ReadMmio(device.registers, valleyview::kGttOffsetInBar
-				+ (firstPage + page) * valleyview::kGen7PteSize)
-				!= buffer.savedPtes[page]) {
+		const uint32 observed = ReadMmio(device.registers,
+			valleyview::kGttOffsetInBar
+				+ (firstPage + page) * valleyview::kGen7PteSize);
+		if (observedPtes != NULL)
+			observedPtes[page] = observed;
+		if (observed != buffer.savedPtes[page])
 			status = B_IO_ERROR;
-			break;
-		}
 	}
 	if (status == B_OK)
 		buffer.ggttOffset = valleyview::kInvalidRenderGgttOffset;
@@ -983,6 +1255,181 @@ SubmitRenderBcsCopy(ValleyViewDevice& device, uint32 sourceOffset,
 		memory_write_barrier();
 		status = SubmitBcsCommandsLocked(device,
 			static_cast<uint32>(count * sizeof(uint32)), completionMarker);
+	}
+	mutex_unlock(&device.bcsLock);
+	return status;
+}
+
+
+status_t
+ExecuteRcsDiagnostic(ValleyViewDevice& device,
+	ValleyViewRenderBuffer& buffer, valleyview::RcsDiagnostic& diagnostics)
+{
+	status_t status = PrepareRcsMemory(buffer, diagnostics);
+	if (status != B_OK)
+		return status;
+
+	uint32* result = static_cast<uint32*>(buffer.address)
+		+ valleyview::kRcsResultPage
+			* valleyview::kPageSize / sizeof(uint32);
+	mutex_lock(&device.bcsLock);
+	volatile uint8* registers = device.registers;
+	valleyview::GpuDiagnostics forcewake = {};
+	bool gtWakeChanged = false;
+	bool forcewakeAttempted = false;
+	bool activeCaptured = false;
+	bool ringTouched = false;
+	bool resetRcs = false;
+	bool ringSafe = true;
+	status_t cleanupStatus = B_OK;
+	const uint32 requiredResults = valleyview::kRcsBatchMarkerVerified
+		| valleyview::kRcsCompletionVerified
+		| valleyview::kRcsTimestampVerified;
+
+	ReadGpuRegisters(registers, diagnostics.globalBefore);
+	ReadRcsRegisters(registers, diagnostics.before);
+	diagnostics.displaySignatureBefore = DisplaySignature(registers);
+	diagnostics.flags |= valleyview::kRcsSnapshotCaptured;
+	diagnostics.stage = valleyview::kRcsStageSnapshot;
+	if (!device.nativeActive || device.gpuFaulted
+		|| device.p0MemoryQuarantined || device.renderMemoryQuarantined) {
+		status = B_NO_INIT;
+		goto cleanup;
+	}
+
+	status = EnableGtWake(registers, diagnostics.globalBefore, gtWakeChanged);
+	if (status != B_OK)
+		goto cleanup;
+	forcewakeAttempted = true;
+	status = AcquireForcewake(registers, forcewake);
+	if (status != B_OK)
+		goto cleanup;
+	diagnostics.flags |= valleyview::kRcsForcewakeAcquired;
+	diagnostics.stage = valleyview::kRcsStageForcewakeAcquired;
+
+	ReadRcsRegisters(registers, diagnostics.active);
+	activeCaptured = true;
+	if (!valleyview::IsRcsRingAvailable(diagnostics.active)) {
+		status = B_BUSY;
+		goto cleanup;
+	}
+	diagnostics.flags |= valleyview::kRcsRingAvailable;
+	diagnostics.timestampBefore = diagnostics.active.timestamp;
+
+	ringTouched = true;
+	status = PrepareRcsRing(registers, diagnostics.ringOffset,
+		diagnostics.statusOffset);
+	if (status != B_OK)
+		goto cleanup;
+
+	status = FlushRcsTlb(registers);
+	if (status != B_OK)
+		goto cleanup;
+	diagnostics.flags |= valleyview::kRcsTlbFlushed;
+	diagnostics.stage = valleyview::kRcsStageTlbFlushed;
+
+	status = EnableRcsRing(registers, diagnostics.ringTailBytes);
+	if (status != B_OK)
+		goto cleanup;
+	diagnostics.flags |= valleyview::kRcsRingStarted;
+	diagnostics.stage = valleyview::kRcsStageRingStarted;
+
+	status = WaitForRcsCompletion(result, diagnostics.completionMarker);
+	diagnostics.timestampAfter
+		= ReadMmio(registers, valleyview::kRcsRingTimestamp);
+	memory_read_barrier();
+	diagnostics.observedBatchMarker
+		= result[valleyview::kRcsBatchMarkerOffset / sizeof(uint32)];
+	diagnostics.observedTimestamp
+		= result[valleyview::kRcsTimestampOffset / sizeof(uint32)];
+	diagnostics.observedCompletionMarker
+		= result[valleyview::kRcsCompletionOffset / sizeof(uint32)];
+	if (diagnostics.observedBatchMarker == diagnostics.batchMarker)
+		diagnostics.flags |= valleyview::kRcsBatchMarkerVerified;
+	if (diagnostics.observedCompletionMarker == diagnostics.completionMarker)
+		diagnostics.flags |= valleyview::kRcsCompletionVerified;
+	if (valleyview::RcsTimestampInWindow(diagnostics.timestampBefore,
+			diagnostics.observedTimestamp, diagnostics.timestampAfter)) {
+		diagnostics.flags |= valleyview::kRcsTimestampVerified;
+	}
+	if (status != B_OK) {
+		resetRcs = true;
+		goto cleanup;
+	}
+	diagnostics.stage = valleyview::kRcsStageCommandsCompleted;
+
+	if ((diagnostics.flags & requiredResults) != requiredResults)
+		status = B_BAD_DATA;
+	if (status == B_OK)
+		diagnostics.stage = valleyview::kRcsStageOutputVerified;
+
+cleanup:
+	if (status != B_OK && ringTouched) {
+		ReadGpuRegisters(registers, diagnostics.globalFault);
+		ReadRcsRegisters(registers, diagnostics.fault);
+		diagnostics.flags |= valleyview::kRcsFaultCaptured;
+	}
+	if (ringTouched) {
+		diagnostics.ringRestoreStatus = RestoreRcsRing(registers,
+			diagnostics.active, resetRcs, diagnostics.resetStatus, ringSafe,
+			diagnostics);
+		if (ringSafe)
+			diagnostics.flags |= valleyview::kRcsRingRestored;
+		if (diagnostics.resetStatus != B_NO_INIT) {
+			device.rcsResets++;
+			if (diagnostics.resetStatus == B_OK)
+				diagnostics.flags |= valleyview::kRcsResetPerformed;
+		}
+		if (diagnostics.ringRestoreStatus != B_OK)
+			status = diagnostics.ringRestoreStatus;
+	} else {
+		diagnostics.ringRestoreStatus = B_OK;
+		diagnostics.flags |= valleyview::kRcsRingRestored;
+	}
+
+	ReadRcsRegisters(registers, diagnostics.after);
+	const valleyview::RcsRegisterSnapshot& expected
+		= activeCaptured ? diagnostics.active : diagnostics.before;
+	if (!valleyview::IsRcsRingRestored(expected,
+			diagnostics.after)) {
+		ringSafe = false;
+		diagnostics.flags &= ~valleyview::kRcsRingRestored;
+		diagnostics.ringRestoreStatus = B_IO_ERROR;
+		status = B_IO_ERROR;
+	}
+	if (forcewakeAttempted) {
+		diagnostics.forcewakeReleaseStatus
+			= ReleaseForcewake(registers, forcewake);
+		cleanupStatus = diagnostics.forcewakeReleaseStatus;
+		if (status == B_OK)
+			status = cleanupStatus;
+	} else
+		diagnostics.forcewakeReleaseStatus = B_OK;
+	diagnostics.wakeRestoreStatus = RestoreGtWake(registers,
+		diagnostics.globalBefore, gtWakeChanged);
+	cleanupStatus = diagnostics.wakeRestoreStatus;
+	if (status == B_OK)
+		status = cleanupStatus;
+
+	ReadGpuRegisters(registers, diagnostics.globalAfter);
+	diagnostics.displaySignatureAfter = DisplaySignature(registers);
+	if (diagnostics.displaySignatureAfter
+			== diagnostics.displaySignatureBefore) {
+		diagnostics.flags |= valleyview::kRcsDisplayUnchanged;
+	} else
+		status = B_IO_ERROR;
+	if (BcsStateUnchanged(diagnostics.globalBefore,
+			diagnostics.globalAfter)) {
+		diagnostics.flags |= valleyview::kRcsBcsUnchanged;
+	} else if (status == B_OK)
+		status = B_IO_ERROR;
+
+	if (!ringSafe) {
+		buffer.quarantined = true;
+		device.renderMemoryQuarantined = true;
+		device.gpuFaulted = true;
+		dprintf("intel_valleyview: quarantined RCS diagnostic memory after "
+			"unsafe ring restoration\n");
 	}
 	mutex_unlock(&device.bcsLock);
 	return status;

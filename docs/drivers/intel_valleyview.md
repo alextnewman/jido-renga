@@ -118,13 +118,15 @@ disabled and the live surface no longer names any P0 framebuffer.
 The lock hierarchy is:
 
 ```text
+device.lock -> renderLock -> bcsLock
 device.lock -> presentLock -> bcsLock
 ```
 
 The present worker takes `presentLock -> bcsLock` and never takes `device.lock`.
-Every forcewake, BCS ring, and diagnostic GGTT operation takes `bcsLock`.
-Diagnostics can therefore delay one frame but cannot replace a live ring or
-page-table mapping concurrently.
+`renderLock` and `presentLock` never nest. The RCS diagnostic binds its hidden
+BO under the render path, releases `renderLock`, then freezes presentation
+under `presentLock -> bcsLock` while sampling display state and using RCS.
+Every forcewake, engine-ring, and diagnostic GGTT operation takes `bcsLock`.
 
 Shutdown joins the present worker before quiescing BCS or restoring display
 state. The candidate cursor is detached, BCS is quiesced, the firmware plane is
@@ -202,6 +204,34 @@ cycles their domains, performs a kernel-generated one-page BCS copy, verifies
 both mappings, restores their GGTT entries, and closes the handles. The BCS
 data path is hardware-validated on Winky while native P0 presentation remains
 active and fault-free.
+
+### RCS transport diagnostic
+
+The driver has a kernel-generated RCS diagnostic, not a userspace submission
+API. It allocates a hidden four-page render buffer for an RCS ring, hardware
+status page, second-level batch, and result page. The batch writes one marker
+and records the RCS timestamp; the ring chains to that batch and retires through
+a Gen7 `PIPE_CONTROL` completion write.
+
+The diagnostic requires an idle legacy RCS with PPGTT and active CCID context
+selection disabled. It programs and posts the hardware-status page before the
+required RCS TLB sync-flush. It snapshots global GT, BCS, CCID, context,
+page-directory, and decoded RCS fault state, then restores the original HWS,
+flushes the TLB again, and verifies the complete ring state. A timeout performs
+a bounded render-engine reset. If ring restoration or GGTT detachment cannot
+be proven, the diagnostic buffer is quarantined and all further render work
+fails closed.
+
+A successful diagnostic adds RCS to `provenEngines`; it does not add RCS to
+`submissionEngines` or advertise contexts, command isolation, fences, or reset
+recovery as Crocus services.
+
+`intel_valleyview_probe --render-transport-test` is the combined hardware gate.
+It runs render discovery, captures P0 state, exercises mapping ownership and the
+BCS memory copy, runs the RCS diagnostic, captures P0 again, and prints one
+summary. Failure output retains all RCS stages, command addresses, marker
+values, timestamps, PTEs, ring/context registers, cleanup status, and P0
+counters needed for offline diagnosis.
 
 ## Current support
 

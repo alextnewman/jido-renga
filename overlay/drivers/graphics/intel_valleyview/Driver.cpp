@@ -394,6 +394,7 @@ InitDriver(device_node* node, void** cookie)
 	device->p0PrivateArea = -1;
 	device->nativeStatus = B_NO_INIT;
 	device->bcsStatus = B_NO_INIT;
+	device->rcsStatus = B_NO_INIT;
 	device->presentStatus = B_NO_INIT;
 	device->presentBcsStatus = B_NO_INIT;
 	device->presentThread = -1;

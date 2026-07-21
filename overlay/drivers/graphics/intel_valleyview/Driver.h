@@ -64,6 +64,7 @@ struct ValleyViewDevice {
 	bool						gpuFaulted;
 	bool						nativeActive;
 	bool						bcsReady;
+	bool						rcsReady;
 	bool						cursorReady;
 	bool						softBlanked;
 	bool						cursorVisible;
@@ -109,6 +110,7 @@ struct ValleyViewDevice {
 	int32						cursorY;
 	int32						nativeStatus;
 	int32						bcsStatus;
+	int32						rcsStatus;
 	int32						presentStatus;
 	int32						presentBcsStatus;
 	thread_id					presentThread;
@@ -140,6 +142,9 @@ struct ValleyViewDevice {
 	uint64						cursorShowUpdates;
 	uint64						renderMemoryTests;
 	uint64						renderMemoryFailures;
+	uint64						rcsTests;
+	uint64						rcsFailures;
+	uint64						rcsResets;
 	uint32						bcsSequence;
 	valleyview::FirmwareSnapshot	snapshot;
 };
@@ -192,12 +197,16 @@ status_t SetRenderBufferDomain(ValleyViewClient& client,
 	valleyview::RenderBufferSetDomain& request);
 status_t RunRenderMemoryTest(ValleyViewClient& client,
 	valleyview::RenderMemoryTest& test);
+status_t RunRcsDiagnostic(ValleyViewClient& client,
+	valleyview::RcsDiagnostic& diagnostics);
 void DestroyRenderClient(ValleyViewClient& client);
 status_t BindRenderBufferGgtt(ValleyViewDevice& device,
 	ValleyViewRenderBuffer& buffer);
 status_t UnbindRenderBufferGgtt(ValleyViewDevice& device,
-	ValleyViewRenderBuffer& buffer);
+	ValleyViewRenderBuffer& buffer, uint32* observedPtes = NULL);
 status_t SubmitRenderBcsCopy(ValleyViewDevice& device, uint32 sourceOffset,
 	uint32 destinationOffset, uint32& completionMarker);
+status_t ExecuteRcsDiagnostic(ValleyViewDevice& device,
+	ValleyViewRenderBuffer& buffer, valleyview::RcsDiagnostic& diagnostics);
 
 #endif

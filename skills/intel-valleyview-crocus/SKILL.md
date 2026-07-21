@@ -15,10 +15,11 @@ modify the captive `haiku/` or `buildtools/` submodules.
 `kGetRenderDeviceInfo` is the userspace discovery boundary. Its ABI is
 versioned separately from the display protocol. The current driver implements
 linear buffer objects, driver-owned CPU mappings, dynamic GGTT bindings, coherent
-CPU/BCS domain transitions, and a kernel-generated BCS copy test. It still
-returns `B_NOT_SUPPORTED` as its overall render status because tiled buffers,
-contexts, isolated RCS submission, fences, reset recovery, and presentation are
-absent. The kernel-owned BCS path is not a userspace submission engine.
+CPU/BCS domain transitions, a kernel-generated BCS copy test, and a
+kernel-generated RCS batch-chain diagnostic. It still returns
+`B_NOT_SUPPORTED` as its overall render status because tiled buffers, contexts,
+isolated userspace RCS submission, fences, reset recovery, and presentation are
+absent. Neither kernel diagnostic is a userspace submission engine.
 
 Keep the hardware renderer fail-closed. It may instantiate only when
 `IsRenderReady()` succeeds. Until then, Haiku's Software Pipe add-on remains
@@ -51,7 +52,9 @@ whose ownership has not been established. Preserve the lock order documented
 by the P0 skill. Render-memory operations use
 `device.lock -> renderLock -> bcsLock`; presentation uses
 `device.lock -> presentLock -> bcsLock`. `renderLock` and `presentLock` must
-never be nested.
+never be nested. An RCS diagnostic allocates and binds under `renderLock`, then
+releases it before taking `presentLock -> bcsLock` for stable display-state
+sampling and engine execution.
 
 The no-LLC cache model is part of the render contract. CPU mappings, PTE snoop
 bits, flushes, and GPU retirement must agree before a buffer changes owner.
@@ -90,10 +93,13 @@ Before enabling a renderer in the image, validate discovery, client teardown,
 cross-client isolation, invalid batches, timeout/reset behavior, and P0
 presentation under concurrent render load. Build success is not hardware proof.
 
-The current hardware gate is:
+Conserve device flashes by accumulating cohesive functionality behind
+diagnostics. The current combined hardware gate is:
 
 ```sh
-intel_valleyview_probe --render-info
-intel_valleyview_probe --render-memory-test
-intel_valleyview_probe --p0-status
+intel_valleyview_probe --render-transport-test
 ```
+
+Do not request another flash for an intermediate register or command check.
+The combined output must retain enough pre-state, active state, failure state,
+cleanup state, and P0 counters to diagnose a failed run offline.
