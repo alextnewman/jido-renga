@@ -60,6 +60,9 @@ JIDO_RENGA_SST_FIRMWARE_LICENSE
 	= <jido-renga-license>LicenseRef-Intel-SST.txt ;
 SEARCH on $(JIDO_RENGA_SST_FIRMWARE_LICENSE)
 	= [ FDirName $(JIDO_RENGA_TOP) LICENSES ] ;
+JIDO_RENGA_CROCUS_RENDERER = <jido-renga-opengl>Crocus ;
+SEARCH on $(JIDO_RENGA_CROCUS_RENDERER)
+	= [ FDirName $(JIDO_RENGA_TOP) generated.crocus ] ;
 
 # Shared modules precede consumers.
 SubInclude JIDO_RENGA_TOP overlay bus_managers i2c ;
@@ -81,6 +84,7 @@ SubInclude JIDO_RENGA_TOP overlay accelerants intel_valleyview ;
 
 # Bring-up diagnostics.
 SubInclude JIDO_RENGA_TOP overlay bin intel_valleyview_probe ;
+SubInclude JIDO_RENGA_TOP overlay bin intel_valleyview_crocus_demo ;
 
 # A BSP declares two things: the overlay add-ons to ship and the exact paths in
 # haiku.hpkg that it replaces. Controller ownership is resolved at image time.
@@ -93,6 +97,7 @@ JIDO_RENGA_BSP_IMAGE_DRIVERS_GPIO = ;
 JIDO_RENGA_BSP_IMAGE_DRIVERS_INPUT = ;
 JIDO_RENGA_BSP_IMAGE_ACCELERANTS = ;
 JIDO_RENGA_BSP_IMAGE_BIN = ;
+JIDO_RENGA_BSP_IMAGE_OPENGL = ;
 JIDO_RENGA_BSP_BOOT_MODULE_TARGETS = ;
 JIDO_RENGA_BSP_OMIT_HAIKU_PACKAGE_FILES = ;
 JIDO_RENGA_BSP_OMIT_HAIKU_BOOT_MODULE_TARGETS = ;
@@ -201,6 +206,10 @@ rule JidoRengaAddBspPackageFiles
 		: $(JIDO_RENGA_SST_FIRMWARE) ;
 	AddFilesToContainer $(package) : data licenses
 		: $(JIDO_RENGA_SST_FIRMWARE_LICENSE) : "Intel (SST firmware)" ;
+	if $(JIDO_RENGA_BSP_IMAGE_OPENGL) {
+		AddFilesToContainer $(package) : non-packaged add-ons opengl
+			: $(JIDO_RENGA_BSP_IMAGE_OPENGL) ;
+	}
 }
 
 

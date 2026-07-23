@@ -58,7 +58,7 @@ JR_TEST(intel_valleyview, requires_the_complete_safe_render_contract)
 	JR_CHECK((kRenderRequiredCapabilities
 		& kRenderCapabilityCacheDomains) != 0);
 	JR_CHECK((kRenderRequiredCapabilities
-		& kRenderCapabilityTiledBuffers) != 0);
+		& kRenderCapabilityTiledBuffers) == 0);
 	JR_CHECK((kRenderRequiredCapabilities
 		& kRenderCapabilityPpgtt) != 0);
 	JR_CHECK_NE(kRenderCapabilityPpgtt,

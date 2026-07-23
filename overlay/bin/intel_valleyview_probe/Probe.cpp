@@ -1009,8 +1009,11 @@ RunRenderTransportProbe(int device)
 	if (submissionInfoStatus == B_OK) {
 		printf("render_transport phase=submission_ready\n");
 		PrintRenderDeviceInfo(submissionInfo);
-		if ((submissionInfo.capabilities
+		if (!valleyview::IsRenderReady(submissionInfo)
+			|| (submissionInfo.capabilities
 				& valleyview::kRenderCapabilityRcsSubmission) == 0
+			|| (submissionInfo.capabilities
+				& valleyview::kRenderCapabilityCompletionFences) == 0
 			|| (submissionInfo.submissionEngines
 				& valleyview::kRenderEngineRcs) == 0) {
 			submissionInfoStatus = B_BAD_DATA;

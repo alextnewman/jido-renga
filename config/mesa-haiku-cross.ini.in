@@ -1,0 +1,20 @@
+[binaries]
+c = '@HAIKU_BUILD@/cross-tools-x86_64/bin/x86_64-unknown-haiku-gcc'
+cpp = '@HAIKU_BUILD@/cross-tools-x86_64/bin/x86_64-unknown-haiku-g++'
+ar = '@HAIKU_BUILD@/cross-tools-x86_64/bin/x86_64-unknown-haiku-ar'
+strip = '@HAIKU_BUILD@/cross-tools-x86_64/bin/x86_64-unknown-haiku-strip'
+pkg-config = '/usr/bin/pkg-config'
+
+[properties]
+sys_root = '@SYSROOT@'
+pkg_config_libdir = ['@SYSROOT@/boot/system/develop/lib/pkgconfig', '@SYSROOT@/boot/system/lib/pkgconfig']
+c_args = ['-D_DEFAULT_SOURCE', '--sysroot=@SYSROOT@', '-I@JR_TOP@/haiku/headers/glibc', '-I@JR_TOP@/haiku/headers/posix', '-I@SYSROOT@/boot/system/develop/headers/bsd', '-I@JR_TOP@/overlay/headers', '-I@SYSROOT@/boot/system/develop/headers', '-I@SYSROOT@/boot/system/develop/headers/os', '-I@SYSROOT@/boot/system/develop/headers/os/app', '-I@SYSROOT@/boot/system/develop/headers/os/interface', '-I@SYSROOT@/boot/system/develop/headers/os/kernel', '-I@SYSROOT@/boot/system/develop/headers/os/storage', '-I@SYSROOT@/boot/system/develop/headers/os/support', '-I@SYSROOT@/boot/system/develop/headers/os/translation', '-I@SYSROOT@/boot/system/develop/headers/private']
+cpp_args = ['-D_DEFAULT_SOURCE', '--sysroot=@SYSROOT@', '-I@JR_TOP@/haiku/headers/glibc', '-I@JR_TOP@/haiku/headers/posix', '-I@SYSROOT@/boot/system/develop/headers/bsd', '-I@JR_TOP@/overlay/headers', '-I@SYSROOT@/boot/system/develop/headers', '-I@SYSROOT@/boot/system/develop/headers/os', '-I@SYSROOT@/boot/system/develop/headers/os/app', '-I@SYSROOT@/boot/system/develop/headers/os/interface', '-I@SYSROOT@/boot/system/develop/headers/os/kernel', '-I@SYSROOT@/boot/system/develop/headers/os/storage', '-I@SYSROOT@/boot/system/develop/headers/os/support', '-I@SYSROOT@/boot/system/develop/headers/os/translation', '-I@SYSROOT@/boot/system/develop/headers/private']
+c_link_args = ['--sysroot=@SYSROOT@', '-L@SYSROOT@/boot/system/lib', '-L@SYSROOT@/boot/system/develop/lib']
+cpp_link_args = ['--sysroot=@SYSROOT@', '-L@SYSROOT@/boot/system/lib', '-L@SYSROOT@/boot/system/develop/lib']
+
+[host_machine]
+system = 'haiku'
+cpu_family = 'x86_64'
+cpu = 'x86_64'
+endian = 'little'

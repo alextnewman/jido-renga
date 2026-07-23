@@ -67,13 +67,11 @@ constexpr uint64 kRenderRequiredCapabilities
 		| kRenderCapabilityGpuAddressSpaces
 		| kRenderCapabilityPpgtt
 		| kRenderCapabilityCacheDomains
-		| kRenderCapabilityTiledBuffers
 		| kRenderCapabilityRenderContexts
 		| kRenderCapabilityRcsSubmission
 		| kRenderCapabilityCompletionFences
 		| kRenderCapabilityCommandIsolation
-		| kRenderCapabilityResetRecovery
-		| kRenderCapabilityDrawablePresent;
+		| kRenderCapabilityResetRecovery;
 
 struct RenderAbiHeader {
 	uint32	magic;

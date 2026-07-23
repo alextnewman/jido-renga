@@ -1,0 +1,85 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
+# SPDX-License-Identifier: MIT
+# SPDX-FileContributor: Generated with GitHub Copilot
+
+set -eu
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+top=$(CDPATH= cd -- "$script_dir/.." && pwd -P)
+haiku_build=${1:-"$top/generated.x86_64"}
+output=${2:-"$top/generated.crocus"}
+source=${3:-"$top/mesa"}
+haiku_build=$(CDPATH= cd -- "$haiku_build" && pwd -P)
+mkdir -p "$output"
+output=$(CDPATH= cd -- "$output" && pwd -P)
+source=$(CDPATH= cd -- "$source" && pwd -P)
+
+cross_template="$top/config/mesa-haiku-cross.ini.in"
+build="$output/build"
+sysroot="$output/sysroot"
+cross_file="$output/haiku-x86_64-cross.ini"
+
+for tool in meson ninja pkg-config; do
+	command -v "$tool" >/dev/null 2>&1 || {
+		echo "build-crocus: missing tool: $tool" >&2
+		exit 1
+	}
+done
+
+[ -f "$source/meson.build" ] || {
+	echo "build-crocus: missing Mesa fork at $source" >&2
+	exit 1
+}
+
+devel="$haiku_build/objects/haiku/x86_64/packaging/packages_build/regular/hpkg_-haiku_devel.hpkg/contents"
+root="$haiku_build/objects/haiku/x86_64/packaging/packages_build/regular/hpkg_-haiku.hpkg/contents"
+[ -d "$devel" ] || {
+	echo "build-crocus: build haiku_devel.hpkg first" >&2
+	exit 1
+}
+
+mkdir -p "$sysroot/boot/system"
+if [ -d "$root" ]; then
+	cp -asn "$root/." "$sysroot/boot/system/"
+fi
+cp -asn "$devel/." "$sysroot/boot/system/"
+for directory in \
+		"$haiku_build"/build_packages/expat-*-x86_64 \
+		"$haiku_build"/build_packages/zlib-*-x86_64 \
+		"$haiku_build"/build_packages/gcc_syslibs-*-x86_64; do
+	[ -d "$directory" ] || continue
+	cp -asn "$directory/." "$sysroot/boot/system/"
+done
+
+sed \
+	-e "s|@JR_TOP@|$top|g" \
+	-e "s|@HAIKU_BUILD@|$haiku_build|g" \
+	-e "s|@SYSROOT@|$sysroot|g" \
+	"$cross_template" > "$cross_file"
+
+if [ ! -f "$build/build.ninja" ]; then
+	meson setup "$build" "$source" --cross-file "$cross_file" \
+		-Dplatforms=haiku \
+		-Dgallium-drivers=crocus,swrast \
+		-Dvulkan-drivers= \
+		-Dllvm=disabled \
+		-Dshader-cache=disabled \
+		-Degl=disabled \
+		-Dgbm=disabled \
+		-Dglx=disabled \
+		-Dgles1=disabled \
+		-Dgles2=disabled \
+		-Dosmesa=false \
+		-Dbuild-tests=false \
+		-Dshared-glapi=enabled \
+		--buildtype=debugoptimized \
+		--prefix=/boot/system \
+		--libdir=/boot/system/lib
+fi
+
+ninja -C "$build" src/gallium/targets/haiku-crocus/libcrocus_haiku.so
+"$haiku_build/cross-tools-x86_64/bin/x86_64-unknown-haiku-strip" \
+	-o "$output/Crocus" \
+	"$build/src/gallium/targets/haiku-crocus/libcrocus_haiku.so"
+echo "build-crocus: $output/Crocus"

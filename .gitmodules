@@ -6,3 +6,7 @@
 	path = buildtools
 	url = https://github.com/haiku/buildtools.git
 	branch = master
+[submodule "mesa"]
+	path = mesa
+	url = https://github.com/alextnewman/mesa.git
+	branch = jido-renga/haiku-crocus-22.0.5

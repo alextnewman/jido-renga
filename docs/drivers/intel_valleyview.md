@@ -166,12 +166,12 @@ aperture, no-LLC cache model, P0's reserved aperture range, and the distinction
 between engines proven by kernel diagnostics and engines available for
 userspace submission.
 
-The current render status remains deliberately `B_NOT_SUPPORTED`.
-`IsRenderReady()` additionally requires tiled buffers, completion fences, and
-drawable presentation beyond the executable isolated RCS transport. A hardware
-OpenGL add-on therefore cannot mistake synchronous kernel submission for a
-complete Crocus transport. The image continues to use Mesa's Software Pipe
-OpenGL add-on.
+The render status is `B_NOT_SUPPORTED` until an open client has proven the RCS
+diagnostic, created its PPGTT, and completed the immutable-shadow submission
+bootstrap. It then becomes `B_OK`; `IsRenderReady()` requires the complete
+linear synchronous transport, trusted completion, command isolation, and reset
+recovery. Tiled BOs are not required by P1 because the packaged Crocus backend
+forces every resource linear.
 
 `intel_valleyview_probe --render-info` prints this boundary without attempting
 submission or changing GPU state.
@@ -235,7 +235,8 @@ advertises executable render contexts, command isolation, and reset recovery.
 Before the new address-space path is proven, the ioctl accepts only a
 one-dword `MI_BATCH_BUFFER_END` bootstrap. Successful completion and full
 restoration of that immutable-shadow transaction enable synchronous RCS
-submission and add RCS to `submissionEngines`. A normal submission names its
+submission, trusted synchronous completion fences, and RCS in
+`submissionEngines`. A normal submission names its
 context, one batch BO, a dword-aligned batch range of at most 64 KiB, and a
 fixed inline list of up to 64 unique client BO handles. The batch must be in the
 list. Every listed BO must be CPU-owned, healthy, and mapped in that client's
@@ -287,9 +288,36 @@ vertex regions, triangle edge positions and widths at six rows, representative
 interpolation samples, and an untouched 8,304-dword allocation guard. The
 checksum and every count remain in probe output for offline diagnosis.
 
-This is a host-validated hardware candidate, not hardware proof. It does not
-install a Crocus screen, present the target, or change the fail-closed
-`IsRenderReady()` result.
+This remains a host-validated hardware candidate until the combined Winky run,
+but it uses the same transport as the installed Crocus screen.
+
+### Haiku Crocus renderer
+
+The derivative image installs `non-packaged/add-ons/opengl/Crocus`, a Mesa
+22.0.5 Gallium renderer built reproducibly by `tools/build-crocus`. Haiku checks
+the system non-packaged add-on directory before package add-ons, so Crocus
+deterministically owns renderer selection while its internal Softpipe fallback
+preserves operation after failed hardware discovery. The tracked patch adds a
+Haiku Crocus buffer manager that creates and maps driver-owned BOs, uses their
+stable PPGTT addresses directly, shares the one per-open context between
+Crocus's synchronous render batches, submits the fixed inline validation list,
+and treats the returned trusted completion as its fence. DRM sharing, userptr
+aliasing, performance monitors, and tiled allocation fail closed or remain
+disabled.
+
+The HGL frontend creates the Crocus screen directly from
+`/dev/misc/intel_valleyview_probe`. Every color, depth, and staging resource is
+linear. `flush_frontbuffer` maps the retired linear resource, copies it into a
+Haiku `BBitmap`, and hands it to the existing `BGLRenderer` clipping/direct-mode
+presentation path. The screen therefore reaches the P0-backed desktop without
+exposing overlay paths or GPU mappings at runtime. If discovery, bootstrap, or
+screen creation fails, the same add-on creates Mesa Softpipe instead, preserving
+a functional OpenGL renderer.
+
+`intel_valleyview_crocus_demo` opens a 600x500 `BGLView`, prints `GL_RENDERER`
+and `GL_VERSION`, and draws a visible interpolated RGB triangle. It is the
+visible half of the final hardware gate after
+`intel_valleyview_probe --render-transport-test` passes.
 
 `intel_valleyview_probe --render-memory-test` creates two client-owned buffers,
 clones both into the process, writes coordinate-dependent source and destination

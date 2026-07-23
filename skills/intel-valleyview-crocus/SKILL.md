@@ -18,12 +18,14 @@ linear buffer objects, driver-owned CPU mappings, dynamic GGTT bindings,
 coherent CPU/BCS domain transitions, and one scratch-backed 2 GiB Gen7 PPGTT
 context per open client. It also has a kernel-generated BCS copy test, an RCS
 marker and EU/render-cache diagnostic, and parsed synchronous RCS submission
-through a private GGTT shadow and the client's PPGTT. It still returns
-`B_NOT_SUPPORTED` as its overall render status because completion fences,
-tiling, Crocus winsys integration, and presentation are absent. The combined
-probe also reconstructs the exact Mesa 22.0.5 ValleyView linear triangle corpus
-and verifies its offscreen color, geometry, fence, and allocation guard; this
-remains a hardware candidate until the combined Winky gate passes.
+through a private GGTT shadow and the client's PPGTT. Trusted synchronous
+completion is the initial fence contract. The Mesa 22.0.5 Haiku Crocus backend
+uses stable ABI addresses, forces resources linear, and presents retired
+frontbuffers through HGL's clipped `BBitmap` path. Its add-on contains Softpipe
+fallback if hardware setup fails. The combined probe reconstructs the exact
+ValleyView linear triangle corpus and verifies its offscreen color, geometry,
+fence, and allocation guard; this remains a hardware candidate until the
+combined Winky gate passes.
 
 Keep the hardware renderer fail-closed. It may instantiate only when
 `IsRenderReady()` succeeds. Until then, Haiku's Software Pipe add-on remains
@@ -38,7 +40,7 @@ rendering requires all capabilities named by `kRenderRequiredCapabilities`:
 2. driver-owned CPU mappings with an explicit cache policy and bounded lifetime;
 3. GPU virtual addresses that cannot reach another client or P0's allocation;
 4. explicit CPU/GPU cache-domain transitions for the no-LLC memory model;
-5. tiled buffers with safe fence-register ownership;
+5. a declared linear or tiled resource policy with matching cache ownership;
 6. render contexts and isolated RCS submission;
 7. completion fences with bounded waits;
 8. command isolation appropriate to the selected address-space model;
@@ -94,14 +96,17 @@ inherited clone from the backing cache with `vm_change_clones_to_null_areas()`.
 
 ## Haiku integration
 
-The hardware renderer is an OpenGL add-on installed at Haiku's canonical
-`add-ons/opengl` path and implementing `BGLRenderer`. The overlay path and
-`JIDO_RENGA_TOP` are build-time details and must not appear in its runtime ABI,
-paths, or diagnostics.
+The hardware renderer is a `BGLRenderer` add-on installed in Haiku's canonical
+system non-packaged `add-ons/opengl` override path. This deterministically
+precedes the packaged Software Pipe add-on; Crocus itself must retain internal
+Softpipe fallback. The overlay path and `JIDO_RENGA_TOP` are build-time details
+and must not appear in its runtime ABI, paths, or diagnostics.
 
 Keep Mesa adaptation separate from kernel policy. Mesa may translate Crocus
 buffer-manager requests into the render ABI, but it must not map GPU registers,
 write GGTT PTEs, or submit rings directly.
+Build the tracked Mesa patch with `tools/build-crocus`; never modify captive
+Haiku/buildtools sources or commit `generated.crocus/`.
 
 ## Trusted diagnostics
 
@@ -133,7 +138,9 @@ make -C tests -j4
 tools/weave generated.x86_64
 cd generated.x86_64
 ../tools/jr-jam -q intel_valleyview intel_valleyview.accelerant \
-  intel_valleyview_probe
+  intel_valleyview_probe intel_valleyview_crocus_demo
+cd ..
+tools/build-crocus generated.x86_64
 ```
 
 Before enabling a renderer in the image, validate discovery, client teardown,
@@ -142,10 +149,11 @@ presentation under concurrent render load. Build success is not hardware proof.
 
 Conserve device flashes by accumulating cohesive functionality behind
 diagnostics. Keep a one-flash combined gate; do not add incremental hardware
-tests. The gate remains exactly:
+tests. The final gate is:
 
 ```sh
 intel_valleyview_probe --render-transport-test
+intel_valleyview_crocus_demo
 ```
 
 Do not request another flash for an intermediate register or command check.
@@ -156,6 +164,5 @@ reset/restoration state, raster color/coverage/interpolation, and P0 counters
 needed to diagnose a failed run offline. The `gfx_test8` Winky run
 hardware-validated the RCS marker and timestamp, EU shader/render-cache writes,
 `PIPE_CONTROL` completion, bounded reset, cache/ring/HWS/context and all 19
-shader-PTE restorations, BCS operation, and P0 coexistence. That historical run
-does not prove the newer 3D raster candidate or Crocus readiness and does not
-make `IsRenderReady()` true.
+shader-PTE restorations, BCS operation, and P0 coexistence. That historical run does not prove the newer 3D raster candidate or packaged
+Crocus screen.

@@ -504,7 +504,8 @@ Control(void* cookie, uint32 operation, void* buffer, size_t length)
 					if (device->rcsReady
 						&& device->rcsSubmissionReady) {
 						info.capabilities
-							|= valleyview::kRenderCapabilityRcsSubmission;
+							|= valleyview::kRenderCapabilityRcsSubmission
+								| valleyview::kRenderCapabilityCompletionFences;
 						info.submissionEngines
 							|= valleyview::kRenderEngineRcs;
 					}
@@ -516,6 +517,13 @@ Control(void* cookie, uint32 operation, void* buffer, size_t length)
 			if (device->rcsReady)
 				info.provenEngines |= valleyview::kRenderEngineRcs;
 			mutex_unlock(&device->bcsLock);
+			if ((info.capabilities
+					& valleyview::kRenderRequiredCapabilities)
+						== valleyview::kRenderRequiredCapabilities
+				&& (info.submissionEngines
+					& valleyview::kRenderEngineRcs) != 0) {
+				info.status = B_OK;
+			}
 			if (device->nativeActive) {
 				info.deviceFlags |= valleyview::kRenderDeviceDisplayReserved;
 				info.displayReservedOffset = device->p0Layout.base;

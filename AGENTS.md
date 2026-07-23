@@ -1,13 +1,15 @@
 # Jidō Renga agent guide
 
 Jidō Renga is an **out-of-tree Haiku driver overlay**. Haiku and buildtools are
-present only as captive git submodules (`haiku/`, `buildtools/`). Project-owned
-drivers are grafted into Haiku at build time without modifying either submodule.
+immutable captive git submodules (`haiku/`, `buildtools/`). The project-owned
+Mesa fork is a maintained submodule (`mesa/`). Drivers are grafted into Haiku at
+build time without modifying either captive submodule.
 
 ## Invariants
 
-1. **Never modify the captive submodules.** The only file written into a Haiku
-   build scope is `<build-dir>/UserBuildConfig`, through `tools/weave`.
+1. **Never modify the captive Haiku or buildtools submodules.** The only file
+   written into a Haiku build scope is `<build-dir>/UserBuildConfig`, through
+   `tools/weave`. Mesa changes belong on the maintained Jidō Renga fork branch.
 2. **Keep the overlay build-time only.** `overlay/`, `JIDO_RENGA_TOP`, and the
    graft do not exist at runtime. Add-ons ship at canonical Haiku paths.
 3. **Never leak `jido-renga` into driver code.** Includes use neutral roots such
@@ -23,6 +25,7 @@ drivers are grafted into Haiku at build time without modifying either submodule.
 
 ```text
 overlay/    build-time graft surface
+mesa/       maintained Mesa fork used by the Crocus renderer build
 config/     UserBuildConfig template, BSP manifests, revision configuration
 tools/      weave, haiku-revision, jr-jam, and banner tools
 tests/      host-side policy and concurrency tests
@@ -31,7 +34,8 @@ docs/       current architecture, hardware contracts, and driver references
 LICENSES/   REUSE license texts
 ```
 
-`generated*/` is disposable Haiku build output and is never committed.
+`generated*/`, including `generated.crocus/`, is disposable build output and is
+never committed.
 
 ## Documentation boundary
 
@@ -65,7 +69,10 @@ cd .. && tools/weave generated.x86_64
 cd generated.x86_64
 ../tools/jr-jam -q gpio byt_gpio i2c_guarded iosf_mbi sdhci_embedded \
   cros_ec_keyboard i2c_atmel_mxt byt_max98090 intel_valleyview \
-  intel_valleyview.accelerant intel_valleyview_probe
+  intel_valleyview.accelerant intel_valleyview_probe \
+  intel_valleyview_crocus_demo
+../tools/jr-jam -q haiku_devel.hpkg
+cd .. && tools/build-crocus generated.x86_64
 ```
 
 ## Licensing and attribution

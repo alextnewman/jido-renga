@@ -103,6 +103,7 @@ AI-assisted driver work while respecting Haiku's contribution policies.
 At build time:
 
 - `haiku/` and `buildtools/` remain pristine captive submodules.
+- `mesa/` is the maintained project fork used to build the Crocus renderer.
 - `tools/weave` writes only `<build-dir>/UserBuildConfig`.
 - `overlay/` mirrors Haiku's kernel add-on classes.
 - Jam builds the add-ons with Haiku's own cross-toolchain and package rules.
@@ -125,12 +126,18 @@ tools/weave generated.x86_64
 cd generated.x86_64
 ../tools/jr-jam -q gpio byt_gpio i2c_guarded iosf_mbi sdhci_embedded \
   cros_ec_keyboard i2c_atmel_mxt byt_max98090 intel_valleyview \
-  intel_valleyview.accelerant intel_valleyview_probe
+  intel_valleyview.accelerant intel_valleyview_probe \
+  intel_valleyview_crocus_demo
 ```
 
-Build a bootable desktop image with:
+Build the reproducible Mesa 22.0.5 Crocus add-on after the Haiku development
+package has populated the cross sysroot, then build a bootable desktop image:
 
 ```sh
+../tools/jr-jam -q haiku_devel.hpkg
+cd ..
+tools/build-crocus generated.x86_64
+cd generated.x86_64
 ../tools/jr-jam -q @nightly-anyboot
 ```
 
@@ -141,7 +148,8 @@ Build only the composed system package or its narrow local repository with:
 ../tools/jr-jam -q jido-renga-repository
 ```
 
-`generated*/` directories are disposable build output and are never committed.
+`generated*/` directories, including `generated.crocus/`, are disposable build
+output and are never committed.
 The first image build is a full Haiku build and may download HaikuPorts
 packages; later builds are incremental.
 

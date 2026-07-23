@@ -15,6 +15,8 @@ no `jido-renga` in `#include`s; mirror Haiku's device classes) read the root
 
 - `haiku/` and `buildtools/` are pinned git **submodules** (the captive). They
   are pristine upstream and must stay that way.
+- `mesa/` is a separate maintained fork submodule. Crocus userspace changes
+  belong there, never in `research/` or either captive submodule.
 - The overlay's sources live under `overlay/`. They are compiled by Haiku's own
   Jam cross-toolchain, from a source path Jam would otherwise never visit.
 - The single integration seam is `<build-dir>/UserBuildConfig`, a file Haiku's
@@ -87,15 +89,22 @@ tools/weave generated.x86_64
 cd generated.x86_64
 ../tools/jr-jam -q gpio byt_gpio i2c_guarded iosf_mbi sdhci_embedded \
   cros_ec_keyboard i2c_atmel_mxt byt_max98090 intel_valleyview \
-  intel_valleyview.accelerant intel_valleyview_probe
+  intel_valleyview.accelerant intel_valleyview_probe \
+  intel_valleyview_crocus_demo
 
-# 4. (optional) Fold the selected BSP's add-ons into a bootable anyboot image
+# 4. Build the external Mesa Crocus source corpus into its disposable add-on.
+../tools/jr-jam -q haiku_devel.hpkg
+cd ..
+tools/build-crocus generated.x86_64
+cd generated.x86_64
+
+# 5. (optional) Fold the selected BSP's add-ons into a bootable anyboot image
 #    instead of building them loose. The overlay composes each into haiku.hpkg
 #    and applies that BSP's declared upstream omissions without editing captive
 #    sources or package recipes.
 ../tools/jr-jam -q @nightly-anyboot           # -> haiku-nightly-anyboot.iso
 
-# 5. (optional) Build the composed root package or a local repository containing
+# 6. (optional) Build the composed root package or a local repository containing
 #    only that package.
 ../tools/jr-jam -q haiku.hpkg
 ../tools/jr-jam -q jido-renga-repository
