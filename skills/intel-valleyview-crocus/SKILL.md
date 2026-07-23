@@ -14,12 +14,14 @@ modify the captive `haiku/` or `buildtools/` submodules.
 
 `kGetRenderDeviceInfo` is the userspace discovery boundary. Its ABI is
 versioned separately from the display protocol. The current driver implements
-linear buffer objects, driver-owned CPU mappings, dynamic GGTT bindings, coherent
-CPU/BCS domain transitions, a kernel-generated BCS copy test, and a
-kernel-generated RCS marker and EU/render-cache diagnostic. It still returns
-`B_NOT_SUPPORTED` as its overall render status. The diagnostics expose no user
-commands, contexts, isolated RCS submission, completion fences, reset recovery
-as a service, tiling, or presentation.
+linear buffer objects, driver-owned CPU mappings, dynamic GGTT bindings,
+coherent CPU/BCS domain transitions, and one scratch-backed 2 GiB Gen7 PPGTT
+software context per open client. It also has a kernel-generated BCS copy test
+and RCS marker and EU/render-cache diagnostic. It still returns
+`B_NOT_SUPPORTED` as its overall render status. The PPGTT context assigns stable
+per-client virtual addresses but is not an executable RCS context. The driver
+exposes no user commands, isolated RCS submission, completion fences, reset
+recovery as a service, tiling, or presentation.
 
 Keep the hardware renderer fail-closed. It may instantiate only when
 `IsRenderReady()` succeeds. Until then, Haiku's Software Pipe add-on remains
@@ -61,6 +63,16 @@ bits, flushes, and GPU retirement must agree before a buffer changes owner.
 The current linear buffers are write-back and snooped. Do not advertise
 non-snooped or tiled mappings until their cache maintenance and fence-register
 ownership are implemented and tested.
+
+Each open client may create one software PPGTT context before creating BOs.
+Rejected or duplicate context creation must not alter live client resources.
+Its 2 MiB fragmented page-table allocation is bound as 512 Gen6 PDE entries in
+a 64 KiB-aligned GGTT run. All 524,288 PTEs initially name a separate private
+scratch page; page zero remains reserved. Client BO mappings replace only
+bitmap-owned PTEs and are restored to scratch before BO backing or context
+resources are released. PPGTT table writes require bounded `clflush` followed
+by `mfence`. Failed PTE or GGTT restoration quarantines the referenced memory
+and fails render work closed.
 
 User mappings must be `B_KERNEL_AREA` clones owned by the driver. Do not expose
 cloneable backing-area IDs. Before releasing BO accounting, detach every

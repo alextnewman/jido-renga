@@ -23,6 +23,11 @@ constexpr const char* kValleyViewAccelerantName
 
 struct ValleyViewDevice;
 
+enum ValleyViewRenderGgttEncoding {
+	kValleyViewRenderGgttData,
+	kValleyViewRenderGgttPpgttDirectory
+};
+
 struct ValleyViewRenderBuffer {
 	area_id					area;
 	void*					address;
@@ -35,9 +40,21 @@ struct ValleyViewRenderBuffer {
 	uint32					handle;
 	uint32					flags;
 	uint32					ggttOffset;
+	uint32					ppgttOffset;
+	uint32					ggttAlignmentPages;
+	ValleyViewRenderGgttEncoding ggttEncoding;
 	valleyview::RenderBufferDomain domain;
 	bool					quarantined;
 	ValleyViewRenderBuffer*	next;
+};
+
+struct ValleyViewPpgttState {
+	ValleyViewRenderBuffer*	directoryBuffer;
+	ValleyViewRenderBuffer*	scratchBuffer;
+	uint8*					bitmap;
+	uint32					ppDirBase;
+	bool					ready;
+	bool					quarantined;
 };
 
 struct ValleyViewClient {
@@ -46,6 +63,9 @@ struct ValleyViewClient {
 	uint64					allocatedBytes;
 	uint32					bufferCount;
 	uint32					nextHandle;
+	uint32					contextHandle;
+	uint32					contextGeneration;
+	ValleyViewPpgttState		ppgtt;
 };
 
 struct ValleyViewDevice {
@@ -188,6 +208,10 @@ status_t ShowCursor(ValleyViewDevice& device,
 	const valleyview::CursorShowRequest& request);
 status_t CreateRenderBuffer(ValleyViewClient& client,
 	valleyview::RenderBufferCreate& request);
+status_t CreateRenderContext(ValleyViewClient& client,
+	valleyview::RenderContextCreate& request);
+status_t DestroyRenderContext(ValleyViewClient& client,
+	valleyview::RenderContextDestroy& request);
 status_t MapRenderBuffer(ValleyViewClient& client,
 	valleyview::RenderBufferMap& request);
 status_t DiscardRenderBufferMapping(ValleyViewClient& client, uint32 handle,

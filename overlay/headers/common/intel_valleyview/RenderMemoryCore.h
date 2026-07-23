@@ -15,6 +15,7 @@ constexpr uint64 kRenderMaxClientBytes = 64ull * 1024 * 1024;
 constexpr uint32 kRenderMaxClientBuffers = 64;
 constexpr uint32 kRenderFirstGgttPage = 1;
 constexpr uint32 kInvalidRenderGgttOffset = UINT32_MAX;
+constexpr uint32 kInvalidRenderPpgttOffset = UINT32_MAX;
 
 constexpr uint32 kRenderMemoryTestWidth = 16;
 constexpr uint32 kRenderMemoryTestHeight = 64;
@@ -44,6 +45,7 @@ struct RenderGgttSearch {
 	uint32	firstPage;
 	uint32	endPage;
 	uint32	requiredPages;
+	uint32	alignmentPages;
 	uint32	freePte;
 	uint32	candidatePage;
 	uint32	runPages;
@@ -55,16 +57,19 @@ struct RenderGgttSearch {
 
 inline bool
 InitializeRenderGgttSearch(RenderGgttSearch& search, uint32 firstPage,
-	uint32 endPage, uint32 requiredPages, uint32 freePte)
+	uint32 endPage, uint32 requiredPages, uint32 freePte,
+	uint32 alignmentPages = 1)
 {
 	if (requiredPages == 0 || firstPage >= endPage
-		|| requiredPages > endPage - firstPage) {
+		|| requiredPages > endPage - firstPage || alignmentPages == 0
+		|| (alignmentPages & (alignmentPages - 1)) != 0) {
 		return false;
 	}
 
 	search.firstPage = firstPage;
 	search.endPage = endPage;
 	search.requiredPages = requiredPages;
+	search.alignmentPages = alignmentPages;
 	search.freePte = freePte;
 	search.candidatePage = 0;
 	search.runPages = 0;
@@ -87,6 +92,11 @@ AdvanceRenderGgttSearch(RenderGgttSearch& search, uint32 page, uint32 pte)
 	}
 
 	if (search.runPages == 0 || page != search.previousPage + 1) {
+		if ((page & (search.alignmentPages - 1)) != 0) {
+			search.runPages = 0;
+			search.previousPage = page;
+			return false;
+		}
 		search.candidatePage = page;
 		search.runPages = 1;
 	} else
@@ -104,7 +114,8 @@ AdvanceRenderGgttSearch(RenderGgttSearch& search, uint32 page, uint32 pte)
 inline bool
 IsRenderBufferDomain(RenderBufferDomain domain)
 {
-	return domain == kRenderDomainCpu || domain == kRenderDomainBcs;
+	return domain == kRenderDomainCpu || domain == kRenderDomainBcs
+		|| domain == kRenderDomainRcs;
 }
 
 
@@ -114,6 +125,8 @@ CanTransitionRenderBufferDomain(RenderBufferDomain current,
 {
 	return IsRenderBufferDomain(current)
 		&& IsRenderBufferDomain(requested)
+		&& current != kRenderDomainRcs
+		&& requested != kRenderDomainRcs
 		&& (flags & ~kRenderSupportedBufferFlags) == 0
 		&& (flags & kRenderBufferCpuCached) != 0;
 }

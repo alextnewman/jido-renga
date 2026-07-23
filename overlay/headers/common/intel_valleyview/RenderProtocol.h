@@ -11,7 +11,7 @@
 namespace valleyview {
 
 constexpr uint32 kRenderProtocolMagic = 0x564c5652;
-constexpr uint16 kRenderProtocolVersion = 4;
+constexpr uint16 kRenderProtocolVersion = 5;
 
 enum RenderDeviceFlag : uint32 {
 	kRenderDeviceGgtt = 1u << 0,
@@ -37,7 +37,8 @@ enum RenderCapability : uint64 {
 	kRenderCapabilityCompletionFences = 1ull << 8,
 	kRenderCapabilityCommandIsolation = 1ull << 9,
 	kRenderCapabilityResetRecovery = 1ull << 10,
-	kRenderCapabilityDrawablePresent = 1ull << 11
+	kRenderCapabilityDrawablePresent = 1ull << 11,
+	kRenderCapabilityPpgtt = 1ull << 12
 };
 
 enum RenderBufferFlag : uint32 {
@@ -48,7 +49,8 @@ constexpr uint32 kRenderSupportedBufferFlags = kRenderBufferCpuCached;
 
 enum RenderBufferDomain : uint32 {
 	kRenderDomainCpu = 1,
-	kRenderDomainBcs = 2
+	kRenderDomainBcs = 2,
+	kRenderDomainRcs = 3
 };
 
 enum RenderMemoryTestStage : uint32 {
@@ -62,6 +64,7 @@ constexpr uint64 kRenderRequiredCapabilities
 	= kRenderCapabilityBufferObjects
 		| kRenderCapabilityCpuMappings
 		| kRenderCapabilityGpuAddressSpaces
+		| kRenderCapabilityPpgtt
 		| kRenderCapabilityCacheDomains
 		| kRenderCapabilityTiledBuffers
 		| kRenderCapabilityRenderContexts
@@ -103,8 +106,28 @@ struct RenderBufferCreate {
 	uint64			requestedSize;
 	uint64			size;
 	uint64			gpuOffset;
+	uint64			renderAddress;
 	uint32			flags;
 	uint32			handle;
+};
+
+struct RenderContextCreate {
+	RenderAbiHeader	header;
+	uint32			flags;
+	uint32			handle;
+	int32			status;
+	uint32			addressBits;
+	uint64			addressSpaceSize;
+	uint32			pageSize;
+	uint32			ppDirBase;
+};
+
+struct RenderContextDestroy {
+	RenderAbiHeader	header;
+	uint32			flags;
+	uint32			handle;
+	int32			status;
+	uint32			reserved;
 };
 
 struct RenderBufferMap {

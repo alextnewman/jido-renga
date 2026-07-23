@@ -15,6 +15,7 @@ using namespace valleyview;
 JR_TEST(intel_valleyview_ppgtt, exposes_gen6_two_level_geometry)
 {
 	JR_CHECK_EQ(kPpgttVirtualAddressBytes, 0x80000000ull);
+	JR_CHECK_EQ(kPpgttAddressBits, 31u);
 	JR_CHECK_EQ(kPpgttPageBytes, 4096u);
 	JR_CHECK_EQ(kPpgttPageCount, 524288u);
 	JR_CHECK_EQ(kPpgttPdeCount, 512u);

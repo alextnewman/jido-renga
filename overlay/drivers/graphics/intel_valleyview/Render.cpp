@@ -4,6 +4,7 @@
 
 #include "Driver.h"
 
+#include <common/intel_valleyview/PpgttCore.h>
 #include <common/intel_valleyview/RenderMemoryCore.h>
 
 #include <KernelExport.h>
@@ -112,10 +113,13 @@ BuildPhysicalPageList(ValleyViewRenderBuffer& buffer)
 
 
 status_t
-AllocateRenderMemory(ValleyViewRenderBuffer& buffer)
+AllocateRenderMemory(ValleyViewRenderBuffer& buffer,
+	const char* explicitName = NULL)
 {
 	char name[B_OS_NAME_LENGTH];
-	if (buffer.handle == 0)
+	if (explicitName != NULL)
+		strlcpy(name, explicitName, sizeof(name));
+	else if (buffer.handle == 0)
 		strlcpy(name, "intel_valleyview RCS diagnostic", sizeof(name));
 	else {
 		snprintf(name, sizeof(name), "intel_valleyview render BO %" B_PRIu32,
@@ -167,7 +171,7 @@ ReleaseRenderMapping(ValleyViewRenderBuffer& buffer)
 
 
 status_t
-ReleaseRenderBuffer(ValleyViewDevice& device,
+ReleaseRenderBufferBacking(ValleyViewDevice& device,
 	ValleyViewRenderBuffer* buffer)
 {
 	status_t status = ReleaseRenderMapping(*buffer);
@@ -176,7 +180,7 @@ ReleaseRenderBuffer(ValleyViewDevice& device,
 
 	if (!buffer->quarantined) {
 		status = UnbindRenderBufferGgtt(device, *buffer);
-		if (status == B_OK) {
+		if (status == B_OK && buffer->area >= B_OK) {
 			status = delete_area(buffer->area);
 			if (status != B_OK)
 				buffer->quarantined = true;
@@ -200,6 +204,282 @@ ReleaseRenderBuffer(ValleyViewDevice& device,
 
 
 status_t
+FlushPpgttCacheRange(void* address, size_t byteCount)
+{
+	const size_t kCacheLineBytes = 64;
+	if (address == NULL || byteCount == 0
+		|| byteCount > valleyview::kPpgttDirectoryBytes) {
+		return B_BAD_VALUE;
+	}
+
+	const addr_t base = reinterpret_cast<addr_t>(address);
+	if (base > UINTPTR_MAX - byteCount)
+		return B_BAD_VALUE;
+	const addr_t first = base & ~(static_cast<addr_t>(kCacheLineBytes) - 1);
+	const addr_t end = base + byteCount;
+	for (addr_t line = first; line < end; line += kCacheLineBytes)
+		__asm__ volatile("clflush (%0)" : : "r" (line) : "memory");
+	__asm__ volatile("mfence" : : : "memory");
+	return B_OK;
+}
+
+
+bool
+HasPpgttResources(const ValleyViewPpgttState& state)
+{
+	return state.directoryBuffer != NULL && state.scratchBuffer != NULL
+		&& state.bitmap != NULL;
+}
+
+
+uint32*
+PpgttEntries(ValleyViewPpgttState& state)
+{
+	return HasPpgttResources(state)
+		? static_cast<uint32*>(state.directoryBuffer->address) : NULL;
+}
+
+
+bool
+GetPpgttScratchPte(ValleyViewPpgttState& state, uint32& scratchPte)
+{
+	return HasPpgttResources(state)
+		&& state.scratchBuffer->pageCount == 1
+		&& state.scratchBuffer->physicalPages != NULL
+		&& valleyview::EncodePpgttDataPte(
+			state.scratchBuffer->physicalPages[0], true, true, scratchPte);
+}
+
+
+void
+QuarantinePpgtt(ValleyViewClient& client, ValleyViewRenderBuffer* buffer,
+	const char* reason)
+{
+	ValleyViewPpgttState& state = client.ppgtt;
+	state.ready = false;
+	state.quarantined = true;
+	if (state.directoryBuffer != NULL)
+		state.directoryBuffer->quarantined = true;
+	if (state.scratchBuffer != NULL)
+		state.scratchBuffer->quarantined = true;
+	if (buffer != NULL)
+		buffer->quarantined = true;
+	client.device->renderMemoryQuarantined = true;
+	dprintf("intel_valleyview: quarantined PPGTT memory after %s\n", reason);
+}
+
+
+status_t
+MapRenderBufferPpgtt(ValleyViewClient& client,
+	ValleyViewRenderBuffer& buffer)
+{
+	ValleyViewPpgttState& state = client.ppgtt;
+	if (!HasPpgttResources(state) || state.quarantined
+		|| buffer.ppgttOffset != valleyview::kInvalidRenderPpgttOffset
+		|| buffer.physicalPages == NULL || buffer.pageCount == 0) {
+		return B_BAD_VALUE;
+	}
+
+	uint32 firstPage;
+	if (!valleyview::FindFreePpgttRun(state.bitmap,
+			valleyview::kPpgttBitmapBytes, buffer.pageCount, 1, firstPage)) {
+		return B_NO_MEMORY;
+	}
+
+	for (uint32 page = 0; page < buffer.pageCount; page++) {
+		uint32 pte;
+		if (!valleyview::EncodePpgttDataPte(buffer.physicalPages[page],
+				true, true, pte)) {
+			return B_BAD_DATA;
+		}
+	}
+
+	uint32 scratchPte;
+	if (!GetPpgttScratchPte(state, scratchPte))
+		return B_BAD_DATA;
+	uint32* const entries = PpgttEntries(state);
+	for (uint32 page = 0; page < buffer.pageCount; page++) {
+		if (entries[firstPage + page] != scratchPte) {
+			QuarantinePpgtt(client, &buffer, "non-scratch free mapping");
+			return B_BAD_DATA;
+		}
+	}
+	for (uint32 page = 0; page < buffer.pageCount; page++) {
+		if (!valleyview::EncodePpgttDataPte(buffer.physicalPages[page],
+				true, true, entries[firstPage + page])) {
+			return B_BAD_DATA;
+		}
+	}
+	status_t status = FlushPpgttCacheRange(entries + firstPage,
+		buffer.pageCount * sizeof(uint32));
+	if (status == B_OK) {
+		for (uint32 page = 0; page < buffer.pageCount; page++) {
+			uint32 expected;
+			if (!valleyview::EncodePpgttDataPte(buffer.physicalPages[page],
+					true, true, expected)
+				|| entries[firstPage + page] != expected) {
+				status = B_IO_ERROR;
+				break;
+			}
+		}
+	}
+	if (status != B_OK) {
+		for (uint32 page = 0; page < buffer.pageCount; page++)
+			entries[firstPage + page] = scratchPte;
+		bool restored = FlushPpgttCacheRange(entries + firstPage,
+			buffer.pageCount * sizeof(uint32)) == B_OK;
+		for (uint32 page = 0; restored && page < buffer.pageCount; page++)
+			restored = entries[firstPage + page] == scratchPte;
+		if (!restored)
+			QuarantinePpgtt(client, &buffer, "failed map rollback");
+		return status;
+	}
+
+	for (uint32 page = 0; page < buffer.pageCount; page++) {
+		if (!valleyview::SetPpgttBitmapBit(state.bitmap,
+				valleyview::kPpgttBitmapBytes, firstPage + page)) {
+			QuarantinePpgtt(client, &buffer, "invalid allocation bitmap");
+			return B_BAD_DATA;
+		}
+	}
+	buffer.ppgttOffset = firstPage * valleyview::kPpgttPageBytes;
+	return B_OK;
+}
+
+
+status_t
+ClearRenderBufferPpgtt(ValleyViewClient& client,
+	ValleyViewRenderBuffer& buffer)
+{
+	if (buffer.ppgttOffset == valleyview::kInvalidRenderPpgttOffset)
+		return B_OK;
+
+	ValleyViewPpgttState& state = client.ppgtt;
+	const uint32 firstPage = buffer.ppgttOffset
+		/ valleyview::kPpgttPageBytes;
+	if (!HasPpgttResources(state)
+		|| !valleyview::ValidatePpgttVaRange(buffer.ppgttOffset, buffer.size)
+		|| buffer.pageCount > valleyview::kPpgttPageCount - firstPage) {
+		QuarantinePpgtt(client, &buffer, "invalid buffer mapping");
+		return B_BAD_DATA;
+	}
+
+	uint32 scratchPte;
+	if (!GetPpgttScratchPte(state, scratchPte)) {
+		QuarantinePpgtt(client, &buffer, "invalid scratch page");
+		return B_BAD_DATA;
+	}
+	uint32* const entries = PpgttEntries(state);
+	for (uint32 page = 0; page < buffer.pageCount; page++) {
+		bool allocated;
+		if (!valleyview::GetPpgttBitmapBit(state.bitmap,
+				valleyview::kPpgttBitmapBytes, firstPage + page, allocated)
+			|| !allocated) {
+			QuarantinePpgtt(client, &buffer, "unowned buffer mapping");
+			return B_BAD_DATA;
+		}
+		uint32 expected;
+		if (!valleyview::EncodePpgttDataPte(buffer.physicalPages[page],
+				true, true, expected)
+			|| entries[firstPage + page] != expected) {
+			QuarantinePpgtt(client, &buffer, "unexpected mapped PTE");
+			return B_IO_ERROR;
+		}
+	}
+
+	for (uint32 page = 0; page < buffer.pageCount; page++)
+		entries[firstPage + page] = scratchPte;
+	status_t status = FlushPpgttCacheRange(entries + firstPage,
+		buffer.pageCount * sizeof(uint32));
+	for (uint32 page = 0; status == B_OK && page < buffer.pageCount; page++) {
+		if (entries[firstPage + page] != scratchPte)
+			status = B_IO_ERROR;
+	}
+	if (status != B_OK) {
+		QuarantinePpgtt(client, &buffer, "failed mapping restoration");
+		return status;
+	}
+
+	for (uint32 page = 0; page < buffer.pageCount; page++) {
+		if (!valleyview::ClearPpgttBitmapBit(state.bitmap,
+				valleyview::kPpgttBitmapBytes, firstPage + page)) {
+			QuarantinePpgtt(client, &buffer, "invalid free bitmap");
+			return B_BAD_DATA;
+		}
+	}
+	buffer.ppgttOffset = valleyview::kInvalidRenderPpgttOffset;
+	return B_OK;
+}
+
+
+status_t
+ReleaseClientRenderBuffer(ValleyViewClient& client,
+	ValleyViewRenderBuffer* buffer)
+{
+	status_t status = ClearRenderBufferPpgtt(client, *buffer);
+	if (status != B_OK)
+		buffer->quarantined = true;
+	status_t backingStatus = ReleaseRenderBufferBacking(*client.device, buffer);
+	return status != B_OK ? status : backingStatus;
+}
+
+
+status_t
+AllocatePpgttBuffer(uint64 size, const char* name,
+	ValleyViewRenderGgttEncoding encoding, uint32 alignmentPages,
+	ValleyViewRenderBuffer*& buffer)
+{
+	buffer = static_cast<ValleyViewRenderBuffer*>(
+		calloc(1, sizeof(ValleyViewRenderBuffer)));
+	if (buffer == NULL)
+		return B_NO_MEMORY;
+	buffer->area = -1;
+	buffer->mappingArea = -1;
+	buffer->mappingTeam = -1;
+	buffer->size = size;
+	buffer->pageCount = static_cast<uint32>(size / valleyview::kPageSize);
+	buffer->flags = valleyview::kRenderBufferCpuCached;
+	buffer->ggttOffset = valleyview::kInvalidRenderGgttOffset;
+	buffer->ppgttOffset = valleyview::kInvalidRenderPpgttOffset;
+	buffer->ggttAlignmentPages = alignmentPages;
+	buffer->ggttEncoding = encoding;
+	buffer->domain = valleyview::kRenderDomainCpu;
+
+	status_t status = AllocateRenderMemory(*buffer, name);
+	if (status != B_OK) {
+		if (buffer->area >= B_OK)
+			delete_area(buffer->area);
+		free(buffer->savedPtes);
+		free(buffer->physicalPages);
+		free(buffer);
+		buffer = NULL;
+	}
+	return status;
+}
+
+
+status_t
+InitializePpgttTables(ValleyViewPpgttState& state)
+{
+	uint32 scratchPte;
+	if (!GetPpgttScratchPte(state, scratchPte))
+		return B_BAD_DATA;
+
+	uint32* const entries = PpgttEntries(state);
+	for (uint32 page = 0; page < valleyview::kPpgttPageCount; page++)
+		entries[page] = scratchPte;
+	status_t status = FlushPpgttCacheRange(entries,
+		valleyview::kPpgttDirectoryBytes);
+	for (uint32 page = 0;
+			status == B_OK && page < valleyview::kPpgttPageCount; page++) {
+		if (entries[page] != scratchPte)
+			status = B_IO_ERROR;
+	}
+	return status;
+}
+
+
+status_t
 CreateInternalRenderBuffer(ValleyViewDevice& device, uint64 size,
 	ValleyViewRenderBuffer*& buffer, valleyview::RcsDiagnostic& diagnostics,
 	bool shader)
@@ -216,6 +496,9 @@ CreateInternalRenderBuffer(ValleyViewDevice& device, uint64 size,
 	buffer->pageCount = static_cast<uint32>(size / valleyview::kPageSize);
 	buffer->flags = valleyview::kRenderBufferCpuCached;
 	buffer->ggttOffset = valleyview::kInvalidRenderGgttOffset;
+	buffer->ppgttOffset = valleyview::kInvalidRenderPpgttOffset;
+	buffer->ggttAlignmentPages = 1;
+	buffer->ggttEncoding = kValleyViewRenderGgttData;
 	buffer->domain = valleyview::kRenderDomainCpu;
 
 	status_t status = AllocateRenderMemory(*buffer);
@@ -281,9 +564,71 @@ DestroyInternalRenderBuffer(ValleyViewDevice& device,
 	ggttStatus = buffer->quarantined
 		? B_NOT_ALLOWED
 		: UnbindRenderBufferGgtt(device, *buffer, observedPtes);
-	status_t status = ReleaseRenderBuffer(device, buffer);
+	status_t status = ReleaseRenderBufferBacking(device, buffer);
 	buffer = NULL;
 	return ggttStatus != B_OK ? ggttStatus : status;
+}
+
+
+status_t
+ReleasePpgttResources(ValleyViewClient& client)
+{
+	ValleyViewPpgttState& state = client.ppgtt;
+	ValleyViewDevice& device = *client.device;
+	state.ready = false;
+	if (state.directoryBuffer != NULL) {
+		status_t status = UnbindRenderBufferGgtt(device,
+			*state.directoryBuffer);
+		if (status != B_OK) {
+			QuarantinePpgtt(client, NULL, "unsafe directory GGTT restoration");
+			return status;
+		}
+	}
+
+	status_t status = B_OK;
+	if (state.directoryBuffer != NULL) {
+		ValleyViewRenderBuffer* buffer = state.directoryBuffer;
+		state.directoryBuffer = NULL;
+		status = ReleaseRenderBufferBacking(device, buffer);
+	}
+	if (state.scratchBuffer != NULL) {
+		ValleyViewRenderBuffer* buffer = state.scratchBuffer;
+		state.scratchBuffer = NULL;
+		status_t scratchStatus = ReleaseRenderBufferBacking(device, buffer);
+		if (status == B_OK)
+			status = scratchStatus;
+	}
+	free(state.bitmap);
+	state.bitmap = NULL;
+	state.ppDirBase = 0;
+	state.quarantined = false;
+	return status;
+}
+
+
+status_t
+DestroyPpgttContextLocked(ValleyViewClient& client, uint32 handle)
+{
+	if (handle == 0 || client.contextHandle != handle)
+		return B_BAD_VALUE;
+
+	client.ppgtt.ready = false;
+	status_t status = B_OK;
+	for (ValleyViewRenderBuffer* buffer = client.buffers; buffer != NULL;
+			buffer = buffer->next) {
+		status_t clearStatus = ClearRenderBufferPpgtt(client, *buffer);
+		if (status == B_OK)
+			status = clearStatus;
+	}
+	if (status != B_OK) {
+		QuarantinePpgtt(client, NULL, "incomplete context teardown");
+		return status;
+	}
+
+	status = ReleasePpgttResources(client);
+	if (!HasPpgttResources(client.ppgtt))
+		client.contextHandle = 0;
+	return status;
 }
 
 
@@ -308,9 +653,115 @@ FindRenderTestMismatch(const uint32* words, uint32 count, uint32 seed,
 
 
 status_t
+CreateRenderContext(ValleyViewClient& client,
+	valleyview::RenderContextCreate& request)
+{
+	request.handle = 0;
+	request.status = B_NO_INIT;
+	request.addressBits = valleyview::kPpgttAddressBits;
+	request.addressSpaceSize = valleyview::kPpgttVirtualAddressBytes;
+	request.pageSize = valleyview::kPpgttPageBytes;
+	request.ppDirBase = 0;
+	if (request.flags != 0) {
+		request.status = B_BAD_VALUE;
+		return request.status;
+	}
+
+	ValleyViewDevice& device = *client.device;
+	LockRenderDevice(device);
+	status_t status = B_OK;
+	if (!device.nativeActive || device.registers == NULL || device.gpuFaulted
+		|| device.p0MemoryQuarantined || device.renderMemoryQuarantined) {
+		status = B_NO_INIT;
+	} else if (client.contextHandle != 0 || client.buffers != NULL) {
+		status = B_BUSY;
+	}
+	if (status != B_OK) {
+		request.status = status;
+		UnlockRenderDevice(device);
+		return status;
+	}
+
+	ValleyViewPpgttState& state = client.ppgtt;
+	state.bitmap = static_cast<uint8*>(
+		malloc(valleyview::kPpgttBitmapBytes));
+	if (state.bitmap == NULL)
+		status = B_NO_MEMORY;
+	else {
+		memset(state.bitmap, 0, valleyview::kPpgttBitmapBytes);
+		if (!valleyview::SetPpgttBitmapBit(state.bitmap,
+				valleyview::kPpgttBitmapBytes, 0)) {
+			status = B_BAD_DATA;
+		}
+	}
+	if (status == B_OK) {
+		status = AllocatePpgttBuffer(valleyview::kPpgttPageBytes,
+			"intel_valleyview PPGTT scratch", kValleyViewRenderGgttData, 1,
+			state.scratchBuffer);
+	}
+	if (status == B_OK) {
+		status = AllocatePpgttBuffer(valleyview::kPpgttDirectoryBytes,
+			"intel_valleyview PPGTT directory",
+			kValleyViewRenderGgttPpgttDirectory,
+			valleyview::kPpgttDirectoryAlignment
+				/ valleyview::kPpgttPageBytes,
+			state.directoryBuffer);
+	}
+	if (status == B_OK)
+		status = InitializePpgttTables(state);
+	if (status == B_OK)
+		status = BindRenderBufferGgtt(device, *state.directoryBuffer);
+	if (status == B_OK
+		&& !valleyview::EncodePpgttDirectoryBase(
+			state.directoryBuffer->ggttOffset, device.snapshot.gmadrSize,
+			state.ppDirBase)) {
+		status = B_BAD_DATA;
+	}
+
+	if (status == B_OK) {
+		client.contextGeneration++;
+		if (client.contextGeneration == 0)
+			client.contextGeneration++;
+		client.contextHandle = client.contextGeneration;
+		state.ready = true;
+		request.handle = client.contextHandle;
+		request.ppDirBase = state.ppDirBase;
+	} else {
+		if (!state.quarantined) {
+			status_t cleanupStatus = ReleasePpgttResources(client);
+			if (cleanupStatus != B_OK)
+				status = cleanupStatus;
+		}
+	}
+	request.status = status;
+	UnlockRenderDevice(device);
+	return status;
+}
+
+
+status_t
+DestroyRenderContext(ValleyViewClient& client,
+	valleyview::RenderContextDestroy& request)
+{
+	request.status = B_NO_INIT;
+	if (request.flags != 0 || request.handle == 0 || request.reserved != 0) {
+		request.status = B_BAD_VALUE;
+		return request.status;
+	}
+
+	ValleyViewDevice& device = *client.device;
+	LockRenderDevice(device);
+	request.status = DestroyPpgttContextLocked(client, request.handle);
+	UnlockRenderDevice(device);
+	return request.status;
+}
+
+
+status_t
 CreateRenderBuffer(ValleyViewClient& client,
 	valleyview::RenderBufferCreate& request)
 {
+	request.renderAddress = 0;
 	uint64 size;
 	if (!valleyview::NormalizeRenderBufferSize(request.requestedSize, size)
 		|| request.flags != valleyview::kRenderBufferCpuCached) {
@@ -344,6 +795,9 @@ CreateRenderBuffer(ValleyViewClient& client,
 	buffer->pageCount = static_cast<uint32>(size / valleyview::kPageSize);
 	buffer->flags = request.flags;
 	buffer->ggttOffset = valleyview::kInvalidRenderGgttOffset;
+	buffer->ppgttOffset = valleyview::kInvalidRenderPpgttOffset;
+	buffer->ggttAlignmentPages = 1;
+	buffer->ggttEncoding = kValleyViewRenderGgttData;
 	buffer->domain = valleyview::kRenderDomainCpu;
 	if (buffer->handle == 0) {
 		free(buffer);
@@ -354,14 +808,12 @@ CreateRenderBuffer(ValleyViewClient& client,
 	status_t status = AllocateRenderMemory(*buffer);
 	if (status == B_OK)
 		status = BindRenderBufferGgtt(device, *buffer);
+	if (status == B_OK && client.ppgtt.ready)
+		status = MapRenderBufferPpgtt(client, *buffer);
 	if (status != B_OK) {
-		if (buffer->ggttOffset != valleyview::kInvalidRenderGgttOffset)
-			UnbindRenderBufferGgtt(device, *buffer);
-		if (buffer->area >= B_OK && !buffer->quarantined)
-			delete_area(buffer->area);
-		free(buffer->savedPtes);
-		free(buffer->physicalPages);
-		free(buffer);
+		status_t cleanupStatus = ReleaseClientRenderBuffer(client, buffer);
+		if (cleanupStatus != B_OK)
+			status = cleanupStatus;
 		UnlockRenderDevice(device);
 		return status;
 	}
@@ -373,6 +825,8 @@ CreateRenderBuffer(ValleyViewClient& client,
 	request.handle = buffer->handle;
 	request.size = buffer->size;
 	request.gpuOffset = buffer->ggttOffset;
+	request.renderAddress = client.ppgtt.ready
+		? buffer->ppgttOffset : 0;
 	UnlockRenderDevice(device);
 	return B_OK;
 }
@@ -461,7 +915,7 @@ CloseRenderBuffer(ValleyViewClient& client, uint32 handle)
 	*link = buffer->next;
 	client.bufferCount--;
 	client.allocatedBytes -= buffer->size;
-	status_t status = ReleaseRenderBuffer(device, buffer);
+	status_t status = ReleaseClientRenderBuffer(client, buffer);
 	UnlockRenderDevice(device);
 	return status;
 }
@@ -725,9 +1179,17 @@ DestroyRenderClient(ValleyViewClient& client)
 		client.buffers = buffer->next;
 		client.bufferCount--;
 		client.allocatedBytes -= buffer->size;
-		status_t status = ReleaseRenderBuffer(device, buffer);
+		status_t status = ReleaseClientRenderBuffer(client, buffer);
 		if (status != B_OK) {
 			dprintf("intel_valleyview: render client cleanup failed: %"
+				B_PRId32 "\n", status);
+		}
+	}
+	if (client.contextHandle != 0) {
+		status_t status = DestroyPpgttContextLocked(client,
+			client.contextHandle);
+		if (status != B_OK) {
+			dprintf("intel_valleyview: render context cleanup failed: %"
 				B_PRId32 "\n", status);
 		}
 	}

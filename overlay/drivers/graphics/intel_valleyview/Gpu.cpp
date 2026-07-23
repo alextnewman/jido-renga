@@ -5,6 +5,7 @@
 #include "Driver.h"
 
 #include <common/intel_valleyview/GpuCore.h>
+#include <common/intel_valleyview/PpgttCore.h>
 #include <common/intel_valleyview/RcsCore.h>
 #include <common/intel_valleyview/RenderMemoryCore.h>
 
@@ -23,6 +24,20 @@ constexpr bigtime_t kRingTimeoutUs = 100000;
 constexpr bigtime_t kResetTimeoutUs = 2000;
 constexpr uint32 kSourceSentinel = 0x11111111;
 constexpr uint32 kDestinationSentinel = 0x22222222;
+
+
+bool
+EncodeRenderGgttEntry(const ValleyViewRenderBuffer& buffer, uint32 page,
+	uint32& entry)
+{
+	if (page >= buffer.pageCount)
+		return false;
+	if (buffer.ggttEncoding == kValleyViewRenderGgttPpgttDirectory)
+		return valleyview::EncodePpgttPde(buffer.physicalPages[page], entry);
+	return buffer.ggttEncoding == kValleyViewRenderGgttData
+		&& valleyview::EncodeBytPte(buffer.physicalPages[page], true, true,
+			entry);
+}
 
 
 uint32
@@ -1123,7 +1138,14 @@ BindRenderBufferGgtt(ValleyViewDevice& device,
 {
 	if (buffer.pageCount == 0 || buffer.physicalPages == NULL
 		|| buffer.savedPtes == NULL
-		|| buffer.ggttOffset != valleyview::kInvalidRenderGgttOffset) {
+		|| buffer.ggttOffset != valleyview::kInvalidRenderGgttOffset
+		|| buffer.ggttAlignmentPages == 0
+		|| (buffer.ggttAlignmentPages
+			& (buffer.ggttAlignmentPages - 1)) != 0
+		|| (buffer.ggttEncoding
+				== kValleyViewRenderGgttPpgttDirectory
+			&& buffer.pageCount
+				!= valleyview::kPpgttDirectoryGgttPages)) {
 		return B_BAD_VALUE;
 	}
 
@@ -1145,7 +1167,8 @@ BindRenderBufferGgtt(ValleyViewDevice& device,
 	if (endPage > pteCapacity
 		|| !valleyview::InitializeRenderGgttSearch(search,
 			valleyview::kRenderFirstGgttPage, endPage,
-			buffer.pageCount, device.p0SavedPtes[0])) {
+			buffer.pageCount, device.p0SavedPtes[0],
+			buffer.ggttAlignmentPages)) {
 		mutex_unlock(&device.bcsLock);
 		return B_BAD_DATA;
 	}
@@ -1177,8 +1200,7 @@ BindRenderBufferGgtt(ValleyViewDevice& device,
 	status_t status = B_OK;
 	for (uint32 page = 0; page < buffer.pageCount; page++) {
 		uint32 pte;
-		if (!valleyview::EncodeBytPte(buffer.physicalPages[page], true,
-				true, pte)) {
+		if (!EncodeRenderGgttEntry(buffer, page, pte)) {
 			status = B_BAD_DATA;
 			break;
 		}
@@ -1190,8 +1212,7 @@ BindRenderBufferGgtt(ValleyViewDevice& device,
 	if (status == B_OK) {
 		for (uint32 page = 0; page < buffer.pageCount; page++) {
 			uint32 expected = 0;
-			if (!valleyview::EncodeBytPte(buffer.physicalPages[page], true,
-					true, expected)) {
+			if (!EncodeRenderGgttEntry(buffer, page, expected)) {
 				status = B_BAD_DATA;
 				break;
 			}

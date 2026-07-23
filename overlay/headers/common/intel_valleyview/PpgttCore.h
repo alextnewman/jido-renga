@@ -12,6 +12,7 @@
 namespace valleyview {
 
 constexpr uint64 kPpgttVirtualAddressBytes = 0x80000000ull;
+constexpr uint32 kPpgttAddressBits = 31;
 constexpr uint32 kPpgttPageBytes = 4096;
 constexpr uint32 kPpgttPageCount = 524288;
 constexpr uint32 kPpgttPdeCount = 512;

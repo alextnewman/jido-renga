@@ -493,6 +493,8 @@ Control(void* cookie, uint32 operation, void* buffer, size_t length)
 						| valleyview::kRenderCapabilityCpuMappings
 						| valleyview::kRenderCapabilityGpuAddressSpaces
 						| valleyview::kRenderCapabilityCacheDomains;
+				if (client->ppgtt.ready && !client->ppgtt.quarantined)
+					info.capabilities |= valleyview::kRenderCapabilityPpgtt;
 			}
 			mutex_lock(&device->bcsLock);
 			if (device->bcsReady)
@@ -509,6 +511,60 @@ Control(void* cookie, uint32 operation, void* buffer, size_t length)
 			mutex_unlock(&device->lock);
 
 			return user_memcpy(buffer, &info, sizeof(info));
+		}
+
+		case valleyview::kRenderCreateContext:
+		{
+			if (buffer == NULL
+				|| length < sizeof(valleyview::RenderContextCreate)) {
+				return B_BAD_VALUE;
+			}
+			valleyview::RenderContextCreate request;
+			status_t status = user_memcpy(&request, buffer, sizeof(request));
+			if (status != B_OK)
+				return status;
+			if (!valleyview::IsValidRenderAbiHeader(request.header,
+					sizeof(request))) {
+				return B_BAD_VALUE;
+			}
+
+			status = CreateRenderContext(*client, request);
+			status_t copyStatus = user_memcpy(buffer, &request,
+				sizeof(request));
+			if (copyStatus != B_OK && status == B_OK) {
+				valleyview::RenderContextDestroy cleanup = {};
+				cleanup.header = valleyview::MakeRenderAbiHeader(
+					sizeof(cleanup));
+				cleanup.handle = request.handle;
+				status_t cleanupStatus = DestroyRenderContext(*client,
+					cleanup);
+				if (cleanupStatus != B_OK) {
+					dprintf("intel_valleyview: render context copyout "
+						"rollback failed: %" B_PRId32 "\n", cleanupStatus);
+				}
+			}
+			return copyStatus == B_OK ? status : copyStatus;
+		}
+
+		case valleyview::kRenderDestroyContext:
+		{
+			if (buffer == NULL
+				|| length < sizeof(valleyview::RenderContextDestroy)) {
+				return B_BAD_VALUE;
+			}
+			valleyview::RenderContextDestroy request;
+			status_t status = user_memcpy(&request, buffer, sizeof(request));
+			if (status != B_OK)
+				return status;
+			if (!valleyview::IsValidRenderAbiHeader(request.header,
+					sizeof(request))) {
+				return B_BAD_VALUE;
+			}
+
+			status = DestroyRenderContext(*client, request);
+			status_t copyStatus = user_memcpy(buffer, &request,
+				sizeof(request));
+			return copyStatus == B_OK ? status : copyStatus;
 		}
 
 		case valleyview::kRenderCreateBuffer:

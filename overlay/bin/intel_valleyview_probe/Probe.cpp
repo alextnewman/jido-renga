@@ -4,6 +4,7 @@
 
 #include <common/intel_valleyview/FirmwareState.h>
 #include <common/intel_valleyview/P0Core.h>
+#include <common/intel_valleyview/PpgttCore.h>
 #include <common/intel_valleyview/Protocol.h>
 #include <common/intel_valleyview/RenderMemoryCore.h>
 #include <common/intel_valleyview/RenderProtocol.h>
@@ -419,6 +420,73 @@ ReadRenderDeviceInfo(int device, valleyview::RenderDeviceInfo& info)
 
 
 status_t
+CreateRenderContextProbe(int device, valleyview::RenderContextCreate& context)
+{
+	memset(&context, 0, sizeof(context));
+	context.header = valleyview::MakeRenderAbiHeader(sizeof(context));
+	status_t status = ioctl(device, valleyview::kRenderCreateContext,
+		&context, sizeof(context));
+	if (!valleyview::IsValidRenderAbiHeader(context.header, sizeof(context)))
+		return status == B_OK ? B_BAD_DATA : status;
+	printf("render_context create_status=%" B_PRId32 " handle=%" B_PRIu32
+		" address_bits=%" B_PRIu32 " address_space=%#" B_PRIx64
+		" page_size=%" B_PRIu32 " pp_dir=%#08" B_PRIx32 "\n",
+		context.status, context.handle, context.addressBits,
+		context.addressSpaceSize, context.pageSize, context.ppDirBase);
+	if (status != B_OK)
+		return status;
+	if (context.status != B_OK)
+		return context.status;
+	if (context.handle == 0
+		|| context.addressBits != valleyview::kPpgttAddressBits
+		|| context.addressSpaceSize != valleyview::kPpgttVirtualAddressBytes
+		|| context.pageSize != valleyview::kPpgttPageBytes
+		|| (context.ppDirBase
+			& (valleyview::kPpgttDirectoryAlignment - 1)) != 0) {
+		return B_BAD_DATA;
+	}
+	return B_OK;
+}
+
+
+status_t
+RejectDuplicateRenderContextProbe(int device,
+	const valleyview::RenderContextCreate& active)
+{
+	valleyview::RenderContextCreate duplicate = {};
+	duplicate.header = valleyview::MakeRenderAbiHeader(sizeof(duplicate));
+	status_t status = ioctl(device, valleyview::kRenderCreateContext,
+		&duplicate, sizeof(duplicate));
+	printf("render_context duplicate_status=%" B_PRId32
+		" handle=%" B_PRIu32 "\n", duplicate.status, active.handle);
+	if (status != B_BUSY || duplicate.status != B_BUSY
+		|| duplicate.handle != 0) {
+		return B_BAD_DATA;
+	}
+	return B_OK;
+}
+
+
+status_t
+DestroyRenderContextProbe(int device,
+	const valleyview::RenderContextCreate& context)
+{
+	if (context.handle == 0)
+		return B_OK;
+	valleyview::RenderContextDestroy request = {};
+	request.header = valleyview::MakeRenderAbiHeader(sizeof(request));
+	request.handle = context.handle;
+	status_t status = ioctl(device, valleyview::kRenderDestroyContext,
+		&request, sizeof(request));
+	printf("render_context destroy_status=%" B_PRId32
+		" handle=%" B_PRIu32 "\n", request.status, request.handle);
+	if (!valleyview::IsValidRenderAbiHeader(request.header, sizeof(request)))
+		return status == B_OK ? B_BAD_DATA : status;
+	return status == B_OK ? request.status : status;
+}
+
+
+status_t
 RunRcsProbe(int device)
 {
 	valleyview::RcsDiagnostic diagnostics = {};
@@ -473,7 +541,7 @@ CycleRenderBufferDomain(int device, uint32 handle)
 
 
 status_t
-RunRenderMemoryProbe(int device)
+RunRenderMemoryProbe(int device, bool expectPpgtt = false)
 {
 	valleyview::RenderBufferCreate source = {};
 	valleyview::RenderBufferCreate destination = {};
@@ -498,6 +566,24 @@ RunRenderMemoryProbe(int device)
 		sizeof(destination));
 	if (status != B_OK)
 		goto cleanup;
+
+	if (expectPpgtt) {
+		const uint64 sourceEnd = source.renderAddress + source.size;
+		const uint64 destinationEnd
+			= destination.renderAddress + destination.size;
+		if (!valleyview::ValidatePpgttVaRange(source.renderAddress,
+				source.size)
+			|| !valleyview::ValidatePpgttVaRange(destination.renderAddress,
+				destination.size)
+			|| !(sourceEnd <= destination.renderAddress
+				|| destinationEnd <= source.renderAddress)) {
+			status = B_BAD_DATA;
+			goto cleanup;
+		}
+	} else if (source.renderAddress != 0 || destination.renderAddress != 0) {
+		status = B_BAD_DATA;
+		goto cleanup;
+	}
 
 	sourceMap.header = valleyview::MakeRenderAbiHeader(sizeof(sourceMap));
 	sourceMap.handle = source.handle;
@@ -589,9 +675,11 @@ RunRenderMemoryProbe(int device)
 	if (status == B_OK) {
 		printf("render_memory handles=%" B_PRIu32 "/%" B_PRIu32
 			" ggtt=%#08" B_PRIx64 "/%#08" B_PRIx64
+			" ppgtt=%#08" B_PRIx64 "/%#08" B_PRIx64
 			" size=%" B_PRIu64 " mapping_owned=yes verified=yes\n",
 			source.handle, destination.handle, source.gpuOffset,
-			destination.gpuOffset, source.size);
+			destination.gpuOffset, source.renderAddress,
+			destination.renderAddress, source.size);
 	}
 
 cleanup:
@@ -652,7 +740,36 @@ RunRenderTransportProbe(int device)
 		PrintP0Status(before);
 	}
 
-	status_t memoryStatus = RunRenderMemoryProbe(device);
+	valleyview::RenderContextCreate context = {};
+	status_t contextStatus = infoStatus == B_OK
+		? CreateRenderContextProbe(device, context) : infoStatus;
+	valleyview::RenderDeviceInfo contextInfo = {};
+	if (contextStatus == B_OK) {
+		status_t status = ReadRenderDeviceInfo(device, contextInfo);
+		if (status == B_OK) {
+			printf("render_transport phase=context_ready\n");
+			PrintRenderDeviceInfo(contextInfo);
+			if ((contextInfo.capabilities
+					& valleyview::kRenderCapabilityPpgtt) == 0
+				|| (contextInfo.capabilities
+					& (valleyview::kRenderCapabilityRenderContexts
+						| valleyview::kRenderCapabilityRcsSubmission)) != 0
+				|| (contextInfo.submissionEngines
+					& valleyview::kRenderEngineRcs) != 0) {
+				status = B_BAD_DATA;
+			}
+		}
+		if (status != B_OK)
+			contextStatus = status;
+	}
+	if (contextStatus == B_OK)
+		contextStatus = RejectDuplicateRenderContextProbe(device, context);
+
+	status_t memoryStatus = context.handle != 0
+		? RunRenderMemoryProbe(device, true) : contextStatus;
+	status_t destroyStatus = DestroyRenderContextProbe(device, context);
+	if (contextStatus == B_OK)
+		contextStatus = destroyStatus;
 	status_t rcsStatus = RunRcsProbe(device);
 
 	valleyview::RenderDeviceInfo afterInfo = {};
@@ -663,6 +780,8 @@ RunRenderTransportProbe(int device)
 	}
 	const bool rcsProven = afterInfoStatus == B_OK
 		&& (afterInfo.provenEngines & valleyview::kRenderEngineRcs) != 0;
+	const bool contextReleased = afterInfoStatus == B_OK
+		&& (afterInfo.capabilities & valleyview::kRenderCapabilityPpgtt) == 0;
 
 	valleyview::P0Status after = {};
 	status_t afterStatus = ReadP0Status(device, after);
@@ -672,14 +791,20 @@ RunRenderTransportProbe(int device)
 	}
 	const bool p0Healthy = beforeStatus == B_OK && afterStatus == B_OK
 		&& P0TransportHealthy(before, after);
-	printf("render_transport info=%s memory=%s rcs=%s proven=%s p0=%s\n",
-		YesNo(infoStatus == B_OK), YesNo(memoryStatus == B_OK),
+	printf("render_transport info=%s context=%s released=%s memory=%s"
+		" rcs=%s proven=%s p0=%s\n",
+		YesNo(infoStatus == B_OK), YesNo(contextStatus == B_OK),
+		YesNo(contextReleased), YesNo(memoryStatus == B_OK),
 		YesNo(rcsStatus == B_OK), YesNo(rcsProven), YesNo(p0Healthy));
 
 	if (infoStatus != B_OK)
 		return infoStatus;
 	if (beforeStatus != B_OK)
 		return beforeStatus;
+	if (contextStatus != B_OK)
+		return contextStatus;
+	if (!contextReleased)
+		return afterInfoStatus == B_OK ? B_BAD_DATA : afterInfoStatus;
 	if (memoryStatus != B_OK)
 		return memoryStatus;
 	if (rcsStatus != B_OK)

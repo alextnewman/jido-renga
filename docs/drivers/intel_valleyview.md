@@ -167,11 +167,12 @@ between engines proven by kernel diagnostics and engines available for
 userspace submission.
 
 The current render status remains deliberately `B_NOT_SUPPORTED`.
-`IsRenderReady()` additionally requires tiled buffers, render contexts,
-isolated RCS submission, completion fences, command isolation, reset recovery
-as a service, and drawable presentation. A hardware OpenGL add-on therefore
-cannot mistake kernel-owned diagnostics for a complete Crocus transport. The
-image continues to use Mesa's Software Pipe OpenGL add-on.
+`IsRenderReady()` additionally requires tiled buffers, executable render
+contexts, isolated RCS submission, completion fences, command isolation, reset
+recovery as a service, and drawable presentation. A hardware OpenGL add-on
+therefore cannot mistake the software PPGTT context or kernel-owned diagnostics
+for a complete Crocus transport. The image continues to use Mesa's Software
+Pipe OpenGL add-on.
 
 `intel_valleyview_probe --render-info` prints this boundary without attempting
 submission or changing GPU state.
@@ -197,6 +198,36 @@ closes. Teardown detaches every inherited clone from the backing cache before
 releasing BO accounting, so forked mappings cannot retain pinned pages. Their
 tracked domains are CPU and the kernel-owned BCS. BCS submission remains
 synchronous under `bcsLock`; userspace cannot provide commands.
+
+### Per-client PPGTT substrate
+
+Each open client may explicitly create one software render context before
+creating any BOs. Creation allocates a 2 GiB Gen7 two-level PPGTT and reserves
+virtual page zero. Buffers created while the context is healthy receive a stable
+page-aligned PPGTT address before creation succeeds. The existing `gpuOffset`
+remains the GGTT/BCS diagnostic address; `renderAddress` is zero without a
+context and carries the isolated PPGTT address with one. Duplicate context
+creation and context creation after BO allocation return `B_BUSY` without
+changing the client's live resources.
+
+The PPGTT uses 512 complete 1024-entry page tables in a fragmented 2 MiB DMA32
+allocation. Their physical pages are installed as Gen6 PDE encodings in a
+2 MiB GGTT run aligned to 64 KiB; that GGTT offset is the diagnostic `PP_DIR`
+base. A separate DMA32 scratch page backs all 524,288 PTEs initially, using
+writable snooped BYT PTEs. Unmapped writes therefore remain in private scratch
+memory. Although the encoding helpers preserve the Gen6 40-bit format, current
+BO, page-table, and scratch allocations remain locked below 4 GiB.
+
+Page-table writes are made through the cached kernel mapping and completed with
+bounded x86 `clflush` operations followed by `mfence`. BO close restores its
+PTEs to scratch before releasing its GGTT binding or backing. Context destroy
+restores every BO mapping, verifies and restores the directory's GGTT entries,
+then releases the directory, scratch, and bitmap. Any restoration that cannot
+be proven quarantines the potentially referenced memory and disables render
+work. Context creation does not program RCS, accept commands, or advertise
+render-context or submission capabilities. The scratch restoration model
+follows Linux i915 `gt/gen6_ppgtt.c`; cache-line completion follows its
+`gt/intel_gtt.c` page-table fill path.
 
 `intel_valleyview_probe --render-memory-test` creates two client-owned buffers,
 clones both into the process, writes coordinate-dependent source and destination
@@ -249,9 +280,11 @@ cache/ring/HWS/context and all 19 shader-PTE restorations, BCS operation, and P0
 coexistence. This is not evidence of 3D rasterization or Crocus readiness.
 
 `intel_valleyview_probe --render-transport-test` is the combined hardware gate.
-It runs render discovery, captures P0 state, exercises mapping ownership and the
-BCS memory copy, runs the RCS diagnostic, captures P0 again, and prints one
-summary. Failure output retains all RCS stages, command addresses, marker
+It runs render discovery, captures P0 state, creates a PPGTT context, prints its
+handle and `PP_DIR`, validates PPGTT addresses while exercising mapping
+ownership and the BCS memory copy, closes the buffers, destroys the context,
+runs the RCS diagnostic, captures P0 again, and prints one summary. Failure
+output retains all RCS stages, command addresses, marker
 values, timestamps, shader verification counts and checksums, guard state,
 every shader PTE transition, cache modes, ring/context registers, restoration
 status, and P0 counters needed for offline diagnosis.

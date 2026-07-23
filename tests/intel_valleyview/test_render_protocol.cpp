@@ -13,9 +13,11 @@ using namespace valleyview;
 JR_TEST(intel_valleyview, validates_the_render_discovery_abi)
 {
 	JR_CHECK_EQ(kRenderProtocolMagic, 0x564c5652u);
-	JR_CHECK_EQ(kRenderProtocolVersion, 4u);
+	JR_CHECK_EQ(kRenderProtocolVersion, 5u);
 	JR_CHECK(sizeof(RenderDeviceInfo) < UINT16_MAX);
 	JR_CHECK(sizeof(RenderBufferCreate) < UINT16_MAX);
+	JR_CHECK(sizeof(RenderContextCreate) < UINT16_MAX);
+	JR_CHECK(sizeof(RenderContextDestroy) < UINT16_MAX);
 	JR_CHECK(sizeof(RenderBufferMap) < UINT16_MAX);
 	JR_CHECK(sizeof(RenderMemoryTest) < UINT16_MAX);
 	JR_CHECK(sizeof(RcsDiagnostic) < UINT16_MAX);
@@ -23,6 +25,9 @@ JR_TEST(intel_valleyview, validates_the_render_discovery_abi)
 	JR_CHECK_EQ((uint32)kRcsStageRestored, 9u);
 	JR_CHECK_EQ((uint32)kRcsShaderStageRestored, 7u);
 	JR_CHECK_EQ(kRcsShaderTotalPages, 19u);
+	JR_CHECK_EQ(sizeof(RenderBufferCreate), 48u);
+	JR_CHECK_EQ(sizeof(RenderContextCreate), 40u);
+	JR_CHECK_EQ(sizeof(RenderContextDestroy), 24u);
 
 	const RenderAbiHeader valid = MakeRenderAbiHeader(
 		sizeof(RenderDeviceInfo));
@@ -51,6 +56,10 @@ JR_TEST(intel_valleyview, requires_the_complete_safe_render_contract)
 		& kRenderCapabilityCacheDomains) != 0);
 	JR_CHECK((kRenderRequiredCapabilities
 		& kRenderCapabilityTiledBuffers) != 0);
+	JR_CHECK((kRenderRequiredCapabilities
+		& kRenderCapabilityPpgtt) != 0);
+	JR_CHECK_NE(kRenderCapabilityPpgtt,
+		kRenderCapabilityRenderContexts);
 	JR_CHECK(IsRenderReady(info));
 
 	info.capabilities &= ~kRenderCapabilityCommandIsolation;

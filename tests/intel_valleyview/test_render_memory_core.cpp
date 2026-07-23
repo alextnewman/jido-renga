@@ -69,8 +69,23 @@ JR_TEST(intel_valleyview_render, recognizes_the_firmware_scratch_pte)
 }
 
 
+JR_TEST(intel_valleyview_render, aligns_ggtt_runs_to_power_of_two_pages)
+{
+	RenderGgttSearch search = {};
+	JR_CHECK(InitializeRenderGgttSearch(search, 1, 40, 4, 0, 8));
+	for (uint32 page = 1; page < 40; page++)
+		AdvanceRenderGgttSearch(search, page, 0);
+	JR_CHECK(search.found);
+	JR_CHECK_EQ(search.offset, 8u * kPageSize);
+
+	JR_CHECK(!InitializeRenderGgttSearch(search, 1, 40, 4, 0, 0));
+	JR_CHECK(!InitializeRenderGgttSearch(search, 1, 40, 4, 0, 3));
+}
+
+
 JR_TEST(intel_valleyview_render, requires_coherent_supported_domains)
 {
+	JR_CHECK(IsRenderBufferDomain(kRenderDomainRcs));
 	JR_CHECK(CanTransitionRenderBufferDomain(kRenderDomainCpu,
 		kRenderDomainBcs, kRenderBufferCpuCached));
 	JR_CHECK(CanTransitionRenderBufferDomain(kRenderDomainBcs,
@@ -82,6 +97,10 @@ JR_TEST(intel_valleyview_render, requires_coherent_supported_domains)
 		kRenderDomainBcs, 0));
 	JR_CHECK(!CanTransitionRenderBufferDomain(kRenderDomainCpu,
 		kRenderDomainBcs, kRenderBufferCpuCached | (1u << 31)));
+	JR_CHECK(!CanTransitionRenderBufferDomain(kRenderDomainCpu,
+		kRenderDomainRcs, kRenderBufferCpuCached));
+	JR_CHECK(!CanTransitionRenderBufferDomain(kRenderDomainRcs,
+		kRenderDomainCpu, kRenderBufferCpuCached));
 }
 
 
