@@ -9,7 +9,7 @@
 #   * sdhci_embedded  (matcher, command policy, convergence, ADMA2, CSD,
 #                      transactions, personalities)
 #   * iosf_mbi        (mailbox protocol)
-#   * intel_valleyview (safe P0 ABI and device policy)
+#   * intel_valleyview (safe P0/P1 ABI, memory, and command policy)
 #   * i2c_atmel_mxt   (message-read protocol, object table, touch engine)
 #                     -- compiled against the minimal kernel-header shims in
 #                     shims/ so pure driver logic can run on the host.
@@ -58,9 +58,11 @@ TEST_SRC := \
 	intel_valleyview/test_firmware_state.cpp \
 	intel_valleyview/test_gpu_core.cpp \
 	intel_valleyview/test_p0_core.cpp \
+	intel_valleyview/test_ppgtt_core.cpp \
 	intel_valleyview/test_protocol.cpp \
 	intel_valleyview/test_rcs_core.cpp \
 	intel_valleyview/test_rcs_shader_core.cpp \
+	intel_valleyview/test_render_command_core.cpp \
 	intel_valleyview/test_render_memory_core.cpp \
 	intel_valleyview/test_render_protocol.cpp \
 	i2c_atmel_mxt/test_object_table.cpp \
