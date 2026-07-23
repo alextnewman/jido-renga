@@ -910,6 +910,55 @@ CaptureRcsSubmissionFault(volatile uint8* registers,
 
 
 status_t
+ProgramRcsPpgttControl(volatile uint8* registers,
+	valleyview::RenderSubmit& submit, bool& touched)
+{
+	touched = false;
+	submit.ppgttControlBefore[0]
+		= ReadMmio(registers, valleyview::kRcsGacEcoBits);
+	submit.ppgttControlBefore[1]
+		= ReadMmio(registers, valleyview::kRcsGamEcoCheck);
+	const uint32 gac = submit.ppgttControlBefore[0]
+		| valleyview::kRcsGacPpgttCache64;
+	const uint32 gam = (submit.ppgttControlBefore[1]
+		| valleyview::kRcsGamPpgttLlc) & ~valleyview::kRcsGamPpgttGfdt;
+
+	touched = true;
+	status_t status = WriteGt(registers, valleyview::kRcsGacEcoBits, gac);
+	if (status == B_OK)
+		status = WriteGt(registers, valleyview::kRcsGamEcoCheck, gam);
+	if (status != B_OK)
+		return status;
+	ReadMmio(registers, valleyview::kRcsGamEcoCheck);
+	return ReadMmio(registers, valleyview::kRcsGacEcoBits) == gac
+			&& ReadMmio(registers, valleyview::kRcsGamEcoCheck) == gam
+		? B_OK : B_IO_ERROR;
+}
+
+
+status_t
+RestoreRcsPpgttControl(volatile uint8* registers,
+	valleyview::RenderSubmit& submit)
+{
+	status_t status = WriteGt(registers, valleyview::kRcsGacEcoBits,
+		submit.ppgttControlBefore[0]);
+	if (status == B_OK) {
+		status = WriteGt(registers, valleyview::kRcsGamEcoCheck,
+			submit.ppgttControlBefore[1]);
+	}
+	submit.ppgttControlAfter[0]
+		= ReadMmio(registers, valleyview::kRcsGacEcoBits);
+	submit.ppgttControlAfter[1]
+		= ReadMmio(registers, valleyview::kRcsGamEcoCheck);
+	if (submit.ppgttControlAfter[0] != submit.ppgttControlBefore[0]
+		|| submit.ppgttControlAfter[1] != submit.ppgttControlBefore[1]) {
+		status = B_IO_ERROR;
+	}
+	return status;
+}
+
+
+status_t
 ProgramRcsPpgtt(volatile uint8* registers, uint32 ppDirBase)
 {
 	status_t status = WriteGt(registers, valleyview::kRcsRingPpDirDclv,
@@ -1503,6 +1552,7 @@ ExecuteRcsSubmission(ValleyViewDevice& device,
 	bool gtWakeChanged = false;
 	bool forcewakeAttempted = false;
 	bool cacheStateCaptured = false;
+	bool ppgttControlTouched = false;
 	bool activeCaptured = false;
 	bool ringTouched = false;
 	bool resetRcs = false;
@@ -1542,6 +1592,13 @@ ExecuteRcsSubmission(ValleyViewDevice& device,
 		goto cleanup;
 	}
 	submit.diagnosticFlags |= valleyview::kRenderSubmitRingAvailable;
+
+	status = ProgramRcsPpgttControl(registers, submit,
+		ppgttControlTouched);
+	if (status != B_OK)
+		goto cleanup;
+	submit.diagnosticFlags
+		|= valleyview::kRenderSubmitPpgttControlProgrammed;
 
 	ringTouched = true;
 	status = PrepareRcsRing(registers,
@@ -1617,6 +1674,20 @@ cleanup:
 		}
 	} else if (!ringTouched)
 		submit.cacheRestoreStatus = B_OK;
+
+	if (ppgttControlTouched) {
+		submit.ppgttControlRestoreStatus
+			= RestoreRcsPpgttControl(registers, submit);
+		if (submit.ppgttControlRestoreStatus == B_OK) {
+			submit.diagnosticFlags
+				|= valleyview::kRenderSubmitPpgttControlRestored;
+		} else {
+			device.gpuFaulted = true;
+			if (status == B_OK)
+				status = submit.ppgttControlRestoreStatus;
+		}
+	} else
+		submit.ppgttControlRestoreStatus = B_OK;
 
 	ReadRcsRegisters(registers, submit.after);
 	const valleyview::RcsRegisterSnapshot& expected

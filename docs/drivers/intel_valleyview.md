@@ -259,11 +259,13 @@ timestamp and completion marker through GGTT. Client commands cannot forge
 retirement or modify the shadow.
 
 Submission freezes presentation, programs the client's 2 GiB `PP_DIR`, enables
-legacy RCS PPGTT, flushes the TLB, and waits synchronously for the trusted
-completion marker. Every started submission resets RCS, restores and verifies
-the original ring, HWS, mode, `PP_DIR`, L3 registers, `INSTPM`, wake state,
-display signature, and BCS state, then restores BO ownership to CPU. A timeout,
-fault, or failed restoration is returned in the submission record with before,
+the Gen7 64-byte PPGTT cache controls in `GAC_ECO_BITS` and `GAM_ECOCHK`,
+programs the client's 2 GiB `PP_DIR`, enables legacy RCS PPGTT, flushes the TLB,
+and waits synchronously for the trusted completion marker. Every started
+submission resets RCS, restores and verifies the original ring, HWS, mode,
+`PP_DIR`, global PPGTT controls, L3 registers, `INSTPM`, wake state, display
+signature, and BCS state, then restores BO ownership to CPU. A timeout, fault,
+or failed restoration is returned in the submission record with before,
 active, fault, and after snapshots. Any memory that might remain referenced is
 quarantined without further PTE or GGTT mutation.
 
@@ -297,7 +299,10 @@ The derivative image installs `non-packaged/add-ons/opengl/Crocus`, a Mesa
 22.0.5 Gallium renderer built reproducibly by `tools/build-crocus`. Haiku checks
 the system non-packaged add-on directory before package add-ons, so Crocus
 deterministically owns renderer selection while its internal Softpipe fallback
-preserves operation after failed hardware discovery. The tracked patch adds a
+preserves operation after failed hardware discovery. Crocus is mastered as a
+real loose file in `/boot/system/non-packaged/add-ons/opengl`, not as content
+inside packagefs; the packaged `mesa_swpipe` renderer remains installed as the
+next fallback. The maintained Mesa fork adds a
 Haiku Crocus buffer manager that creates and maps driver-owned BOs, uses their
 stable PPGTT addresses directly, shares the one per-open context between
 Crocus's synchronous render batches, submits the fixed inline validation list,

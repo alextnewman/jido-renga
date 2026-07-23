@@ -33,9 +33,14 @@ constexpr uint32 kRcsRingTimestamp = kRcsRingBase + 0x358;
 constexpr uint32 kRcsRingContextStatus = kRcsRingBase + 0x3a0;
 constexpr uint32 kRcsRingHws = 0x04080;
 constexpr uint32 kRcsRingFault = 0x04094;
+constexpr uint32 kRcsGamEcoCheck = 0x04090;
+constexpr uint32 kRcsGacEcoBits = 0x14090;
 constexpr uint32 kRcsL3SqcReg1 = 0x0b010;
 constexpr uint32 kRcsL3Control2 = 0x0b020;
 constexpr uint32 kRcsL3Control3 = 0x0b024;
+constexpr uint32 kRcsGacPpgttCache64 = 3u << 8;
+constexpr uint32 kRcsGamPpgttLlc = 1u << 3;
+constexpr uint32 kRcsGamPpgttGfdt = 1u << 4;
 
 constexpr uint32 kGen6ResetRender = 1u << 1;
 constexpr uint32 kRcsCcidEnable = 1u << 0;

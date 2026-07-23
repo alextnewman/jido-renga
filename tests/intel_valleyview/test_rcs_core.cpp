@@ -19,6 +19,11 @@ JR_TEST(intel_valleyview_rcs, uses_valleyview_render_registers)
 	JR_CHECK_EQ(kRcsRingTimestamp, 0x02358u);
 	JR_CHECK_EQ(kRcsRingCcid, 0x02180u);
 	JR_CHECK_EQ(kRcsRingFault, 0x04094u);
+	JR_CHECK_EQ(kRcsGamEcoCheck, 0x04090u);
+	JR_CHECK_EQ(kRcsGacEcoBits, 0x14090u);
+	JR_CHECK_EQ(kRcsGacPpgttCache64, 3u << 8);
+	JR_CHECK_EQ(kRcsGamPpgttLlc, 1u << 3);
+	JR_CHECK_EQ(kRcsGamPpgttGfdt, 1u << 4);
 	JR_CHECK_EQ(kGen6ResetRender, 1u << 1);
 	JR_CHECK_EQ(kRcsModeIdle, 1u << 9);
 }

@@ -108,6 +108,13 @@ if $(JIDO_RENGA_BSP) = winky {
 	Exit "Unknown Jido Renga BSP:" $(JIDO_RENGA_BSP) ;
 }
 
+if $(JIDO_RENGA_INSTALL_IN_IMAGE) = 1
+	&& $(JIDO_RENGA_BSP_IMAGE_OPENGL) {
+	AddFilesToHaikuImage system non-packaged add-ons opengl
+		: $(JIDO_RENGA_BSP_IMAGE_OPENGL) ;
+}
+
+
 # These adapters apply BSP additions and omissions while Haiku's package recipe
 # is parsed. Loose add-on targets remain ordinary builds.
 #
@@ -206,10 +213,6 @@ rule JidoRengaAddBspPackageFiles
 		: $(JIDO_RENGA_SST_FIRMWARE) ;
 	AddFilesToContainer $(package) : data licenses
 		: $(JIDO_RENGA_SST_FIRMWARE_LICENSE) : "Intel (SST firmware)" ;
-	if $(JIDO_RENGA_BSP_IMAGE_OPENGL) {
-		AddFilesToContainer $(package) : non-packaged add-ons opengl
-			: $(JIDO_RENGA_BSP_IMAGE_OPENGL) ;
-	}
 }
 
 

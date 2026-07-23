@@ -11,7 +11,7 @@
 namespace valleyview {
 
 constexpr uint32 kRenderProtocolMagic = 0x564c5652;
-constexpr uint16 kRenderProtocolVersion = 6;
+constexpr uint16 kRenderProtocolVersion = 7;
 constexpr uint32 kRenderSubmitMaxObjects = 64;
 
 enum RenderDeviceFlag : uint32 {
@@ -185,7 +185,9 @@ enum RenderSubmitDiagnosticFlag : uint32 {
 	kRenderSubmitCacheRestored = 1u << 14,
 	kRenderSubmitWorkspaceRestored = 1u << 15,
 	kRenderSubmitDisplayUnchanged = 1u << 16,
-	kRenderSubmitBcsUnchanged = 1u << 17
+	kRenderSubmitBcsUnchanged = 1u << 17,
+	kRenderSubmitPpgttControlProgrammed = 1u << 18,
+	kRenderSubmitPpgttControlRestored = 1u << 19
 };
 
 struct RenderSubmit {
@@ -216,11 +218,14 @@ struct RenderSubmit {
 	int32			resetStatus;
 	int32			ringRestoreStatus;
 	int32			cacheRestoreStatus;
+	int32			ppgttControlRestoreStatus;
 	int32			forcewakeReleaseStatus;
 	int32			wakeRestoreStatus;
 	uint64			elapsedUs;
 	uint32			l3Before[3];
 	uint32			l3After[3];
+	uint32			ppgttControlBefore[2];
+	uint32			ppgttControlAfter[2];
 	GpuRegisterSnapshot globalBefore;
 	GpuRegisterSnapshot globalFault;
 	GpuRegisterSnapshot globalAfter;

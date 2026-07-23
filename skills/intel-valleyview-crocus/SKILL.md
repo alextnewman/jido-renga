@@ -86,6 +86,9 @@ dispatch: with PPGTT enabled the bit selects PPGTT and defeats the immutable
 shadow. Use the privileged bare batch start only after strict parsing. Keep the
 shadow and trusted completion outside the client PPGTT, reset RCS after every
 started submission, and verify restoration before returning BOs to CPU.
+Gen7 submission must program the 64-byte PPGTT cache controls in
+`GAC_ECO_BITS` and `GAM_ECOCHK` before enabling the ring, then restore and
+verify both registers after reset.
 Do not advertise RCS submission until the immutable-shadow
 `MI_BATCH_BUFFER_END` bootstrap has itself completed and restored successfully;
 before that proof, reject every other user batch.
@@ -98,9 +101,11 @@ inherited clone from the backing cache with `vm_change_clones_to_null_areas()`.
 
 The hardware renderer is a `BGLRenderer` add-on installed in Haiku's canonical
 system non-packaged `add-ons/opengl` override path. This deterministically
-precedes the packaged Software Pipe add-on; Crocus itself must retain internal
-Softpipe fallback. The overlay path and `JIDO_RENGA_TOP` are build-time details
-and must not appear in its runtime ABI, paths, or diagnostics.
+owns renderer selection when mastered as a loose image file outside packagefs.
+Keep the packaged `mesa_swpipe` renderer as the next fallback, and retain
+internal Softpipe fallback in Crocus as well. The overlay path and
+`JIDO_RENGA_TOP` are build-time details and must not appear in its runtime ABI,
+paths, or diagnostics.
 
 Keep Mesa adaptation separate from kernel policy. Mesa may translate Crocus
 buffer-manager requests into the render ABI, but it must not map GPU registers,

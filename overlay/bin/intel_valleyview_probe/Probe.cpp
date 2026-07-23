@@ -529,16 +529,22 @@ PrintRenderSubmit(const valleyview::RenderSubmit& submit)
 	printf("render_submit_completion marker=%#08" B_PRIx32 "/%#08"
 		B_PRIx32 " ring_tail=%" B_PRIu32 " reset=%" B_PRId32
 		" ring_restore=%" B_PRId32 " cache_restore=%" B_PRId32
-		" forcewake_release=%" B_PRId32 " wake_restore=%" B_PRId32 "\n",
+		" ppgtt_restore=%" B_PRId32 " forcewake_release=%" B_PRId32
+		" wake_restore=%" B_PRId32 "\n",
 		submit.completionMarker, submit.observedCompletionMarker,
 		submit.ringTailBytes, submit.resetStatus, submit.ringRestoreStatus,
-		submit.cacheRestoreStatus, submit.forcewakeReleaseStatus,
+		submit.cacheRestoreStatus, submit.ppgttControlRestoreStatus,
+		submit.forcewakeReleaseStatus,
 		submit.wakeRestoreStatus);
 	printf("render_submit_l3 before=%#08" B_PRIx32 "/%#08" B_PRIx32
 		"/%#08" B_PRIx32 " after=%#08" B_PRIx32 "/%#08" B_PRIx32
 		"/%#08" B_PRIx32 "\n",
 		submit.l3Before[0], submit.l3Before[1], submit.l3Before[2],
 		submit.l3After[0], submit.l3After[1], submit.l3After[2]);
+	printf("render_submit_ppgtt_control gac=%#08" B_PRIx32 "/%#08"
+		B_PRIx32 " gam=%#08" B_PRIx32 "/%#08" B_PRIx32 "\n",
+		submit.ppgttControlBefore[0], submit.ppgttControlAfter[0],
+		submit.ppgttControlBefore[1], submit.ppgttControlAfter[1]);
 	PrintGpuRegisterSnapshot("render_submit_global_before",
 		submit.globalBefore);
 	PrintRcsRegisterSnapshot("render_submit_before", submit.before);
