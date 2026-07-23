@@ -4,7 +4,7 @@
 #ifndef INTEL_VALLEYVIEW_RCS_CORE_H
 #define INTEL_VALLEYVIEW_RCS_CORE_H
 
-#include <common/intel_valleyview/GpuCore.h>
+#include <common/intel_valleyview/RcsShaderCore.h>
 
 #include <stddef.h>
 
@@ -58,23 +58,9 @@ constexpr uint32 kRcsTimestampOffset = 4;
 constexpr uint32 kRcsCompletionOffset = 8;
 constexpr uint32 kRcsBatchMarker = 0x52435342;
 constexpr uint32 kRcsCompletionMarker = 0x52435343;
+constexpr uint32 kRcsShaderCompletionMarker = 0x52435345;
 constexpr uint32 kRcsResultSentinel = 0xa55a3cc3;
 
-constexpr uint32 kMiNoop = 0;
-constexpr uint32 kMiBatchBufferEnd = 0x05000000;
-constexpr uint32 kMiBatchBufferStart = 0x18800000;
-constexpr uint32 kMiBatchNonSecureI965 = 1u << 8;
-constexpr uint32 kMiStoreDwordImmGen4 = 0x10000002;
-constexpr uint32 kMiStoreRegisterMem = 0x12000001;
-constexpr uint32 kMiUseGgtt = 1u << 22;
-constexpr uint32 kGen7PipeControl = 0x7a000002;
-constexpr uint32 kPipeControlDepthCacheFlush = 1u << 0;
-constexpr uint32 kPipeControlDcFlush = 1u << 5;
-constexpr uint32 kPipeControlFlushEnable = 1u << 7;
-constexpr uint32 kPipeControlRenderTargetFlush = 1u << 12;
-constexpr uint32 kPipeControlQwordWrite = 1u << 14;
-constexpr uint32 kPipeControlCsStall = 1u << 20;
-constexpr uint32 kPipeControlGlobalGttIvb = 1u << 24;
 constexpr uint32 kRcsCompletionFlags
 	= kPipeControlDepthCacheFlush
 		| kPipeControlDcFlush
@@ -86,6 +72,7 @@ constexpr uint32 kRcsCompletionFlags
 
 constexpr size_t kRcsBatchCommandCount = 6;
 constexpr size_t kRcsRingCommandCount = 10;
+constexpr size_t kRcsCombinedRingCommandCount = 12;
 
 
 struct RcsRegisterSnapshot {
@@ -212,7 +199,7 @@ BuildRcsDiagnosticRing(uint32* commands, size_t capacity,
 		return 0;
 	}
 
-	commands[0] = kMiBatchBufferStart | kMiBatchNonSecureI965;
+	commands[0] = kMiBatchBufferStart;
 	commands[1] = batchOffset;
 	commands[2] = kMiStoreRegisterMem | kMiUseGgtt;
 	commands[3] = kRcsRingTimestamp;
@@ -223,6 +210,35 @@ BuildRcsDiagnosticRing(uint32* commands, size_t capacity,
 	commands[8] = completionMarker;
 	commands[9] = kMiNoop;
 	return kRcsRingCommandCount;
+}
+
+
+inline size_t
+BuildRcsCombinedDiagnosticRing(uint32* commands, size_t capacity,
+	uint32 markerBatchOffset, uint32 shaderBatchOffset, uint32 resultOffset,
+	uint32 completionMarker)
+{
+	if (commands == NULL || capacity < kRcsCombinedRingCommandCount
+		|| (markerBatchOffset & kPageMask) != 0
+		|| (shaderBatchOffset & kPageMask) != 0
+		|| (resultOffset & kPageMask) != 0
+		|| resultOffset > UINT32_MAX - kRcsCompletionOffset) {
+		return 0;
+	}
+
+	commands[0] = kMiBatchBufferStart;
+	commands[1] = markerBatchOffset;
+	commands[2] = kMiStoreRegisterMem | kMiUseGgtt;
+	commands[3] = kRcsRingTimestamp;
+	commands[4] = resultOffset + kRcsTimestampOffset;
+	commands[5] = kMiBatchBufferStart;
+	commands[6] = shaderBatchOffset;
+	commands[7] = kGen7PipeControl;
+	commands[8] = kRcsCompletionFlags;
+	commands[9] = resultOffset + kRcsCompletionOffset;
+	commands[10] = completionMarker;
+	commands[11] = kMiNoop;
+	return kRcsCombinedRingCommandCount;
 }
 
 } // namespace valleyview

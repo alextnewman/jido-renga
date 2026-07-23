@@ -31,7 +31,7 @@ JR_TEST(intel_valleyview, defaults_to_the_safe_disabled_policy)
 
 JR_TEST(intel_valleyview, validates_versioned_abi_headers_exactly)
 {
-	JR_CHECK_EQ(kProtocolVersion, 11u);
+	JR_CHECK_EQ(kProtocolVersion, 12u);
 	const AbiHeader valid = MakeAbiHeader(sizeof(DriverStatus));
 	JR_CHECK(IsValidAbiHeader(valid, sizeof(DriverStatus)));
 

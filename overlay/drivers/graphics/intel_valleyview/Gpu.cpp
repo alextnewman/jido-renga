@@ -596,11 +596,16 @@ RestoreBcsRing(volatile uint8* registers,
 
 status_t
 PrepareRcsMemory(ValleyViewRenderBuffer& buffer,
+	ValleyViewRenderBuffer& shaderBuffer,
 	valleyview::RcsDiagnostic& diagnostics)
 {
 	if (buffer.address == NULL
 		|| buffer.size < valleyview::kRcsTestBytes
-		|| buffer.ggttOffset == valleyview::kInvalidRenderGgttOffset) {
+		|| buffer.ggttOffset == valleyview::kInvalidRenderGgttOffset
+		|| shaderBuffer.address == NULL
+		|| shaderBuffer.size < valleyview::kRcsShaderTotalBytes
+		|| shaderBuffer.ggttOffset
+			== valleyview::kInvalidRenderGgttOffset) {
 		return B_BAD_VALUE;
 	}
 
@@ -620,20 +625,55 @@ PrepareRcsMemory(ValleyViewRenderBuffer& buffer,
 	const size_t batchCount = valleyview::BuildRcsDiagnosticBatch(batch,
 		valleyview::kPageSize / sizeof(uint32), diagnostics.resultOffset,
 		valleyview::kRcsBatchMarker);
-	const size_t ringCount = valleyview::BuildRcsDiagnosticRing(ring,
+	valleyview::RcsShaderLayout layout = {};
+	if (!valleyview::BuildRcsShaderBatch(shaderBuffer.address,
+			static_cast<uint32>(shaderBuffer.size), shaderBuffer.ggttOffset,
+			layout)) {
+		return B_BAD_DATA;
+	}
+	uint32* shaderSurface = reinterpret_cast<uint32*>(
+		static_cast<uint8*>(shaderBuffer.address) + layout.surfaceOffset);
+	uint32* shaderGuard = reinterpret_cast<uint32*>(
+		static_cast<uint8*>(shaderBuffer.address) + layout.guardOffset);
+	for (uint32 index = 0;
+			index < layout.surfaceBytes / sizeof(uint32); index++) {
+		shaderSurface[index] = valleyview::kRcsShaderSentinel;
+	}
+	for (uint32 index = 0;
+			index < layout.guardBytes / sizeof(uint32); index++) {
+		shaderGuard[index] = valleyview::kRcsShaderSentinel;
+	}
+	const size_t ringCount = valleyview::BuildRcsCombinedDiagnosticRing(ring,
 		valleyview::kPageSize / sizeof(uint32), diagnostics.batchOffset,
-		diagnostics.resultOffset, valleyview::kRcsCompletionMarker);
+		shaderBuffer.ggttOffset, diagnostics.resultOffset,
+		valleyview::kRcsShaderCompletionMarker);
 	if (batchCount != valleyview::kRcsBatchCommandCount
-		|| ringCount != valleyview::kRcsRingCommandCount) {
+		|| ringCount != valleyview::kRcsCombinedRingCommandCount) {
 		return B_BAD_DATA;
 	}
 
 	diagnostics.batchMarker = valleyview::kRcsBatchMarker;
-	diagnostics.completionMarker = valleyview::kRcsCompletionMarker;
+	diagnostics.completionMarker
+		= valleyview::kRcsShaderCompletionMarker;
+	diagnostics.shaderCompletionMarker
+		= valleyview::kRcsShaderCompletionMarker;
 	diagnostics.batchBytes
 		= static_cast<uint32>(batchCount * sizeof(uint32));
 	diagnostics.ringTailBytes
 		= static_cast<uint32>(ringCount * sizeof(uint32));
+	diagnostics.shaderCommandBytes = layout.commandBytes;
+	diagnostics.shaderKernelOffset = layout.kernelOffset;
+	diagnostics.shaderSurfaceStateOffset = layout.surfaceStateOffset;
+	diagnostics.shaderBindingTableOffset = layout.bindingTableOffset;
+	diagnostics.shaderDescriptorOffset = layout.interfaceDescriptorOffset;
+	diagnostics.shaderSurfaceOffset = layout.surfaceOffset;
+	diagnostics.shaderSurfaceBytes = layout.surfaceBytes;
+	diagnostics.shaderGuardOffset = layout.guardOffset;
+	diagnostics.shaderGuardBytes = layout.guardBytes;
+	diagnostics.shaderChecksumBefore = valleyview::RcsShaderChecksum(
+		shaderSurface, layout.surfaceBytes / sizeof(uint32));
+	diagnostics.flags |= valleyview::kRcsShaderCommandsBuilt;
+	diagnostics.shaderStage = valleyview::kRcsShaderStageCommandsBuilt;
 	memory_write_barrier();
 	return B_OK;
 }
@@ -814,6 +854,31 @@ RestoreRcsRing(volatile uint8* registers,
 		return B_IO_ERROR;
 	}
 	return cleanupFailure;
+}
+
+
+status_t
+RestoreRcsShaderCache(volatile uint8* registers,
+	valleyview::RcsDiagnostic& diagnostics)
+{
+	status_t status = WriteGt(registers, valleyview::kGen7CacheMode0,
+		0xffff0000u | (diagnostics.cacheMode0Before & 0xffff));
+	status_t mode1Status = WriteGt(registers, valleyview::kGen7CacheMode1,
+		0xffff0000u | (diagnostics.cacheMode1Before & 0xffff));
+	if (status == B_OK)
+		status = mode1Status;
+
+	diagnostics.cacheMode0After = ReadMmio(registers,
+		valleyview::kGen7CacheMode0);
+	diagnostics.cacheMode1After = ReadMmio(registers,
+		valleyview::kGen7CacheMode1);
+	if ((diagnostics.cacheMode0After & 0xffff)
+			!= (diagnostics.cacheMode0Before & 0xffff)
+		|| (diagnostics.cacheMode1After & 0xffff)
+			!= (diagnostics.cacheMode1Before & 0xffff)) {
+		status = B_IO_ERROR;
+	}
+	return status;
 }
 
 
@@ -1263,28 +1328,40 @@ SubmitRenderBcsCopy(ValleyViewDevice& device, uint32 sourceOffset,
 
 status_t
 ExecuteRcsDiagnostic(ValleyViewDevice& device,
-	ValleyViewRenderBuffer& buffer, valleyview::RcsDiagnostic& diagnostics)
+	ValleyViewRenderBuffer& buffer, ValleyViewRenderBuffer& shaderBuffer,
+	valleyview::RcsDiagnostic& diagnostics)
 {
-	status_t status = PrepareRcsMemory(buffer, diagnostics);
+	status_t status = PrepareRcsMemory(buffer, shaderBuffer, diagnostics);
 	if (status != B_OK)
 		return status;
 
 	uint32* result = static_cast<uint32*>(buffer.address)
 		+ valleyview::kRcsResultPage
 			* valleyview::kPageSize / sizeof(uint32);
+	const uint32* shaderSurface = reinterpret_cast<const uint32*>(
+		static_cast<const uint8*>(shaderBuffer.address)
+			+ diagnostics.shaderSurfaceOffset);
+	const uint32* shaderGuard = reinterpret_cast<const uint32*>(
+		static_cast<const uint8*>(shaderBuffer.address)
+			+ diagnostics.shaderGuardOffset);
+	valleyview::RcsShaderAnalysis shaderAnalysis = {};
 	mutex_lock(&device.bcsLock);
 	volatile uint8* registers = device.registers;
 	valleyview::GpuDiagnostics forcewake = {};
 	bool gtWakeChanged = false;
 	bool forcewakeAttempted = false;
+	bool cacheModesCaptured = false;
 	bool activeCaptured = false;
 	bool ringTouched = false;
 	bool resetRcs = false;
 	bool ringSafe = true;
 	status_t cleanupStatus = B_OK;
+	bool shaderValid = false;
 	const uint32 requiredResults = valleyview::kRcsBatchMarkerVerified
 		| valleyview::kRcsCompletionVerified
-		| valleyview::kRcsTimestampVerified;
+		| valleyview::kRcsTimestampVerified
+		| valleyview::kRcsShaderOutputVerified
+		| valleyview::kRcsShaderGuardVerified;
 
 	ReadGpuRegisters(registers, diagnostics.globalBefore);
 	ReadRcsRegisters(registers, diagnostics.before);
@@ -1306,6 +1383,11 @@ ExecuteRcsDiagnostic(ValleyViewDevice& device,
 		goto cleanup;
 	diagnostics.flags |= valleyview::kRcsForcewakeAcquired;
 	diagnostics.stage = valleyview::kRcsStageForcewakeAcquired;
+	diagnostics.cacheMode0Before = ReadMmio(registers,
+		valleyview::kGen7CacheMode0);
+	diagnostics.cacheMode1Before = ReadMmio(registers,
+		valleyview::kGen7CacheMode1);
+	cacheModesCaptured = true;
 
 	ReadRcsRegisters(registers, diagnostics.active);
 	activeCaptured = true;
@@ -1333,6 +1415,10 @@ ExecuteRcsDiagnostic(ValleyViewDevice& device,
 		goto cleanup;
 	diagnostics.flags |= valleyview::kRcsRingStarted;
 	diagnostics.stage = valleyview::kRcsStageRingStarted;
+	diagnostics.shaderStage = valleyview::kRcsShaderStageRingStarted;
+	// The shader reprograms media state and cache-mode workarounds. Reset RCS
+	// after every attempt so no transient render state survives this diagnostic.
+	resetRcs = true;
 
 	status = WaitForRcsCompletion(result, diagnostics.completionMarker);
 	diagnostics.timestampAfter
@@ -1353,10 +1439,50 @@ ExecuteRcsDiagnostic(ValleyViewDevice& device,
 		diagnostics.flags |= valleyview::kRcsTimestampVerified;
 	}
 	if (status != B_OK) {
+		diagnostics.shaderStatus = status;
 		resetRcs = true;
 		goto cleanup;
 	}
 	diagnostics.stage = valleyview::kRcsStageCommandsCompleted;
+	diagnostics.flags |= valleyview::kRcsShaderCommandsCompleted;
+	diagnostics.shaderStage
+		= valleyview::kRcsShaderStageCommandsCompleted;
+
+	memory_read_barrier();
+	shaderValid = valleyview::AnalyzeRcsShaderOutput(shaderSurface,
+		diagnostics.shaderSurfaceBytes, shaderGuard,
+		diagnostics.shaderGuardBytes, valleyview::kRcsShaderSentinel,
+		shaderAnalysis);
+	diagnostics.shaderZeroDwords = shaderAnalysis.zeroDwords;
+	diagnostics.shaderSentinelDwords = shaderAnalysis.sentinelDwords;
+	diagnostics.shaderUnexpectedDwords = shaderAnalysis.unexpectedDwords;
+	diagnostics.shaderFirstChangedOffset
+		= shaderAnalysis.firstChangedOffset;
+	diagnostics.shaderLastChangedOffset = shaderAnalysis.lastChangedOffset;
+	diagnostics.shaderFirstUnexpectedOffset
+		= shaderAnalysis.firstUnexpectedOffset;
+	diagnostics.shaderFirstUnexpectedValue
+		= shaderAnalysis.firstUnexpectedValue;
+	diagnostics.shaderGuardMismatchOffset
+		= shaderAnalysis.guardMismatchOffset;
+	diagnostics.shaderGuardObserved = shaderAnalysis.guardObserved;
+	diagnostics.shaderChecksumAfter = shaderAnalysis.checksum;
+	if (shaderAnalysis.zeroDwords
+			== valleyview::kRcsShaderExpectedZeroDwords
+		&& shaderAnalysis.sentinelDwords
+			== valleyview::kRcsShaderExpectedSentinelDwords
+		&& shaderAnalysis.unexpectedDwords == 0) {
+		diagnostics.flags |= valleyview::kRcsShaderOutputVerified;
+	}
+	if (shaderAnalysis.guardMismatchOffset == UINT32_MAX)
+		diagnostics.flags |= valleyview::kRcsShaderGuardVerified;
+	diagnostics.shaderStatus = shaderValid ? B_OK : B_BAD_DATA;
+	if (!shaderValid)
+		status = diagnostics.shaderStatus;
+	else {
+		diagnostics.shaderStage
+			= valleyview::kRcsShaderStageOutputVerified;
+	}
 
 	if ((diagnostics.flags & requiredResults) != requiredResults)
 		status = B_BAD_DATA;
@@ -1385,6 +1511,19 @@ cleanup:
 	} else {
 		diagnostics.ringRestoreStatus = B_OK;
 		diagnostics.flags |= valleyview::kRcsRingRestored;
+	}
+
+	if (ringSafe && ringTouched && forcewakeAttempted && cacheModesCaptured) {
+		status_t cacheStatus = RestoreRcsShaderCache(registers, diagnostics);
+		if (cacheStatus == B_OK)
+			diagnostics.flags |= valleyview::kRcsShaderCacheRestored;
+		else {
+			device.gpuFaulted = true;
+			if (status == B_OK)
+				status = cacheStatus;
+			if (diagnostics.shaderStatus == B_OK)
+				diagnostics.shaderStatus = cacheStatus;
+		}
 	}
 
 	ReadRcsRegisters(registers, diagnostics.after);
@@ -1426,11 +1565,14 @@ cleanup:
 
 	if (!ringSafe) {
 		buffer.quarantined = true;
+		shaderBuffer.quarantined = true;
 		device.renderMemoryQuarantined = true;
 		device.gpuFaulted = true;
 		dprintf("intel_valleyview: quarantined RCS diagnostic memory after "
 			"unsafe ring restoration\n");
 	}
+	if (diagnostics.shaderStatus == B_NO_INIT)
+		diagnostics.shaderStatus = status;
 	mutex_unlock(&device.bcsLock);
 	return status;
 }

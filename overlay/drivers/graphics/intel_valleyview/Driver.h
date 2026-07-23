@@ -207,6 +207,7 @@ status_t UnbindRenderBufferGgtt(ValleyViewDevice& device,
 status_t SubmitRenderBcsCopy(ValleyViewDevice& device, uint32 sourceOffset,
 	uint32 destinationOffset, uint32& completionMarker);
 status_t ExecuteRcsDiagnostic(ValleyViewDevice& device,
-	ValleyViewRenderBuffer& buffer, valleyview::RcsDiagnostic& diagnostics);
+	ValleyViewRenderBuffer& buffer, ValleyViewRenderBuffer& shaderBuffer,
+	valleyview::RcsDiagnostic& diagnostics);
 
 #endif

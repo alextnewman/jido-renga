@@ -11,7 +11,7 @@
 namespace valleyview {
 
 constexpr uint32 kRenderProtocolMagic = 0x564c5652;
-constexpr uint16 kRenderProtocolVersion = 3;
+constexpr uint16 kRenderProtocolVersion = 4;
 
 enum RenderDeviceFlag : uint32 {
 	kRenderDeviceGgtt = 1u << 0,
@@ -176,7 +176,26 @@ enum RcsDiagnosticFlag : uint32 {
 	kRcsDisplayUnchanged = 1u << 12,
 	kRcsBcsUnchanged = 1u << 13,
 	kRcsResetPerformed = 1u << 14,
-	kRcsFaultCaptured = 1u << 15
+	kRcsFaultCaptured = 1u << 15,
+	kRcsShaderMemoryAllocated = 1u << 16,
+	kRcsShaderGgttBound = 1u << 17,
+	kRcsShaderCommandsBuilt = 1u << 18,
+	kRcsShaderCommandsCompleted = 1u << 19,
+	kRcsShaderOutputVerified = 1u << 20,
+	kRcsShaderGuardVerified = 1u << 21,
+	kRcsShaderCacheRestored = 1u << 22,
+	kRcsShaderGgttRestored = 1u << 23
+};
+
+enum RcsShaderDiagnosticStage : uint32 {
+	kRcsShaderStageNone = 0,
+	kRcsShaderStageMemoryAllocated,
+	kRcsShaderStageGgttBound,
+	kRcsShaderStageCommandsBuilt,
+	kRcsShaderStageRingStarted,
+	kRcsShaderStageCommandsCompleted,
+	kRcsShaderStageOutputVerified,
+	kRcsShaderStageRestored
 };
 
 struct RcsDiagnostic {
@@ -210,10 +229,42 @@ struct RcsDiagnostic {
 	int32					ggttRestoreStatus;
 	int32					forcewakeReleaseStatus;
 	int32					wakeRestoreStatus;
-	uint32					reserved1[3];
+	RcsShaderDiagnosticStage shaderStage;
+	int32					shaderStatus;
+	int32					shaderGgttRestoreStatus;
+	uint32					shaderOffset;
+	uint32					shaderPages;
+	uint32					shaderCommandBytes;
+	uint32					shaderKernelOffset;
+	uint32					shaderSurfaceStateOffset;
+	uint32					shaderBindingTableOffset;
+	uint32					shaderDescriptorOffset;
+	uint32					shaderSurfaceOffset;
+	uint32					shaderSurfaceBytes;
+	uint32					shaderGuardOffset;
+	uint32					shaderGuardBytes;
+	uint32					shaderCompletionMarker;
+	uint32					shaderZeroDwords;
+	uint32					shaderSentinelDwords;
+	uint32					shaderUnexpectedDwords;
+	uint32					shaderFirstChangedOffset;
+	uint32					shaderLastChangedOffset;
+	uint32					shaderFirstUnexpectedOffset;
+	uint32					shaderFirstUnexpectedValue;
+	uint32					shaderGuardMismatchOffset;
+	uint32					shaderGuardObserved;
+	uint64					shaderChecksumBefore;
+	uint64					shaderChecksumAfter;
+	uint32					cacheMode0Before;
+	uint32					cacheMode0After;
+	uint32					cacheMode1Before;
+	uint32					cacheMode1After;
 	uint32					pteBefore[kRcsTestPageCount];
 	uint32					pteBound[kRcsTestPageCount];
 	uint32					pteAfter[kRcsTestPageCount];
+	uint32					shaderPteBefore[kRcsShaderTotalPages];
+	uint32					shaderPteBound[kRcsShaderTotalPages];
+	uint32					shaderPteAfter[kRcsShaderTotalPages];
 	GpuRegisterSnapshot		globalBefore;
 	GpuRegisterSnapshot		globalFault;
 	GpuRegisterSnapshot		globalAfter;

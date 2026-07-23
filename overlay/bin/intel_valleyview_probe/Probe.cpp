@@ -306,6 +306,19 @@ PrintRcsRegisterSnapshot(const char* label,
 
 
 void
+PrintRcsShaderPtes(const valleyview::RcsDiagnostic& diagnostics)
+{
+	for (uint32 page = 0; page < valleyview::kRcsShaderTotalPages; page++) {
+		printf("rcs_shader_pte page=%" B_PRIu32 " before=%#08" B_PRIx32
+			" bound=%#08" B_PRIx32 " after=%#08" B_PRIx32 "\n",
+			page, diagnostics.shaderPteBefore[page],
+			diagnostics.shaderPteBound[page],
+			diagnostics.shaderPteAfter[page]);
+	}
+}
+
+
+void
 PrintRcsDiagnostic(const valleyview::RcsDiagnostic& diagnostics)
 {
 	printf("rcs_test status=%" B_PRId32 " stage=%u flags=%#08" B_PRIx32
@@ -348,6 +361,38 @@ PrintRcsDiagnostic(const valleyview::RcsDiagnostic& diagnostics)
 		diagnostics.pteBound[2], diagnostics.pteBound[3],
 		diagnostics.pteAfter[0], diagnostics.pteAfter[1],
 		diagnostics.pteAfter[2], diagnostics.pteAfter[3]);
+	printf("rcs_shader status=%" B_PRId32 " stage=%u offset=%#08"
+		B_PRIx32 " pages=%" B_PRIu32 " command=%" B_PRIu32
+		" marker=%#08" B_PRIx32 "\n",
+		diagnostics.shaderStatus, diagnostics.shaderStage,
+		diagnostics.shaderOffset, diagnostics.shaderPages,
+		diagnostics.shaderCommandBytes, diagnostics.shaderCompletionMarker);
+	printf("rcs_shader_layout kernel=%#08" B_PRIx32
+		" surface_state=%#08" B_PRIx32 " binding=%#08" B_PRIx32
+		" descriptor=%#08" B_PRIx32 " surface=%#08" B_PRIx32
+		"/%" B_PRIu32 " guard=%#08" B_PRIx32 "/%" B_PRIu32 "\n",
+		diagnostics.shaderKernelOffset, diagnostics.shaderSurfaceStateOffset,
+		diagnostics.shaderBindingTableOffset, diagnostics.shaderDescriptorOffset,
+		diagnostics.shaderSurfaceOffset, diagnostics.shaderSurfaceBytes,
+		diagnostics.shaderGuardOffset, diagnostics.shaderGuardBytes);
+	printf("rcs_shader_output zero=%" B_PRIu32 " sentinel=%" B_PRIu32
+		" unexpected=%" B_PRIu32 " changed=%#08" B_PRIx32 "/%#08"
+		B_PRIx32 " first_bad=%#08" B_PRIx32 "/%#08" B_PRIx32
+		" guard=%#08" B_PRIx32 "/%#08" B_PRIx32 "\n",
+		diagnostics.shaderZeroDwords, diagnostics.shaderSentinelDwords,
+		diagnostics.shaderUnexpectedDwords,
+		diagnostics.shaderFirstChangedOffset, diagnostics.shaderLastChangedOffset,
+		diagnostics.shaderFirstUnexpectedOffset,
+		diagnostics.shaderFirstUnexpectedValue,
+		diagnostics.shaderGuardMismatchOffset, diagnostics.shaderGuardObserved);
+	printf("rcs_shader_checksum before=%#016" B_PRIx64
+		" after=%#016" B_PRIx64 " cache_mode0=%#08" B_PRIx32
+		"/%#08" B_PRIx32 " cache_mode1=%#08" B_PRIx32 "/%#08"
+		B_PRIx32 "\n",
+		diagnostics.shaderChecksumBefore, diagnostics.shaderChecksumAfter,
+		diagnostics.cacheMode0Before, diagnostics.cacheMode0After,
+		diagnostics.cacheMode1Before, diagnostics.cacheMode1After);
+	PrintRcsShaderPtes(diagnostics);
 	PrintGpuRegisterSnapshot("rcs_global_before", diagnostics.globalBefore);
 	PrintRcsRegisterSnapshot("before", diagnostics.before);
 	PrintRcsRegisterSnapshot("active", diagnostics.active);

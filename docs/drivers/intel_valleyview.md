@@ -123,10 +123,11 @@ device.lock -> presentLock -> bcsLock
 ```
 
 The present worker takes `presentLock -> bcsLock` and never takes `device.lock`.
-`renderLock` and `presentLock` never nest. The RCS diagnostic binds its hidden
-BO under the render path, releases `renderLock`, then freezes presentation
-under `presentLock -> bcsLock` while sampling display state and using RCS.
-Every forcewake, engine-ring, and diagnostic GGTT operation takes `bcsLock`.
+`renderLock` and `presentLock` never nest. The RCS diagnostic binds both hidden
+allocations under the render path, releases `renderLock`, then freezes
+presentation under `presentLock -> bcsLock` while sampling display state and
+using RCS. Every forcewake, engine-ring, and diagnostic GGTT operation takes
+`bcsLock`.
 
 Shutdown joins the present worker before quiescing BCS or restoring display
 state. The candidate cursor is detached, BCS is quiesced, the firmware plane is
@@ -167,10 +168,10 @@ userspace submission.
 
 The current render status remains deliberately `B_NOT_SUPPORTED`.
 `IsRenderReady()` additionally requires tiled buffers, render contexts,
-isolated RCS submission, completion fences, command isolation, reset recovery,
-and drawable presentation. A hardware OpenGL add-on therefore cannot mistake
-the proven kernel-owned BCS path for a complete Crocus transport. The image
-continues to use Mesa's Software Pipe OpenGL add-on.
+isolated RCS submission, completion fences, command isolation, reset recovery
+as a service, and drawable presentation. A hardware OpenGL add-on therefore
+cannot mistake kernel-owned diagnostics for a complete Crocus transport. The
+image continues to use Mesa's Software Pipe OpenGL add-on.
 
 `intel_valleyview_probe --render-info` prints this boundary without attempting
 submission or changing GPU state.
@@ -208,30 +209,47 @@ active and fault-free.
 ### RCS transport diagnostic
 
 The driver has a kernel-generated RCS diagnostic, not a userspace submission
-API. It allocates a hidden four-page render buffer for an RCS ring, hardware
-status page, second-level batch, and result page. The batch writes one marker
-and records the RCS timestamp; the ring chains to that batch and retires through
-a Gen7 `PIPE_CONTROL` completion write.
+API. It allocates a hidden four-page transport buffer for the RCS ring,
+hardware-status page, marker batch, and result page, plus a separate hidden
+19-page GGTT object. The second object runs the MIT-licensed Ivy Bridge
+clear-residual EU kernel and Gen7 media-pipeline sequence derived from the local
+Linux i915 `gen7_renderclear.c` reference.
+
+The ring first runs the marker batch and records the RCS timestamp, then chains
+to the secure kernel shader batch and retires through a Gen7 `PIPE_CONTROL`
+completion write. The shader batch initializes a B8G8R8A8 render-cache surface
+with a sentinel and emits 36 `MEDIA_OBJECT` dispatches, the ValleyView
+`max_threads` value, to write zero blocks. A following guard page must remain
+untouched.
+
+Verification reports zero, sentinel, and unexpected dword counts; the changed
+range; checksums before and after execution; the first unexpected value; guard
+mismatches; every shader GGTT PTE before binding, while bound, and after
+restoration; and cache modes 0 and 1 before and after execution.
 
 The diagnostic requires an idle legacy RCS with PPGTT and active CCID context
 selection disabled. It programs and posts the hardware-status page before the
 required RCS TLB sync-flush. It snapshots global GT, BCS, CCID, context,
-page-directory, and decoded RCS fault state, then restores the original HWS,
-flushes the TLB again, and verifies the complete ring state. A timeout performs
-a bounded render-engine reset. If ring restoration or GGTT detachment cannot
-be proven, the diagnostic buffer is quarantined and all further render work
-fails closed.
+page-directory, cache-mode, and decoded RCS fault state. Because the shader
+changes pipeline, state-base, media, and cache state, every attempt ends with a
+bounded RCS reset. The driver then restores cache modes, HWS, ring, context,
+page-directory state, and both hidden GGTT allocations, flushes the TLB again,
+and verifies the complete restoration. Unsafe restoration quarantines both
+buffers and fails all further render work closed.
 
 A successful diagnostic adds RCS to `provenEngines`; it does not add RCS to
-`submissionEngines` or advertise contexts, command isolation, fences, or reset
-recovery as Crocus services.
+`submissionEngines` or expose user commands, contexts, isolated RCS submission,
+completion fences, reset recovery as a service, tiling, or presentation. When
+hardware passes, it proves only this kernel-generated EU/render-cache workload.
+The workload has not yet been hardware-validated.
 
 `intel_valleyview_probe --render-transport-test` is the combined hardware gate.
 It runs render discovery, captures P0 state, exercises mapping ownership and the
 BCS memory copy, runs the RCS diagnostic, captures P0 again, and prints one
 summary. Failure output retains all RCS stages, command addresses, marker
-values, timestamps, PTEs, ring/context registers, cleanup status, and P0
-counters needed for offline diagnosis.
+values, timestamps, shader verification counts and checksums, guard state,
+every shader PTE transition, cache modes, ring/context registers, restoration
+status, and P0 counters needed for offline diagnosis.
 
 ## Current support
 

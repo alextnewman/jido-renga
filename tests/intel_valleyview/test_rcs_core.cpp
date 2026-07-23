@@ -115,7 +115,7 @@ JR_TEST(intel_valleyview_rcs, builds_a_batch_chain_and_completion)
 
 	JR_CHECK_EQ(count, kRcsRingCommandCount);
 	JR_CHECK_EQ((count * sizeof(uint32)) & 7, 0u);
-	JR_CHECK_EQ(commands[0], 0x18800100u);
+	JR_CHECK_EQ(commands[0], 0x18800000u);
 	JR_CHECK_EQ(commands[1], 0x2000u);
 	JR_CHECK_EQ(commands[2], 0x12400001u);
 	JR_CHECK_EQ(commands[3], 0x02358u);
@@ -125,6 +125,32 @@ JR_TEST(intel_valleyview_rcs, builds_a_batch_chain_and_completion)
 	JR_CHECK_EQ(commands[7], 0x3008u);
 	JR_CHECK_EQ(commands[8], kRcsCompletionMarker);
 	JR_CHECK_EQ(commands[9], 0u);
+}
+
+
+JR_TEST(intel_valleyview_rcs, builds_the_combined_shader_chain)
+{
+	uint32 commands[kRcsCombinedRingCommandCount] = {};
+	const size_t count = BuildRcsCombinedDiagnosticRing(commands,
+		kRcsCombinedRingCommandCount, 0x2000, 0x4000, 0x3000,
+		kRcsShaderCompletionMarker);
+
+	JR_CHECK_EQ(count, kRcsCombinedRingCommandCount);
+	JR_CHECK_EQ((count * sizeof(uint32)) & 7, 0u);
+	JR_CHECK_EQ(commands[0], 0x18800000u);
+	JR_CHECK_EQ(commands[1], 0x2000u);
+	JR_CHECK_EQ(commands[2], 0x12400001u);
+	JR_CHECK_EQ(commands[3], 0x02358u);
+	JR_CHECK_EQ(commands[4], 0x3004u);
+	JR_CHECK_EQ(commands[5], 0x18800000u);
+	JR_CHECK_EQ(commands[6], 0x4000u);
+	JR_CHECK_EQ(commands[7], 0x7a000002u);
+	JR_CHECK_EQ(commands[8], 0x011050a1u);
+	JR_CHECK_EQ(commands[9], 0x3008u);
+	JR_CHECK_EQ(commands[10], kRcsShaderCompletionMarker);
+	JR_CHECK_EQ(commands[11], 0u);
+	JR_CHECK_EQ(BuildRcsCombinedDiagnosticRing(commands, count - 1,
+		0x2000, 0x4000, 0x3000, kRcsShaderCompletionMarker), 0u);
 }
 
 

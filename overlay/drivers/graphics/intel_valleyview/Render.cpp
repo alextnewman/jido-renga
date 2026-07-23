@@ -201,7 +201,8 @@ ReleaseRenderBuffer(ValleyViewDevice& device,
 
 status_t
 CreateInternalRenderBuffer(ValleyViewDevice& device, uint64 size,
-	ValleyViewRenderBuffer*& buffer, valleyview::RcsDiagnostic& diagnostics)
+	ValleyViewRenderBuffer*& buffer, valleyview::RcsDiagnostic& diagnostics,
+	bool shader)
 {
 	buffer = static_cast<ValleyViewRenderBuffer*>(
 		calloc(1, sizeof(ValleyViewRenderBuffer)));
@@ -219,13 +220,24 @@ CreateInternalRenderBuffer(ValleyViewDevice& device, uint64 size,
 
 	status_t status = AllocateRenderMemory(*buffer);
 	if (status == B_OK) {
-		diagnostics.flags |= valleyview::kRcsMemoryAllocated;
-		diagnostics.stage = valleyview::kRcsStageMemoryAllocated;
+		if (shader) {
+			diagnostics.flags |= valleyview::kRcsShaderMemoryAllocated;
+			diagnostics.shaderStage
+				= valleyview::kRcsShaderStageMemoryAllocated;
+		} else {
+			diagnostics.flags |= valleyview::kRcsMemoryAllocated;
+			diagnostics.stage = valleyview::kRcsStageMemoryAllocated;
+		}
 		status = BindRenderBufferGgtt(device, *buffer);
 	}
 	if (status == B_OK) {
-		diagnostics.flags |= valleyview::kRcsGgttBound;
-		diagnostics.stage = valleyview::kRcsStageGgttBound;
+		if (shader) {
+			diagnostics.flags |= valleyview::kRcsShaderGgttBound;
+			diagnostics.shaderStage = valleyview::kRcsShaderStageGgttBound;
+		} else {
+			diagnostics.flags |= valleyview::kRcsGgttBound;
+			diagnostics.stage = valleyview::kRcsStageGgttBound;
+		}
 	}
 	if (status != B_OK) {
 		if (buffer->ggttOffset != valleyview::kInvalidRenderGgttOffset)
@@ -238,6 +250,21 @@ CreateInternalRenderBuffer(ValleyViewDevice& device, uint64 size,
 		buffer = NULL;
 	}
 	return status;
+}
+
+
+status_t
+RecordInternalRenderBuffer(const ValleyViewRenderBuffer& buffer,
+	uint32* savedPtes, uint32* boundPtes)
+{
+	for (uint32 page = 0; page < buffer.pageCount; page++) {
+		savedPtes[page] = buffer.savedPtes[page];
+		if (!valleyview::EncodeBytPte(buffer.physicalPages[page], true,
+				true, boundPtes[page])) {
+			return B_BAD_DATA;
+		}
+	}
+	return B_OK;
 }
 
 
@@ -580,6 +607,12 @@ RunRcsDiagnostic(ValleyViewClient& client,
 	diagnostics.ggttRestoreStatus = B_NO_INIT;
 	diagnostics.forcewakeReleaseStatus = B_NO_INIT;
 	diagnostics.wakeRestoreStatus = B_NO_INIT;
+	diagnostics.shaderStatus = B_NO_INIT;
+	diagnostics.shaderGgttRestoreStatus = B_NO_INIT;
+	diagnostics.shaderFirstChangedOffset = UINT32_MAX;
+	diagnostics.shaderLastChangedOffset = UINT32_MAX;
+	diagnostics.shaderFirstUnexpectedOffset = UINT32_MAX;
+	diagnostics.shaderGuardMismatchOffset = UINT32_MAX;
 	if (command != valleyview::kRcsDiagnosticArm) {
 		diagnostics.status = B_BAD_VALUE;
 		return diagnostics.status;
@@ -597,8 +630,9 @@ RunRcsDiagnostic(ValleyViewClient& client,
 
 	const bigtime_t started = system_time();
 	ValleyViewRenderBuffer* buffer = NULL;
+	ValleyViewRenderBuffer* shaderBuffer = NULL;
 	status_t status = CreateInternalRenderBuffer(device,
-		valleyview::kRcsTestBytes, buffer, diagnostics);
+		valleyview::kRcsTestBytes, buffer, diagnostics, false);
 	if (status == B_OK) {
 		diagnostics.ringOffset = buffer->ggttOffset
 			+ valleyview::kRcsRingPage * valleyview::kPageSize;
@@ -608,24 +642,41 @@ RunRcsDiagnostic(ValleyViewClient& client,
 			+ valleyview::kRcsBatchPage * valleyview::kPageSize;
 		diagnostics.resultOffset = buffer->ggttOffset
 			+ valleyview::kRcsResultPage * valleyview::kPageSize;
-		for (uint32 page = 0; page < valleyview::kRcsTestPageCount;
-				page++) {
-			diagnostics.pteBefore[page] = buffer->savedPtes[page];
-			if (!valleyview::EncodeBytPte(buffer->physicalPages[page], true,
-					true, diagnostics.pteBound[page])) {
-				status = B_BAD_DATA;
-				break;
-			}
-		}
+		status = RecordInternalRenderBuffer(*buffer, diagnostics.pteBefore,
+			diagnostics.pteBound);
+	}
+	if (status == B_OK) {
+		status = CreateInternalRenderBuffer(device,
+			valleyview::kRcsShaderTotalBytes, shaderBuffer, diagnostics, true);
+	}
+	if (status == B_OK) {
+		diagnostics.shaderOffset = shaderBuffer->ggttOffset;
+		diagnostics.shaderPages = shaderBuffer->pageCount;
+		status = RecordInternalRenderBuffer(*shaderBuffer,
+			diagnostics.shaderPteBefore, diagnostics.shaderPteBound);
 	}
 	if (status == B_OK) {
 		mutex_unlock(&device.renderLock);
 		mutex_lock(&device.presentLock);
-		status = ExecuteRcsDiagnostic(device, *buffer, diagnostics);
+		status = ExecuteRcsDiagnostic(device, *buffer, *shaderBuffer,
+			diagnostics);
 		mutex_unlock(&device.presentLock);
 		mutex_lock(&device.renderLock);
 	}
 
+	status_t shaderCleanupStatus = DestroyInternalRenderBuffer(device,
+		shaderBuffer, diagnostics.shaderGgttRestoreStatus,
+		diagnostics.shaderPteAfter);
+	if ((diagnostics.flags & valleyview::kRcsShaderGgttBound) != 0
+		&& diagnostics.shaderGgttRestoreStatus == B_OK) {
+		diagnostics.flags |= valleyview::kRcsShaderGgttRestored;
+		if (diagnostics.shaderStage
+				>= valleyview::kRcsShaderStageOutputVerified
+			&& (diagnostics.flags & valleyview::kRcsShaderCacheRestored)
+				!= 0) {
+			diagnostics.shaderStage = valleyview::kRcsShaderStageRestored;
+		}
+	}
 	status_t cleanupStatus = DestroyInternalRenderBuffer(device, buffer,
 		diagnostics.ggttRestoreStatus, diagnostics.pteAfter);
 	if ((diagnostics.flags & valleyview::kRcsGgttBound) != 0
@@ -634,8 +685,14 @@ RunRcsDiagnostic(ValleyViewClient& client,
 		if (diagnostics.stage >= valleyview::kRcsStageOutputVerified)
 			diagnostics.stage = valleyview::kRcsStageRestored;
 	}
+	if (shaderCleanupStatus != B_OK)
+		status = shaderCleanupStatus;
 	if (cleanupStatus != B_OK)
 		status = cleanupStatus;
+	if (diagnostics.shaderStatus == B_NO_INIT)
+		diagnostics.shaderStatus = status;
+	else if (shaderCleanupStatus != B_OK)
+		diagnostics.shaderStatus = shaderCleanupStatus;
 
 	device.rcsTests++;
 	if (status == B_OK) {
