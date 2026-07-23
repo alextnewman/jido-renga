@@ -20,7 +20,10 @@ context per open client. It also has a kernel-generated BCS copy test, an RCS
 marker and EU/render-cache diagnostic, and parsed synchronous RCS submission
 through a private GGTT shadow and the client's PPGTT. It still returns
 `B_NOT_SUPPORTED` as its overall render status because completion fences,
-tiling, Crocus integration, and presentation are absent.
+tiling, Crocus winsys integration, and presentation are absent. The combined
+probe also reconstructs the exact Mesa 22.0.5 ValleyView linear triangle corpus
+and verifies its offscreen color, geometry, fence, and allocation guard; this
+remains a hardware candidate until the combined Winky gate passes.
 
 Keep the hardware renderer fail-closed. It may instantiate only when
 `IsRenderReady()` succeeds. Until then, Haiku's Software Pipe add-on remains
@@ -149,10 +152,10 @@ Do not request another flash for an intermediate register or command check.
 The combined output must retain pre-state, bound state, failure state, zero,
 sentinel, and unexpected counts, changed range, checksums, first unexpected
 value, guard mismatches, every shader PTE transition, cache modes,
-reset/restoration state, and P0 counters needed to diagnose a failed run
-offline. A hardware pass proves only the kernel-generated EU/render-cache
-workload. The `gfx_test8` Winky run hardware-validated the RCS marker and
-timestamp, EU shader/render-cache writes, `PIPE_CONTROL` completion, bounded
-reset, cache/ring/HWS/context and all 19 shader-PTE restorations, BCS operation,
-and P0 coexistence. It does not prove 3D rasterization or Crocus readiness and
-does not make `IsRenderReady()` true.
+reset/restoration state, raster color/coverage/interpolation, and P0 counters
+needed to diagnose a failed run offline. The `gfx_test8` Winky run
+hardware-validated the RCS marker and timestamp, EU shader/render-cache writes,
+`PIPE_CONTROL` completion, bounded reset, cache/ring/HWS/context and all 19
+shader-PTE restorations, BCS operation, and P0 coexistence. That historical run
+does not prove the newer 3D raster candidate or Crocus readiness and does not
+make `IsRenderReady()` true.

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // SPDX-FileContributor: Generated with GitHub Copilot
 
+#include <common/intel_valleyview/CrocusTriangleCore.h>
 #include <common/intel_valleyview/FirmwareState.h>
 #include <common/intel_valleyview/P0Core.h>
 #include <common/intel_valleyview/PpgttCore.h>
@@ -613,6 +614,126 @@ cleanup:
 
 
 status_t
+RunCrocusTriangleProbe(int device,
+	const valleyview::RenderContextCreate& context)
+{
+	valleyview::RenderBufferCreate buffers[valleyview::kCrocusTriangleBoCount]
+		= {};
+	valleyview::RenderBufferMap mappings[valleyview::kCrocusTriangleBoCount]
+		= {};
+	void* addresses[valleyview::kCrocusTriangleBoCount] = {};
+	uint32 renderAddresses[valleyview::kCrocusTriangleBoCount] = {};
+	size_t byteCounts[valleyview::kCrocusTriangleBoCount] = {};
+	status_t status = B_OK;
+
+	for (uint32 index = 0;
+			status == B_OK && index < valleyview::kCrocusTriangleBoCount;
+			index++) {
+		buffers[index].header
+			= valleyview::MakeRenderAbiHeader(sizeof(buffers[index]));
+		buffers[index].requestedSize
+			= valleyview::kCrocusTriangleBoSizes[index];
+		buffers[index].flags = valleyview::kRenderBufferCpuCached;
+		status = ioctl(device, valleyview::kRenderCreateBuffer,
+			&buffers[index], sizeof(buffers[index]));
+		if (status != B_OK)
+			break;
+		if (buffers[index].renderAddress > UINT32_MAX
+			|| !valleyview::ValidatePpgttVaRange(
+				buffers[index].renderAddress, buffers[index].size)) {
+			status = B_BAD_DATA;
+			break;
+		}
+
+		mappings[index].header
+			= valleyview::MakeRenderAbiHeader(sizeof(mappings[index]));
+		mappings[index].handle = buffers[index].handle;
+		mappings[index].area = -1;
+		status = ioctl(device, valleyview::kRenderMapBuffer,
+			&mappings[index], sizeof(mappings[index]));
+		if (status != B_OK)
+			break;
+		addresses[index] = reinterpret_cast<void*>(
+			static_cast<addr_t>(mappings[index].address));
+		renderAddresses[index]
+			= static_cast<uint32>(buffers[index].renderAddress);
+		byteCounts[index] = mappings[index].size;
+		if (!valleyview::InitializeCrocusTriangleBo(index, addresses[index],
+				byteCounts[index])) {
+			status = B_BAD_DATA;
+		}
+	}
+	if (status == B_OK
+		&& !valleyview::PatchCrocusTriangleRelocations(addresses,
+			renderAddresses, byteCounts, valleyview::kCrocusTriangleBoCount)) {
+		status = B_BAD_DATA;
+	}
+	__sync_synchronize();
+
+	valleyview::RenderSubmit submit = {};
+	if (status == B_OK) {
+		submit.header = valleyview::MakeRenderAbiHeader(sizeof(submit));
+		submit.contextHandle = context.handle;
+		submit.batchHandle
+			= buffers[valleyview::kCrocusTriangleCommandBo].handle;
+		submit.batchLength = valleyview::kCrocusTriangleBatchBytes;
+		submit.objectCount = valleyview::kCrocusTriangleBoCount;
+		for (uint32 index = 0;
+				index < valleyview::kCrocusTriangleBoCount; index++) {
+			submit.objectHandles[index] = buffers[index].handle;
+		}
+		status = ioctl(device, valleyview::kRenderSubmit, &submit,
+			sizeof(submit));
+		PrintRenderSubmit(submit);
+		if (status == B_OK && submit.status != B_OK)
+			status = submit.status;
+	}
+
+	__sync_synchronize();
+	valleyview::CrocusTriangleAnalysis analysis = {};
+	const bool rasterValid = addresses[valleyview::kCrocusTriangleTargetBo]
+			!= NULL
+		&& valleyview::AnalyzeCrocusTriangle(
+			static_cast<const uint32*>(
+				addresses[valleyview::kCrocusTriangleTargetBo]),
+			byteCounts[valleyview::kCrocusTriangleTargetBo], analysis);
+	uint32 fenceValue = 0;
+	if (addresses[valleyview::kCrocusTriangleFenceBo] != NULL) {
+		fenceValue = *static_cast<const uint32*>(
+			addresses[valleyview::kCrocusTriangleFenceBo]);
+	}
+	printf("crocus_triangle status=%" B_PRId32 " valid=%s"
+		" target=%" B_PRIu32 "/%#08" B_PRIx32 "/%" B_PRIu32
+		" visible_sentinel=%" B_PRIu32 " padding_bad=%" B_PRIu32
+		" opaque=%" B_PRIu32 " clear=%" B_PRIu32
+		" triangle=%" B_PRIu32 " rgb=%" B_PRIu32 "/%" B_PRIu32
+		"/%" B_PRIu32 " geometry=%" B_PRIu32
+		" interpolation=%" B_PRIu32 " fence=%#08" B_PRIx32
+		" checksum=%#016" B_PRIx64 "\n",
+		status, YesNo(rasterValid),
+		buffers[valleyview::kCrocusTriangleTargetBo].handle,
+		renderAddresses[valleyview::kCrocusTriangleTargetBo],
+		valleyview::kCrocusTriangleTargetBytes,
+		analysis.visibleSentinelPixels, analysis.paddingMismatchDwords,
+		analysis.opaquePixels, analysis.clearPixels, analysis.trianglePixels,
+		analysis.redPixels, analysis.greenPixels, analysis.bluePixels,
+		analysis.coverageRowsMatched, analysis.interpolationSamplesMatched,
+		fenceValue, analysis.checksum);
+	if (status == B_OK && (!rasterValid || fenceValue != 1))
+		status = B_BAD_DATA;
+
+	for (uint32 index = valleyview::kCrocusTriangleBoCount; index > 0;
+			index--) {
+		status_t closeStatus = CloseRenderBuffer(device,
+			buffers[index - 1].handle);
+		if (status == B_OK)
+			status = closeStatus;
+	}
+	return status;
+}
+
+
+status_t
 CloseRenderBuffer(int device, uint32 handle)
 {
 	if (handle == 0)
@@ -897,6 +1018,8 @@ RunRenderTransportProbe(int device)
 	}
 	if (submitStatus == B_OK)
 		submitStatus = submissionInfoStatus;
+	status_t rasterStatus = context.handle != 0
+		? RunCrocusTriangleProbe(device, context) : contextStatus;
 	status_t memoryStatus = context.handle != 0
 		? RunRenderMemoryProbe(device, true) : contextStatus;
 	status_t destroyStatus = DestroyRenderContextProbe(device, context);
@@ -925,11 +1048,11 @@ RunRenderTransportProbe(int device)
 	const bool p0Healthy = beforeStatus == B_OK && afterStatus == B_OK
 		&& P0TransportHealthy(before, after);
 	printf("render_transport info=%s context=%s released=%s memory=%s"
-		" rcs=%s submit=%s proven=%s p0=%s\n",
+		" rcs=%s submit=%s raster=%s proven=%s p0=%s\n",
 		YesNo(infoStatus == B_OK), YesNo(contextStatus == B_OK),
 		YesNo(contextReleased), YesNo(memoryStatus == B_OK),
 		YesNo(rcsStatus == B_OK), YesNo(submitStatus == B_OK),
-		YesNo(rcsProven), YesNo(p0Healthy));
+		YesNo(rasterStatus == B_OK), YesNo(rcsProven), YesNo(p0Healthy));
 
 	if (infoStatus != B_OK)
 		return infoStatus;
@@ -945,6 +1068,8 @@ RunRenderTransportProbe(int device)
 		return rcsStatus;
 	if (submitStatus != B_OK)
 		return submitStatus;
+	if (rasterStatus != B_OK)
+		return rasterStatus;
 	if (!rcsProven)
 		return afterInfoStatus == B_OK ? B_BAD_DATA : afterInfoStatus;
 	if (afterStatus != B_OK)

@@ -60,6 +60,7 @@ TEST_SRC := \
 	intel_valleyview/test_p0_core.cpp \
 	intel_valleyview/test_ppgtt_core.cpp \
 	intel_valleyview/test_protocol.cpp \
+	intel_valleyview/test_crocus_triangle_core.cpp \
 	intel_valleyview/test_rcs_core.cpp \
 	intel_valleyview/test_rcs_shader_core.cpp \
 	intel_valleyview/test_render_command_core.cpp \

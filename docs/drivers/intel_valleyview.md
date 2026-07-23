@@ -266,6 +266,31 @@ fault, or failed restoration is returned in the submission record with before,
 active, fault, and after snapshots. Any memory that might remain referenced is
 quarantined without further PTE or GGTT mutation.
 
+### Crocus raster candidate
+
+The combined probe carries the exact Mesa 22.0.5 Crocus render corpus generated
+for ValleyView PCI `0x0f31` from Gallium's triangle test. The target is forced
+linear: 300x300 B8G8R8A8, 1200-byte stride, and a 384 KiB allocation. The corpus
+contains the real clear and triangle VS/PS kernels, state, workaround data,
+vertex data, 2,036-byte command stream, seven BO roles, fourteen command
+relocations, and two surface-state relocations. Host tests reconstruct every BO
+at synthetic PPGTT addresses and parse the complete relocated batch.
+
+After the immutable-shadow bootstrap succeeds,
+`intel_valleyview_probe --render-transport-test` creates the seven real client
+BOs, patches only the recorded Crocus relocations to their assigned PPGTT
+addresses, submits all three `3DPRIMITIVE` packets, and checks both Crocus's
+PPGTT fence write and trusted kernel completion. The render target begins as a
+sentinel. Verification requires all 90,000 visible pixels to become opaque,
+roughly 36,000 pixels to carry interpolated triangle color, red/green/blue
+vertex regions, triangle edge positions and widths at six rows, representative
+interpolation samples, and an untouched 8,304-dword allocation guard. The
+checksum and every count remain in probe output for offline diagnosis.
+
+This is a host-validated hardware candidate, not hardware proof. It does not
+install a Crocus screen, present the target, or change the fail-closed
+`IsRenderReady()` result.
+
 `intel_valleyview_probe --render-memory-test` creates two client-owned buffers,
 clones both into the process, writes coordinate-dependent source and destination
 patterns, confirms that userspace cannot delete the driver-owned mappings,
@@ -321,10 +346,11 @@ coexistence. This is not evidence of 3D rasterization or Crocus readiness.
 It runs render discovery and the kernel RCS diagnostic, creates a PPGTT context,
 verifies the executable capability boundary, rejects a duplicate context,
 submits a parsed one-dword `MI_BATCH_BUFFER_END` through the isolated transport,
-validates PPGTT addresses while exercising mapping ownership and the BCS memory
-copy, closes the buffers, destroys the context, captures P0 again, and prints
-one summary. Failure output retains the RCS diagnostic plus submission parser,
-object, workspace, completion, L3, global GT, ring, `PP_DIR`, reset,
+submits and verifies the Crocus triangle corpus, validates PPGTT addresses while
+exercising mapping ownership and the BCS memory copy, closes the buffers,
+destroys the context, captures P0 again, and prints one summary. Failure output
+retains the RCS diagnostic plus submission parser, object, workspace,
+completion, raster geometry/color/guard, L3, global GT, ring, `PP_DIR`, reset,
 restoration, and P0 state needed for offline diagnosis.
 
 ## Current support
