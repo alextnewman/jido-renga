@@ -31,7 +31,7 @@ JR_TEST(intel_valleyview, defaults_to_the_safe_disabled_policy)
 
 JR_TEST(intel_valleyview, validates_versioned_abi_headers_exactly)
 {
-	JR_CHECK_EQ(kProtocolVersion, 13u);
+	JR_CHECK_EQ(kProtocolVersion, 14u);
 	const AbiHeader valid = MakeAbiHeader(sizeof(DriverStatus));
 	JR_CHECK(IsValidAbiHeader(valid, sizeof(DriverStatus)));
 
@@ -82,6 +82,7 @@ JR_TEST(intel_valleyview, assigns_stable_private_operations)
 	JR_CHECK_EQ(kRunRcsDiagnostic, 10027);
 	JR_CHECK_EQ(kRenderCreateContext, 10028);
 	JR_CHECK_EQ(kRenderDestroyContext, 10029);
+	JR_CHECK_EQ(kRenderSubmit, 10030);
 	JR_CHECK_NE(kGetDeviceName, kGetDriverStatus);
 	JR_CHECK_NE(kGetDriverStatus, kGetDeviceIdentity);
 }

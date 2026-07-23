@@ -167,12 +167,11 @@ between engines proven by kernel diagnostics and engines available for
 userspace submission.
 
 The current render status remains deliberately `B_NOT_SUPPORTED`.
-`IsRenderReady()` additionally requires tiled buffers, executable render
-contexts, isolated RCS submission, completion fences, command isolation, reset
-recovery as a service, and drawable presentation. A hardware OpenGL add-on
-therefore cannot mistake the software PPGTT context or kernel-owned diagnostics
-for a complete Crocus transport. The image continues to use Mesa's Software
-Pipe OpenGL add-on.
+`IsRenderReady()` additionally requires tiled buffers, completion fences, and
+drawable presentation beyond the executable isolated RCS transport. A hardware
+OpenGL add-on therefore cannot mistake synchronous kernel submission for a
+complete Crocus transport. The image continues to use Mesa's Software Pipe
+OpenGL add-on.
 
 `intel_valleyview_probe --render-info` prints this boundary without attempting
 submission or changing GPU state.
@@ -196,8 +195,8 @@ Current buffers are linear, write-back CPU mappings with snooped GGTT entries.
 Mappings are non-transferable kernel areas revoked when their handle or client
 closes. Teardown detaches every inherited clone from the backing cache before
 releasing BO accounting, so forked mappings cannot retain pinned pages. Their
-tracked domains are CPU and the kernel-owned BCS. BCS submission remains
-synchronous under `bcsLock`; userspace cannot provide commands.
+tracked domains are CPU, the kernel-owned BCS, and synchronous RCS ownership.
+BCS submission remains kernel-generated under `bcsLock`.
 
 ### Per-client PPGTT substrate
 
@@ -224,10 +223,48 @@ PTEs to scratch before releasing its GGTT binding or backing. Context destroy
 restores every BO mapping, verifies and restores the directory's GGTT entries,
 then releases the directory, scratch, and bitmap. Any restoration that cannot
 be proven quarantines the potentially referenced memory and disables render
-work. Context creation does not program RCS, accept commands, or advertise
-render-context or submission capabilities. The scratch restoration model
-follows Linux i915 `gt/gen6_ppgtt.c`; cache-line completion follows its
-`gt/intel_gtt.c` page-table fill path.
+work. Quarantined PPGTT resources are never rewritten or unbound during client
+teardown. The scratch restoration model follows Linux i915
+`gt/gen6_ppgtt.c`; cache-line completion follows its `gt/intel_gtt.c`
+page-table fill path.
+
+### Synchronous isolated RCS submission
+
+After the kernel RCS diagnostic has proven the engine, a healthy PPGTT context
+advertises executable render contexts, command isolation, and reset recovery.
+Before the new address-space path is proven, the ioctl accepts only a
+one-dword `MI_BATCH_BUFFER_END` bootstrap. Successful completion and full
+restoration of that immutable-shadow transaction enable synchronous RCS
+submission and add RCS to `submissionEngines`. A normal submission names its
+context, one batch BO, a dword-aligned batch range of at most 64 KiB, and a
+fixed inline list of up to 64 unique client BO handles. The batch must be in the
+list. Every listed BO must be CPU-owned, healthy, and mapped in that client's
+PPGTT.
+
+The kernel copies the range into a private 19-page GGTT workspace before
+parsing it, so later CPU writes cannot change the accepted command stream.
+The strict Gen7 parser rejects unknown commands, nested batches, BLT commands,
+unapproved LRI pairs, global-GTT or MMIO `PIPE_CONTROL` writes, malformed
+lengths, and nonzero data after `MI_BATCH_BUFFER_END`. State and resource
+pointers still resolve only through the client's scratch-backed PPGTT.
+
+The accepted shadow is dispatched with a privileged bare
+`MI_BATCH_BUFFER_START`. On SNB/IVB/VLV, the nominal non-secure bit also selects
+PPGTT once PPGTT is enabled, so setting it would fetch from a mutable client
+address rather than the immutable GGTT shadow. The parser is therefore the
+privilege boundary, following Linux i915's Gen6/7 shadow-parser model. The
+workspace is not mapped into the client PPGTT, and the trusted ring writes its
+timestamp and completion marker through GGTT. Client commands cannot forge
+retirement or modify the shadow.
+
+Submission freezes presentation, programs the client's 2 GiB `PP_DIR`, enables
+legacy RCS PPGTT, flushes the TLB, and waits synchronously for the trusted
+completion marker. Every started submission resets RCS, restores and verifies
+the original ring, HWS, mode, `PP_DIR`, L3 registers, `INSTPM`, wake state,
+display signature, and BCS state, then restores BO ownership to CPU. A timeout,
+fault, or failed restoration is returned in the submission record with before,
+active, fault, and after snapshots. Any memory that might remain referenced is
+quarantined without further PTE or GGTT mutation.
 
 `intel_valleyview_probe --render-memory-test` creates two client-owned buffers,
 clones both into the process, writes coordinate-dependent source and destination
@@ -270,24 +307,25 @@ page-directory state, and both hidden GGTT allocations, flushes the TLB again,
 and verifies the complete restoration. Unsafe restoration quarantines both
 buffers and fails all further render work closed.
 
-A successful diagnostic adds RCS to `provenEngines`; it does not add RCS to
-`submissionEngines` or expose user commands, contexts, isolated RCS submission,
-completion fences, reset recovery as a service, tiling, or presentation. When
-hardware passes, it proves only this kernel-generated EU/render-cache workload.
+A successful diagnostic adds RCS to `provenEngines` and permits the isolated
+one-dword submission bootstrap; it does not itself add RCS to
+`submissionEngines`. When hardware passes, it proves only this kernel-generated
+EU/render-cache workload, not the separate PPGTT dispatch, completion fences,
+tiling, or presentation.
 The `gfx_test8` Winky run hardware-validated the RCS marker and timestamp, EU
 shader/render-cache writes, `PIPE_CONTROL` completion, bounded reset,
 cache/ring/HWS/context and all 19 shader-PTE restorations, BCS operation, and P0
 coexistence. This is not evidence of 3D rasterization or Crocus readiness.
 
 `intel_valleyview_probe --render-transport-test` is the combined hardware gate.
-It runs render discovery, captures P0 state, creates a PPGTT context, prints its
-handle and `PP_DIR`, validates PPGTT addresses while exercising mapping
-ownership and the BCS memory copy, closes the buffers, destroys the context,
-runs the RCS diagnostic, captures P0 again, and prints one summary. Failure
-output retains all RCS stages, command addresses, marker
-values, timestamps, shader verification counts and checksums, guard state,
-every shader PTE transition, cache modes, ring/context registers, restoration
-status, and P0 counters needed for offline diagnosis.
+It runs render discovery and the kernel RCS diagnostic, creates a PPGTT context,
+verifies the executable capability boundary, rejects a duplicate context,
+submits a parsed one-dword `MI_BATCH_BUFFER_END` through the isolated transport,
+validates PPGTT addresses while exercising mapping ownership and the BCS memory
+copy, closes the buffers, destroys the context, captures P0 again, and prints
+one summary. Failure output retains the RCS diagnostic plus submission parser,
+object, workspace, completion, L3, global GT, ring, `PP_DIR`, reset,
+restoration, and P0 state needed for offline diagnosis.
 
 ## Current support
 

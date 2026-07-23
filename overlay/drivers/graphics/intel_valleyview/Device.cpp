@@ -493,8 +493,22 @@ Control(void* cookie, uint32 operation, void* buffer, size_t length)
 						| valleyview::kRenderCapabilityCpuMappings
 						| valleyview::kRenderCapabilityGpuAddressSpaces
 						| valleyview::kRenderCapabilityCacheDomains;
-				if (client->ppgtt.ready && !client->ppgtt.quarantined)
+				if (device->rcsReady) {
+					info.capabilities
+						|= valleyview::kRenderCapabilityRenderContexts
+							| valleyview::kRenderCapabilityCommandIsolation
+							| valleyview::kRenderCapabilityResetRecovery;
+				}
+				if (client->ppgtt.ready && !client->ppgtt.quarantined) {
 					info.capabilities |= valleyview::kRenderCapabilityPpgtt;
+					if (device->rcsReady
+						&& device->rcsSubmissionReady) {
+						info.capabilities
+							|= valleyview::kRenderCapabilityRcsSubmission;
+						info.submissionEngines
+							|= valleyview::kRenderEngineRcs;
+					}
+				}
 			}
 			mutex_lock(&device->bcsLock);
 			if (device->bcsReady)
@@ -562,6 +576,27 @@ Control(void* cookie, uint32 operation, void* buffer, size_t length)
 			}
 
 			status = DestroyRenderContext(*client, request);
+			status_t copyStatus = user_memcpy(buffer, &request,
+				sizeof(request));
+			return copyStatus == B_OK ? status : copyStatus;
+		}
+
+		case valleyview::kRenderSubmit:
+		{
+			if (buffer == NULL
+				|| length < sizeof(valleyview::RenderSubmit)) {
+				return B_BAD_VALUE;
+			}
+			valleyview::RenderSubmit request;
+			status_t status = user_memcpy(&request, buffer, sizeof(request));
+			if (status != B_OK)
+				return status;
+			if (!valleyview::IsValidRenderAbiHeader(request.header,
+					sizeof(request))) {
+				return B_BAD_VALUE;
+			}
+
+			status = SubmitRenderCommands(*client, request);
 			status_t copyStatus = user_memcpy(buffer, &request,
 				sizeof(request));
 			return copyStatus == B_OK ? status : copyStatus;

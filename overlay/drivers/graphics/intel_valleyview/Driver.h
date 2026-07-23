@@ -85,6 +85,7 @@ struct ValleyViewDevice {
 	bool						nativeActive;
 	bool						bcsReady;
 	bool						rcsReady;
+	bool						rcsSubmissionReady;
 	bool						cursorReady;
 	bool						softBlanked;
 	bool						cursorVisible;
@@ -165,7 +166,10 @@ struct ValleyViewDevice {
 	uint64						rcsTests;
 	uint64						rcsFailures;
 	uint64						rcsResets;
+	uint64						rcsSubmissions;
+	uint64						rcsSubmissionFailures;
 	uint32						bcsSequence;
+	uint32						rcsSubmitSequence;
 	valleyview::FirmwareSnapshot	snapshot;
 };
 
@@ -212,6 +216,8 @@ status_t CreateRenderContext(ValleyViewClient& client,
 	valleyview::RenderContextCreate& request);
 status_t DestroyRenderContext(ValleyViewClient& client,
 	valleyview::RenderContextDestroy& request);
+status_t SubmitRenderCommands(ValleyViewClient& client,
+	valleyview::RenderSubmit& submit);
 status_t MapRenderBuffer(ValleyViewClient& client,
 	valleyview::RenderBufferMap& request);
 status_t DiscardRenderBufferMapping(ValleyViewClient& client, uint32 handle,
@@ -233,5 +239,8 @@ status_t SubmitRenderBcsCopy(ValleyViewDevice& device, uint32 sourceOffset,
 status_t ExecuteRcsDiagnostic(ValleyViewDevice& device,
 	ValleyViewRenderBuffer& buffer, ValleyViewRenderBuffer& shaderBuffer,
 	valleyview::RcsDiagnostic& diagnostics);
+status_t ExecuteRcsSubmission(ValleyViewDevice& device,
+	ValleyViewRenderBuffer& workspace, uint32 ppDirBase,
+	valleyview::RenderSubmit& submit);
 
 #endif

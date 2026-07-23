@@ -65,6 +65,7 @@ TEST_SRC := \
 	intel_valleyview/test_render_command_core.cpp \
 	intel_valleyview/test_render_memory_core.cpp \
 	intel_valleyview/test_render_protocol.cpp \
+	intel_valleyview/test_render_submit_core.cpp \
 	i2c_atmel_mxt/test_object_table.cpp \
 	i2c_atmel_mxt/test_message_protocol.cpp \
 	i2c_atmel_mxt/test_touch_engine.cpp \

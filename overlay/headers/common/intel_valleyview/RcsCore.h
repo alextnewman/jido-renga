@@ -33,6 +33,9 @@ constexpr uint32 kRcsRingTimestamp = kRcsRingBase + 0x358;
 constexpr uint32 kRcsRingContextStatus = kRcsRingBase + 0x3a0;
 constexpr uint32 kRcsRingHws = 0x04080;
 constexpr uint32 kRcsRingFault = 0x04094;
+constexpr uint32 kRcsL3SqcReg1 = 0x0b010;
+constexpr uint32 kRcsL3Control2 = 0x0b020;
+constexpr uint32 kRcsL3Control3 = 0x0b024;
 
 constexpr uint32 kGen6ResetRender = 1u << 1;
 constexpr uint32 kRcsCcidEnable = 1u << 0;
@@ -60,6 +63,17 @@ constexpr uint32 kRcsBatchMarker = 0x52435342;
 constexpr uint32 kRcsCompletionMarker = 0x52435343;
 constexpr uint32 kRcsShaderCompletionMarker = 0x52435345;
 constexpr uint32 kRcsResultSentinel = 0xa55a3cc3;
+constexpr uint32 kRcsSubmitMarkerBase = 0x53000000;
+
+constexpr uint32 kRcsSubmitRingPage = 0;
+constexpr uint32 kRcsSubmitStatusPage = 1;
+constexpr uint32 kRcsSubmitResultPage = 2;
+constexpr uint32 kRcsSubmitBatchPage = 3;
+constexpr uint32 kRcsSubmitBatchPages = 16;
+constexpr uint32 kRcsSubmitWorkspacePages
+	= kRcsSubmitBatchPage + kRcsSubmitBatchPages;
+constexpr uint32 kRcsSubmitWorkspaceBytes
+	= kRcsSubmitWorkspacePages * kPageSize;
 
 constexpr uint32 kRcsCompletionFlags
 	= kPipeControlDepthCacheFlush
@@ -73,6 +87,7 @@ constexpr uint32 kRcsCompletionFlags
 constexpr size_t kRcsBatchCommandCount = 6;
 constexpr size_t kRcsRingCommandCount = 10;
 constexpr size_t kRcsCombinedRingCommandCount = 12;
+constexpr size_t kRcsSubmitRingCommandCount = 10;
 
 
 struct RcsRegisterSnapshot {
@@ -240,6 +255,33 @@ BuildRcsCombinedDiagnosticRing(uint32* commands, size_t capacity,
 	commands[11] = kMiNoop;
 	return kRcsCombinedRingCommandCount;
 }
+
+
+inline size_t
+BuildRcsSubmitRing(uint32* commands, size_t capacity, uint32 batchOffset,
+	uint32 resultOffset, uint32 completionMarker)
+{
+	if (commands == NULL || capacity < kRcsSubmitRingCommandCount
+		|| (batchOffset & kPageMask) != 0
+		|| (resultOffset & kPageMask) != 0
+		|| resultOffset > UINT32_MAX - kRcsCompletionOffset
+		|| completionMarker == 0) {
+		return 0;
+	}
+
+	commands[0] = kMiBatchBufferStart;
+	commands[1] = batchOffset;
+	commands[2] = kMiStoreRegisterMem | kMiUseGgtt;
+	commands[3] = kRcsRingTimestamp;
+	commands[4] = resultOffset + kRcsTimestampOffset;
+	commands[5] = kGen7PipeControl;
+	commands[6] = kRcsCompletionFlags;
+	commands[7] = resultOffset + kRcsCompletionOffset;
+	commands[8] = completionMarker;
+	commands[9] = kMiNoop;
+	return kRcsSubmitRingCommandCount;
+}
+
 
 } // namespace valleyview
 

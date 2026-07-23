@@ -16,12 +16,11 @@ modify the captive `haiku/` or `buildtools/` submodules.
 versioned separately from the display protocol. The current driver implements
 linear buffer objects, driver-owned CPU mappings, dynamic GGTT bindings,
 coherent CPU/BCS domain transitions, and one scratch-backed 2 GiB Gen7 PPGTT
-software context per open client. It also has a kernel-generated BCS copy test
-and RCS marker and EU/render-cache diagnostic. It still returns
-`B_NOT_SUPPORTED` as its overall render status. The PPGTT context assigns stable
-per-client virtual addresses but is not an executable RCS context. The driver
-exposes no user commands, isolated RCS submission, completion fences, reset
-recovery as a service, tiling, or presentation.
+context per open client. It also has a kernel-generated BCS copy test, an RCS
+marker and EU/render-cache diagnostic, and parsed synchronous RCS submission
+through a private GGTT shadow and the client's PPGTT. It still returns
+`B_NOT_SUPPORTED` as its overall render status because completion fences,
+tiling, Crocus integration, and presentation are absent.
 
 Keep the hardware renderer fail-closed. It may instantiate only when
 `IsRenderReady()` succeeds. Until then, Haiku's Software Pipe add-on remains
@@ -29,8 +28,8 @@ the functional renderer.
 
 ## Required transport
 
-Do not expose raw RCS batches as an intermediate shortcut. Hardware rendering
-requires all capabilities named by `kRenderRequiredCapabilities`:
+Do not execute mutable, unparsed, or globally addressed user batches. Hardware
+rendering requires all capabilities named by `kRenderRequiredCapabilities`:
 
 1. per-open buffer-object ownership and deterministic cleanup;
 2. driver-owned CPU mappings with an explicit cache policy and bounded lifetime;
@@ -73,6 +72,18 @@ bitmap-owned PTEs and are restored to scratch before BO backing or context
 resources are released. PPGTT table writes require bounded `clflush` followed
 by `mfence`. Failed PTE or GGTT restoration quarantines the referenced memory
 and fails render work closed.
+Once quarantined, PPGTT PTEs, directory GGTT entries, and backing pages must
+remain untouched during handle, context, and client teardown.
+
+Synchronous submission copies at most 64 KiB into a kernel-owned GGTT shadow
+before parsing. On SNB/IVB/VLV, do not set `MI_BATCH_NON_SECURE_I965` for that
+dispatch: with PPGTT enabled the bit selects PPGTT and defeats the immutable
+shadow. Use the privileged bare batch start only after strict parsing. Keep the
+shadow and trusted completion outside the client PPGTT, reset RCS after every
+started submission, and verify restoration before returning BOs to CPU.
+Do not advertise RCS submission until the immutable-shadow
+`MI_BATCH_BUFFER_END` bootstrap has itself completed and restored successfully;
+before that proof, reject every other user batch.
 
 User mappings must be `B_KERNEL_AREA` clones owned by the driver. Do not expose
 cloneable backing-area IDs. Before releasing BO accounting, detach every
@@ -95,9 +106,10 @@ Use the local `research/linux` tree first for i915 reference behavior. Keep
 derived code MIT-licensed and record the specific upstream source in current
 implementation documentation.
 
-Kernel shader batches that contain privileged LRI commands are secure,
-kernel-generated diagnostics only. Never accept equivalent commands from
-userspace or treat the diagnostic as isolated RCS submission.
+Kernel shader diagnostics remain distinct from submission. User LRI commands
+are accepted only from the exact host-tested Crocus corpus and only after the
+kernel has copied and parsed the complete batch; all other register/value pairs
+fail closed.
 
 Diagnostic pipeline, state-base, media, and cache changes require a bounded RCS
 reset after every attempt. Then restore and verify cache modes, HWS, ring,

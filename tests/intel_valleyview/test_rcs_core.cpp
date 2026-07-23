@@ -128,6 +128,35 @@ JR_TEST(intel_valleyview_rcs, builds_a_batch_chain_and_completion)
 }
 
 
+JR_TEST(intel_valleyview_rcs, builds_an_isolated_ggtt_shadow_submission)
+{
+	uint32 commands[kRcsSubmitRingCommandCount] = {};
+	const uint32 batch = 0x00203000;
+	const uint32 result = 0x00202000;
+	const uint32 marker = kRcsSubmitMarkerBase | 7;
+	JR_CHECK_EQ(BuildRcsSubmitRing(commands, kRcsSubmitRingCommandCount,
+		batch, result, marker), kRcsSubmitRingCommandCount);
+	JR_CHECK_EQ(commands[0], kMiBatchBufferStart);
+	JR_CHECK_EQ(commands[1], batch);
+	JR_CHECK_EQ(commands[2], kMiStoreRegisterMem | kMiUseGgtt);
+	JR_CHECK_EQ(commands[4], result + kRcsTimestampOffset);
+	JR_CHECK_EQ(commands[5], kGen7PipeControl);
+	JR_CHECK_EQ(commands[6], kRcsCompletionFlags);
+	JR_CHECK_EQ(commands[7], result + kRcsCompletionOffset);
+	JR_CHECK_EQ(commands[8], marker);
+	JR_CHECK_EQ(commands[9], kMiNoop);
+
+	JR_CHECK_EQ(BuildRcsSubmitRing(NULL, kRcsSubmitRingCommandCount,
+		batch, result, marker), 0u);
+	JR_CHECK_EQ(BuildRcsSubmitRing(commands, kRcsSubmitRingCommandCount - 1,
+		batch, result, marker), 0u);
+	JR_CHECK_EQ(BuildRcsSubmitRing(commands, kRcsSubmitRingCommandCount,
+		batch + 4, result, marker), 0u);
+	JR_CHECK_EQ(BuildRcsSubmitRing(commands, kRcsSubmitRingCommandCount,
+		batch, result, 0), 0u);
+}
+
+
 JR_TEST(intel_valleyview_rcs, builds_the_combined_shader_chain)
 {
 	uint32 commands[kRcsCombinedRingCommandCount] = {};

@@ -11,7 +11,8 @@
 namespace valleyview {
 
 constexpr uint32 kRenderProtocolMagic = 0x564c5652;
-constexpr uint16 kRenderProtocolVersion = 5;
+constexpr uint16 kRenderProtocolVersion = 6;
+constexpr uint32 kRenderSubmitMaxObjects = 64;
 
 enum RenderDeviceFlag : uint32 {
 	kRenderDeviceGgtt = 1u << 0,
@@ -153,6 +154,84 @@ struct RenderBufferSetDomain {
 	RenderBufferDomain previousDomain;
 	uint32			reserved;
 };
+
+
+enum RenderSubmitStage : uint32 {
+	kRenderSubmitStageNone = 0,
+	kRenderSubmitStageBatchCopied,
+	kRenderSubmitStageBatchParsed,
+	kRenderSubmitStageObjectsOwned,
+	kRenderSubmitStageWorkspaceBound,
+	kRenderSubmitStageSnapshot,
+	kRenderSubmitStagePpgttProgrammed,
+	kRenderSubmitStageRingStarted,
+	kRenderSubmitStageCompleted,
+	kRenderSubmitStageRestored
+};
+
+enum RenderSubmitDiagnosticFlag : uint32 {
+	kRenderSubmitBatchCopied = 1u << 0,
+	kRenderSubmitBatchAccepted = 1u << 1,
+	kRenderSubmitObjectsOwned = 1u << 2,
+	kRenderSubmitWorkspaceBound = 1u << 3,
+	kRenderSubmitSnapshotCaptured = 1u << 4,
+	kRenderSubmitForcewakeAcquired = 1u << 5,
+	kRenderSubmitRingAvailable = 1u << 6,
+	kRenderSubmitPpgttProgrammed = 1u << 7,
+	kRenderSubmitTlbFlushed = 1u << 8,
+	kRenderSubmitRingStarted = 1u << 9,
+	kRenderSubmitCompletionVerified = 1u << 10,
+	kRenderSubmitFaultCaptured = 1u << 11,
+	kRenderSubmitResetPerformed = 1u << 12,
+	kRenderSubmitRingRestored = 1u << 13,
+	kRenderSubmitCacheRestored = 1u << 14,
+	kRenderSubmitWorkspaceRestored = 1u << 15,
+	kRenderSubmitDisplayUnchanged = 1u << 16,
+	kRenderSubmitBcsUnchanged = 1u << 17
+};
+
+struct RenderSubmit {
+	RenderAbiHeader	header;
+	uint32			submitFlags;
+	uint32			diagnosticFlags;
+	uint32			contextHandle;
+	uint32			batchHandle;
+	uint32			batchOffset;
+	uint32			batchLength;
+	uint32			objectCount;
+	uint32			objectHandles[kRenderSubmitMaxObjects];
+	uint32			sequence;
+	int32			status;
+	RenderSubmitStage stage;
+	uint32			workspaceOffset;
+	uint32			workspacePages;
+	uint32			ringTailBytes;
+	uint32			completionMarker;
+	uint32			observedCompletionMarker;
+	uint32			parserReason;
+	uint32			parserFailingOffset;
+	uint32			parserFailingDword;
+	uint32			parsedCommandCount;
+	uint32			lriRegisterCount;
+	uint32			pipeControlCount;
+	uint32			primitiveCount;
+	int32			resetStatus;
+	int32			ringRestoreStatus;
+	int32			cacheRestoreStatus;
+	int32			forcewakeReleaseStatus;
+	int32			wakeRestoreStatus;
+	uint64			elapsedUs;
+	uint32			l3Before[3];
+	uint32			l3After[3];
+	GpuRegisterSnapshot globalBefore;
+	GpuRegisterSnapshot globalFault;
+	GpuRegisterSnapshot globalAfter;
+	RcsRegisterSnapshot before;
+	RcsRegisterSnapshot active;
+	RcsRegisterSnapshot fault;
+	RcsRegisterSnapshot after;
+};
+
 
 struct RenderMemoryTest {
 	RenderAbiHeader		header;

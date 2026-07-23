@@ -503,6 +503,115 @@ RunRcsProbe(int device)
 }
 
 
+status_t CloseRenderBuffer(int device, uint32 handle);
+
+
+void
+PrintRenderSubmit(const valleyview::RenderSubmit& submit)
+{
+	printf("render_submit status=%" B_PRId32 " stage=%u flags=%#08"
+		B_PRIx32 " context=%" B_PRIu32 " batch=%" B_PRIu32
+		"/%#" B_PRIx32 "+%" B_PRIu32 " objects=%" B_PRIu32
+		" sequence=%" B_PRIu32 " workspace=%#08" B_PRIx32 "/%"
+		B_PRIu32 " elapsed_us=%" B_PRIu64 "\n",
+		submit.status, submit.stage, submit.diagnosticFlags,
+		submit.contextHandle, submit.batchHandle, submit.batchOffset,
+		submit.batchLength, submit.objectCount, submit.sequence,
+		submit.workspaceOffset, submit.workspacePages, submit.elapsedUs);
+	printf("render_submit_parser reason=%u fail=%#08" B_PRIx32 "/%#08"
+		B_PRIx32 " commands=%" B_PRIu32 " lri=%" B_PRIu32
+		" pipe_control=%" B_PRIu32 " primitive=%" B_PRIu32 "\n",
+		submit.parserReason, submit.parserFailingOffset,
+		submit.parserFailingDword, submit.parsedCommandCount,
+		submit.lriRegisterCount, submit.pipeControlCount,
+		submit.primitiveCount);
+	printf("render_submit_completion marker=%#08" B_PRIx32 "/%#08"
+		B_PRIx32 " ring_tail=%" B_PRIu32 " reset=%" B_PRId32
+		" ring_restore=%" B_PRId32 " cache_restore=%" B_PRId32
+		" forcewake_release=%" B_PRId32 " wake_restore=%" B_PRId32 "\n",
+		submit.completionMarker, submit.observedCompletionMarker,
+		submit.ringTailBytes, submit.resetStatus, submit.ringRestoreStatus,
+		submit.cacheRestoreStatus, submit.forcewakeReleaseStatus,
+		submit.wakeRestoreStatus);
+	printf("render_submit_l3 before=%#08" B_PRIx32 "/%#08" B_PRIx32
+		"/%#08" B_PRIx32 " after=%#08" B_PRIx32 "/%#08" B_PRIx32
+		"/%#08" B_PRIx32 "\n",
+		submit.l3Before[0], submit.l3Before[1], submit.l3Before[2],
+		submit.l3After[0], submit.l3After[1], submit.l3After[2]);
+	PrintGpuRegisterSnapshot("render_submit_global_before",
+		submit.globalBefore);
+	PrintRcsRegisterSnapshot("render_submit_before", submit.before);
+	PrintRcsRegisterSnapshot("render_submit_active", submit.active);
+	if ((submit.diagnosticFlags
+			& valleyview::kRenderSubmitFaultCaptured) != 0) {
+		PrintGpuRegisterSnapshot("render_submit_global_fault",
+			submit.globalFault);
+		PrintRcsRegisterSnapshot("render_submit_fault", submit.fault);
+	}
+	PrintRcsRegisterSnapshot("render_submit_after", submit.after);
+	PrintGpuRegisterSnapshot("render_submit_global_after",
+		submit.globalAfter);
+}
+
+
+status_t
+RunRcsSubmissionProbe(int device,
+	const valleyview::RenderContextCreate& context)
+{
+	valleyview::RenderBufferCreate batch = {};
+	batch.header = valleyview::MakeRenderAbiHeader(sizeof(batch));
+	batch.requestedSize = valleyview::kPageSize;
+	batch.flags = valleyview::kRenderBufferCpuCached;
+	status_t status = ioctl(device, valleyview::kRenderCreateBuffer, &batch,
+		sizeof(batch));
+	if (status != B_OK)
+		return status;
+
+	valleyview::RenderBufferMap mapping = {};
+	mapping.header = valleyview::MakeRenderAbiHeader(sizeof(mapping));
+	mapping.handle = batch.handle;
+	status = ioctl(device, valleyview::kRenderMapBuffer, &mapping,
+		sizeof(mapping));
+	if (status != B_OK)
+		goto cleanup;
+	if (mapping.address == 0
+		|| !valleyview::ValidatePpgttVaRange(batch.renderAddress, batch.size)) {
+		status = B_BAD_DATA;
+		goto cleanup;
+	}
+
+	{
+		uint32* commands = reinterpret_cast<uint32*>(
+			static_cast<addr_t>(mapping.address));
+		commands[0] = valleyview::kMiBatchBufferEnd;
+		__sync_synchronize();
+	}
+
+	{
+		valleyview::RenderSubmit submit = {};
+		submit.header = valleyview::MakeRenderAbiHeader(sizeof(submit));
+		submit.contextHandle = context.handle;
+		submit.batchHandle = batch.handle;
+		submit.batchLength = sizeof(uint32);
+		submit.objectCount = 1;
+		submit.objectHandles[0] = batch.handle;
+		status = ioctl(device, valleyview::kRenderSubmit, &submit,
+			sizeof(submit));
+		PrintRenderSubmit(submit);
+		if (status == B_OK && submit.status != B_OK)
+			status = submit.status;
+	}
+
+cleanup:
+	{
+		status_t closeStatus = CloseRenderBuffer(device, batch.handle);
+		if (status == B_OK)
+			status = closeStatus;
+	}
+	return status;
+}
+
+
 status_t
 CloseRenderBuffer(int device, uint32 handle)
 {
@@ -740,22 +849,28 @@ RunRenderTransportProbe(int device)
 		PrintP0Status(before);
 	}
 
+	status_t rcsStatus = infoStatus == B_OK ? RunRcsProbe(device) : infoStatus;
 	valleyview::RenderContextCreate context = {};
-	status_t contextStatus = infoStatus == B_OK
-		? CreateRenderContextProbe(device, context) : infoStatus;
+	status_t contextStatus = rcsStatus == B_OK
+		? CreateRenderContextProbe(device, context) : rcsStatus;
 	valleyview::RenderDeviceInfo contextInfo = {};
 	if (contextStatus == B_OK) {
 		status_t status = ReadRenderDeviceInfo(device, contextInfo);
 		if (status == B_OK) {
 			printf("render_transport phase=context_ready\n");
 			PrintRenderDeviceInfo(contextInfo);
-			if ((contextInfo.capabilities
-					& valleyview::kRenderCapabilityPpgtt) == 0
+			const uint64 required
+				= valleyview::kRenderCapabilityPpgtt
+					| valleyview::kRenderCapabilityRenderContexts
+					| valleyview::kRenderCapabilityCommandIsolation
+					| valleyview::kRenderCapabilityResetRecovery;
+			if ((contextInfo.capabilities & required) != required
 				|| (contextInfo.capabilities
-					& (valleyview::kRenderCapabilityRenderContexts
-						| valleyview::kRenderCapabilityRcsSubmission)) != 0
-				|| (contextInfo.submissionEngines
-					& valleyview::kRenderEngineRcs) != 0) {
+					& valleyview::kRenderCapabilityCompletionFences) != 0
+				|| (((contextInfo.capabilities
+						& valleyview::kRenderCapabilityRcsSubmission) != 0)
+					!= ((contextInfo.submissionEngines
+						& valleyview::kRenderEngineRcs) != 0))) {
 				status = B_BAD_DATA;
 			}
 		}
@@ -765,12 +880,28 @@ RunRenderTransportProbe(int device)
 	if (contextStatus == B_OK)
 		contextStatus = RejectDuplicateRenderContextProbe(device, context);
 
+	status_t submitStatus = context.handle != 0
+		? RunRcsSubmissionProbe(device, context) : contextStatus;
+	valleyview::RenderDeviceInfo submissionInfo = {};
+	status_t submissionInfoStatus = submitStatus == B_OK
+		? ReadRenderDeviceInfo(device, submissionInfo) : submitStatus;
+	if (submissionInfoStatus == B_OK) {
+		printf("render_transport phase=submission_ready\n");
+		PrintRenderDeviceInfo(submissionInfo);
+		if ((submissionInfo.capabilities
+				& valleyview::kRenderCapabilityRcsSubmission) == 0
+			|| (submissionInfo.submissionEngines
+				& valleyview::kRenderEngineRcs) == 0) {
+			submissionInfoStatus = B_BAD_DATA;
+		}
+	}
+	if (submitStatus == B_OK)
+		submitStatus = submissionInfoStatus;
 	status_t memoryStatus = context.handle != 0
 		? RunRenderMemoryProbe(device, true) : contextStatus;
 	status_t destroyStatus = DestroyRenderContextProbe(device, context);
 	if (contextStatus == B_OK)
 		contextStatus = destroyStatus;
-	status_t rcsStatus = RunRcsProbe(device);
 
 	valleyview::RenderDeviceInfo afterInfo = {};
 	status_t afterInfoStatus = ReadRenderDeviceInfo(device, afterInfo);
@@ -781,7 +912,9 @@ RunRenderTransportProbe(int device)
 	const bool rcsProven = afterInfoStatus == B_OK
 		&& (afterInfo.provenEngines & valleyview::kRenderEngineRcs) != 0;
 	const bool contextReleased = afterInfoStatus == B_OK
-		&& (afterInfo.capabilities & valleyview::kRenderCapabilityPpgtt) == 0;
+		&& (afterInfo.capabilities
+			& (valleyview::kRenderCapabilityPpgtt
+				| valleyview::kRenderCapabilityRcsSubmission)) == 0;
 
 	valleyview::P0Status after = {};
 	status_t afterStatus = ReadP0Status(device, after);
@@ -792,10 +925,11 @@ RunRenderTransportProbe(int device)
 	const bool p0Healthy = beforeStatus == B_OK && afterStatus == B_OK
 		&& P0TransportHealthy(before, after);
 	printf("render_transport info=%s context=%s released=%s memory=%s"
-		" rcs=%s proven=%s p0=%s\n",
+		" rcs=%s submit=%s proven=%s p0=%s\n",
 		YesNo(infoStatus == B_OK), YesNo(contextStatus == B_OK),
 		YesNo(contextReleased), YesNo(memoryStatus == B_OK),
-		YesNo(rcsStatus == B_OK), YesNo(rcsProven), YesNo(p0Healthy));
+		YesNo(rcsStatus == B_OK), YesNo(submitStatus == B_OK),
+		YesNo(rcsProven), YesNo(p0Healthy));
 
 	if (infoStatus != B_OK)
 		return infoStatus;
@@ -809,6 +943,8 @@ RunRenderTransportProbe(int device)
 		return memoryStatus;
 	if (rcsStatus != B_OK)
 		return rcsStatus;
+	if (submitStatus != B_OK)
+		return submitStatus;
 	if (!rcsProven)
 		return afterInfoStatus == B_OK ? B_BAD_DATA : afterInfoStatus;
 	if (afterStatus != B_OK)

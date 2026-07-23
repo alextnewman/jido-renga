@@ -897,6 +897,148 @@ RestoreRcsShaderCache(volatile uint8* registers,
 }
 
 
+void
+CaptureRcsSubmissionFault(volatile uint8* registers,
+	valleyview::RenderSubmit& submit)
+{
+	if ((submit.diagnosticFlags & valleyview::kRenderSubmitFaultCaptured) != 0)
+		return;
+	ReadGpuRegisters(registers, submit.globalFault);
+	ReadRcsRegisters(registers, submit.fault);
+	submit.diagnosticFlags |= valleyview::kRenderSubmitFaultCaptured;
+}
+
+
+status_t
+ProgramRcsPpgtt(volatile uint8* registers, uint32 ppDirBase)
+{
+	status_t status = WriteGt(registers, valleyview::kRcsRingPpDirDclv,
+		UINT32_MAX);
+	if (status == B_OK)
+		status = WriteGt(registers, valleyview::kRcsRingPpDirBase, ppDirBase);
+	if (status == B_OK) {
+		status = WriteGt(registers, valleyview::kRcsRingMode,
+			(valleyview::kRingPpgttEnable << 16)
+				| valleyview::kRingPpgttEnable);
+	}
+	if (status != B_OK)
+		return status;
+	ReadMmio(registers, valleyview::kRcsRingMode);
+
+	status = FlushRcsTlb(registers);
+	if (status != B_OK)
+		return status;
+	return ReadMmio(registers, valleyview::kRcsRingPpDirDclv) == UINT32_MAX
+			&& ReadMmio(registers, valleyview::kRcsRingPpDirBase) == ppDirBase
+			&& (ReadMmio(registers, valleyview::kRcsRingMode)
+				& valleyview::kRingPpgttEnable) != 0
+		? B_OK : B_IO_ERROR;
+}
+
+
+status_t
+RestoreRcsSubmissionRing(volatile uint8* registers,
+	const valleyview::RcsRegisterSnapshot& original, bool reset,
+	bool& ringSafe, valleyview::RenderSubmit& submit)
+{
+	ringSafe = false;
+	status_t status = B_OK;
+	status_t cleanupFailure = B_OK;
+	if (!reset) {
+		status = WaitForRcsIdle(registers);
+		if (status == B_OK)
+			status = WriteGt(registers, valleyview::kRcsRingControl, 0);
+		if (status == B_OK)
+			ReadMmio(registers, valleyview::kRcsRingControl);
+		else {
+			cleanupFailure = status;
+			CaptureRcsSubmissionFault(registers, submit);
+		}
+	}
+	if (status != B_OK || reset) {
+		submit.resetStatus = ResetRcs(registers);
+		if (submit.resetStatus != B_OK)
+			return submit.resetStatus;
+	}
+
+	status = WriteGt(registers, valleyview::kRcsRingControl, 0);
+	if (status == B_OK) {
+		status = WriteGt(registers, valleyview::kRcsRingMode,
+			(valleyview::kRingPpgttEnable << 16)
+				| (original.mode & valleyview::kRingPpgttEnable));
+	}
+	if (status == B_OK) {
+		status = WriteGt(registers, valleyview::kRcsRingPpDirDclv,
+			original.ppDirDclv);
+	}
+	if (status == B_OK) {
+		status = WriteGt(registers, valleyview::kRcsRingPpDirBase,
+			original.ppDirBase);
+	}
+	if (status == B_OK)
+		status = WriteGt(registers, valleyview::kRcsRingStart, original.start);
+	if (status == B_OK)
+		status = WriteGt(registers, valleyview::kRcsRingHws, original.hws);
+	if (status == B_OK)
+		status = WriteGt(registers, valleyview::kRcsRingHead, original.head);
+	if (status == B_OK)
+		status = WriteGt(registers, valleyview::kRcsRingTail, original.tail);
+	if (status == B_OK)
+		status = FlushRcsTlb(registers);
+	if (status == B_OK) {
+		status = WriteGt(registers, valleyview::kRcsRingControl,
+			original.control);
+	}
+	if (status != B_OK) {
+		CaptureRcsSubmissionFault(registers, submit);
+		return status;
+	}
+	ReadMmio(registers, valleyview::kRcsRingControl);
+
+	valleyview::RcsRegisterSnapshot observed = {};
+	ReadRcsRegisters(registers, observed);
+	ringSafe = valleyview::IsRcsRingRestored(original, observed);
+	if (!ringSafe) {
+		CaptureRcsSubmissionFault(registers, submit);
+		return B_IO_ERROR;
+	}
+	return cleanupFailure;
+}
+
+
+status_t
+RestoreRcsSubmissionCache(volatile uint8* registers,
+	valleyview::RenderSubmit& submit)
+{
+	status_t status = WriteGt(registers, valleyview::kRcsL3SqcReg1,
+		submit.l3Before[0]);
+	if (status == B_OK) {
+		status = WriteGt(registers, valleyview::kRcsL3Control2,
+			submit.l3Before[1]);
+	}
+	if (status == B_OK) {
+		status = WriteGt(registers, valleyview::kRcsL3Control3,
+			submit.l3Before[2]);
+	}
+	if (status == B_OK) {
+		status = WriteGt(registers, valleyview::kRcsRingInstpm,
+			0xffff0000u | (submit.active.instpm & 0xffff));
+	}
+
+	submit.l3After[0] = ReadMmio(registers, valleyview::kRcsL3SqcReg1);
+	submit.l3After[1] = ReadMmio(registers, valleyview::kRcsL3Control2);
+	submit.l3After[2] = ReadMmio(registers, valleyview::kRcsL3Control3);
+	if (submit.l3After[0] != submit.l3Before[0]
+		|| submit.l3After[1] != submit.l3Before[1]
+		|| submit.l3After[2] != submit.l3Before[2]
+		|| (ReadMmio(registers, valleyview::kRcsRingInstpm) & 0xffff)
+			!= (submit.active.instpm & 0xffff)) {
+		status = B_IO_ERROR;
+	}
+	return status;
+}
+
+
 bool
 VerifyPage(const uint32* page, uint32 sentinel, uint32& mismatchOffset,
 	uint32& observed)
@@ -1341,6 +1483,180 @@ SubmitRenderBcsCopy(ValleyViewDevice& device, uint32 sourceOffset,
 		memory_write_barrier();
 		status = SubmitBcsCommandsLocked(device,
 			static_cast<uint32>(count * sizeof(uint32)), completionMarker);
+	}
+	mutex_unlock(&device.bcsLock);
+	return status;
+}
+
+
+status_t
+ExecuteRcsSubmission(ValleyViewDevice& device,
+	ValleyViewRenderBuffer& workspace, uint32 ppDirBase,
+	valleyview::RenderSubmit& submit)
+{
+	uint32* result = static_cast<uint32*>(workspace.address)
+		+ valleyview::kRcsSubmitResultPage
+			* valleyview::kPageSize / sizeof(uint32);
+	mutex_lock(&device.bcsLock);
+	volatile uint8* registers = device.registers;
+	valleyview::GpuDiagnostics forcewake = {};
+	bool gtWakeChanged = false;
+	bool forcewakeAttempted = false;
+	bool cacheStateCaptured = false;
+	bool activeCaptured = false;
+	bool ringTouched = false;
+	bool resetRcs = false;
+	bool ringSafe = true;
+	status_t cleanupStatus = B_OK;
+	status_t status = B_OK;
+	uint64 displaySignatureBefore = 0;
+
+	ReadGpuRegisters(registers, submit.globalBefore);
+	ReadRcsRegisters(registers, submit.before);
+	displaySignatureBefore = DisplaySignature(registers);
+	submit.diagnosticFlags |= valleyview::kRenderSubmitSnapshotCaptured;
+	submit.stage = valleyview::kRenderSubmitStageSnapshot;
+	if (!device.nativeActive || device.gpuFaulted
+		|| device.p0MemoryQuarantined || device.renderMemoryQuarantined) {
+		status = B_NO_INIT;
+		goto cleanup;
+	}
+
+	status = EnableGtWake(registers, submit.globalBefore, gtWakeChanged);
+	if (status != B_OK)
+		goto cleanup;
+	forcewakeAttempted = true;
+	status = AcquireForcewake(registers, forcewake);
+	if (status != B_OK)
+		goto cleanup;
+	submit.diagnosticFlags |= valleyview::kRenderSubmitForcewakeAcquired;
+
+	submit.l3Before[0] = ReadMmio(registers, valleyview::kRcsL3SqcReg1);
+	submit.l3Before[1] = ReadMmio(registers, valleyview::kRcsL3Control2);
+	submit.l3Before[2] = ReadMmio(registers, valleyview::kRcsL3Control3);
+	cacheStateCaptured = true;
+	ReadRcsRegisters(registers, submit.active);
+	activeCaptured = true;
+	if (!valleyview::IsRcsRingAvailable(submit.active)) {
+		status = B_BUSY;
+		goto cleanup;
+	}
+	submit.diagnosticFlags |= valleyview::kRenderSubmitRingAvailable;
+
+	ringTouched = true;
+	status = PrepareRcsRing(registers,
+		workspace.ggttOffset
+			+ valleyview::kRcsSubmitRingPage * valleyview::kPageSize,
+		workspace.ggttOffset
+			+ valleyview::kRcsSubmitStatusPage * valleyview::kPageSize);
+	if (status != B_OK)
+		goto cleanup;
+
+	status = ProgramRcsPpgtt(registers, ppDirBase);
+	if (status != B_OK)
+		goto cleanup;
+	submit.diagnosticFlags |= valleyview::kRenderSubmitPpgttProgrammed
+		| valleyview::kRenderSubmitTlbFlushed;
+	submit.stage = valleyview::kRenderSubmitStagePpgttProgrammed;
+
+	status = EnableRcsRing(registers, submit.ringTailBytes);
+	if (status != B_OK)
+		goto cleanup;
+	submit.diagnosticFlags |= valleyview::kRenderSubmitRingStarted;
+	submit.stage = valleyview::kRenderSubmitStageRingStarted;
+	resetRcs = true;
+
+	status = WaitForRcsCompletion(result, submit.completionMarker);
+	memory_read_barrier();
+	submit.observedCompletionMarker
+		= result[valleyview::kRcsCompletionOffset / sizeof(uint32)];
+	if (submit.observedCompletionMarker == submit.completionMarker) {
+		submit.diagnosticFlags
+			|= valleyview::kRenderSubmitCompletionVerified;
+	}
+	if (status == B_OK
+		&& (submit.diagnosticFlags
+			& valleyview::kRenderSubmitCompletionVerified) == 0) {
+		status = B_BAD_DATA;
+	}
+	if (status == B_OK)
+		submit.stage = valleyview::kRenderSubmitStageCompleted;
+
+cleanup:
+	if (status != B_OK && ringTouched)
+		CaptureRcsSubmissionFault(registers, submit);
+	if (ringTouched) {
+		submit.ringRestoreStatus = RestoreRcsSubmissionRing(registers,
+			submit.active, resetRcs, ringSafe, submit);
+		if (ringSafe) {
+			submit.diagnosticFlags |= valleyview::kRenderSubmitRingRestored;
+		}
+		if (submit.resetStatus != B_NO_INIT) {
+			device.rcsResets++;
+			if (submit.resetStatus == B_OK) {
+				submit.diagnosticFlags
+					|= valleyview::kRenderSubmitResetPerformed;
+			}
+		}
+		if (submit.ringRestoreStatus != B_OK)
+			status = submit.ringRestoreStatus;
+	} else {
+		submit.ringRestoreStatus = B_OK;
+		submit.diagnosticFlags |= valleyview::kRenderSubmitRingRestored;
+	}
+
+	if (ringSafe && ringTouched && forcewakeAttempted && cacheStateCaptured) {
+		submit.cacheRestoreStatus = RestoreRcsSubmissionCache(registers,
+			submit);
+		if (submit.cacheRestoreStatus == B_OK) {
+			submit.diagnosticFlags |= valleyview::kRenderSubmitCacheRestored;
+		} else {
+			device.gpuFaulted = true;
+			if (status == B_OK)
+				status = submit.cacheRestoreStatus;
+		}
+	} else if (!ringTouched)
+		submit.cacheRestoreStatus = B_OK;
+
+	ReadRcsRegisters(registers, submit.after);
+	const valleyview::RcsRegisterSnapshot& expected
+		= activeCaptured ? submit.active : submit.before;
+	if (!valleyview::IsRcsRingRestored(expected, submit.after)) {
+		ringSafe = false;
+		submit.diagnosticFlags &= ~valleyview::kRenderSubmitRingRestored;
+		submit.ringRestoreStatus = B_IO_ERROR;
+		status = B_IO_ERROR;
+	}
+	if (forcewakeAttempted) {
+		submit.forcewakeReleaseStatus
+			= ReleaseForcewake(registers, forcewake);
+		cleanupStatus = submit.forcewakeReleaseStatus;
+		if (status == B_OK)
+			status = cleanupStatus;
+	} else
+		submit.forcewakeReleaseStatus = B_OK;
+	submit.wakeRestoreStatus = RestoreGtWake(registers,
+		submit.globalBefore, gtWakeChanged);
+	cleanupStatus = submit.wakeRestoreStatus;
+	if (status == B_OK)
+		status = cleanupStatus;
+
+	ReadGpuRegisters(registers, submit.globalAfter);
+	if (DisplaySignature(registers) == displaySignatureBefore) {
+		submit.diagnosticFlags |= valleyview::kRenderSubmitDisplayUnchanged;
+	} else
+		status = B_IO_ERROR;
+	if (BcsStateUnchanged(submit.globalBefore, submit.globalAfter)) {
+		submit.diagnosticFlags |= valleyview::kRenderSubmitBcsUnchanged;
+	} else if (status == B_OK)
+		status = B_IO_ERROR;
+
+	if (!ringSafe) {
+		workspace.quarantined = true;
+		device.renderMemoryQuarantined = true;
+		device.gpuFaulted = true;
+		dprintf("intel_valleyview: quarantined RCS submission memory after "
+			"unsafe ring restoration\n");
 	}
 	mutex_unlock(&device.bcsLock);
 	return status;

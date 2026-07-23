@@ -5,7 +5,9 @@
 #include "Driver.h"
 
 #include <common/intel_valleyview/PpgttCore.h>
+#include <common/intel_valleyview/RenderCommandCore.h>
 #include <common/intel_valleyview/RenderMemoryCore.h>
+#include <common/intel_valleyview/RenderSubmitCore.h>
 
 #include <KernelExport.h>
 
@@ -416,9 +418,15 @@ status_t
 ReleaseClientRenderBuffer(ValleyViewClient& client,
 	ValleyViewRenderBuffer* buffer)
 {
-	status_t status = ClearRenderBufferPpgtt(client, *buffer);
-	if (status != B_OK)
+	status_t status = B_OK;
+	if (client.ppgtt.quarantined) {
+		status = B_NOT_ALLOWED;
 		buffer->quarantined = true;
+	} else {
+		status = ClearRenderBufferPpgtt(client, *buffer);
+		if (status != B_OK)
+			buffer->quarantined = true;
+	}
 	status_t backingStatus = ReleaseRenderBufferBacking(*client.device, buffer);
 	return status != B_OK ? status : backingStatus;
 }
@@ -476,6 +484,100 @@ InitializePpgttTables(ValleyViewPpgttState& state)
 			status = B_IO_ERROR;
 	}
 	return status;
+}
+
+
+void
+InitializeRenderSubmitResult(valleyview::RenderSubmit& submit)
+{
+	const valleyview::RenderAbiHeader header = submit.header;
+	const uint32 submitFlags = submit.submitFlags;
+	const uint32 contextHandle = submit.contextHandle;
+	const uint32 batchHandle = submit.batchHandle;
+	const uint32 batchOffset = submit.batchOffset;
+	const uint32 batchLength = submit.batchLength;
+	const uint32 objectCount = submit.objectCount;
+	uint32 objectHandles[valleyview::kRenderMaxClientBuffers];
+	memcpy(objectHandles, submit.objectHandles, sizeof(objectHandles));
+
+	memset(&submit, 0, sizeof(submit));
+	submit.header = header;
+	submit.submitFlags = submitFlags;
+	submit.contextHandle = contextHandle;
+	submit.batchHandle = batchHandle;
+	submit.batchOffset = batchOffset;
+	submit.batchLength = batchLength;
+	submit.objectCount = objectCount;
+	memcpy(submit.objectHandles, objectHandles, sizeof(objectHandles));
+	submit.status = B_NO_INIT;
+	submit.parserFailingOffset
+		= valleyview::kRenderCommandInvalidOffset;
+	submit.parserFailingDword
+		= valleyview::kRenderCommandInvalidDword;
+	submit.resetStatus = B_NO_INIT;
+	submit.ringRestoreStatus = B_NO_INIT;
+	submit.cacheRestoreStatus = B_NO_INIT;
+	submit.forcewakeReleaseStatus = B_NO_INIT;
+	submit.wakeRestoreStatus = B_NO_INIT;
+}
+
+
+status_t
+PrepareRcsSubmissionWorkspace(ValleyViewRenderBuffer& workspace,
+	const ValleyViewRenderBuffer& batchBuffer,
+	valleyview::RenderSubmit& submit)
+{
+	if (workspace.address == NULL
+		|| workspace.size != valleyview::kRcsSubmitWorkspaceBytes) {
+		return B_BAD_VALUE;
+	}
+
+	uint8* const memory = static_cast<uint8*>(workspace.address);
+	memset(memory, 0, workspace.size);
+	uint8* const batch = memory
+		+ valleyview::kRcsSubmitBatchPage * valleyview::kPageSize;
+	memcpy(batch,
+		static_cast<const uint8*>(batchBuffer.address) + submit.batchOffset,
+		submit.batchLength);
+	memory_write_barrier();
+	submit.diagnosticFlags |= valleyview::kRenderSubmitBatchCopied;
+	submit.stage = valleyview::kRenderSubmitStageBatchCopied;
+
+	const valleyview::RenderCommandResult parser
+		= valleyview::ParseRenderCommands(batch, submit.batchLength);
+	submit.parserReason = parser.reason;
+	submit.parserFailingOffset = parser.failingByteOffset;
+	submit.parserFailingDword = parser.failingDword;
+	submit.parsedCommandCount = parser.parsedCommandCount;
+	submit.lriRegisterCount = parser.lriRegisterCount;
+	submit.pipeControlCount = parser.pipeControlCount;
+	submit.primitiveCount = parser.primitiveCount;
+	if (parser.status != valleyview::kRenderCommandStatusAccepted)
+		return B_NOT_ALLOWED;
+	submit.diagnosticFlags |= valleyview::kRenderSubmitBatchAccepted;
+	submit.stage = valleyview::kRenderSubmitStageBatchParsed;
+
+	uint32* const result = reinterpret_cast<uint32*>(memory
+		+ valleyview::kRcsSubmitResultPage * valleyview::kPageSize);
+	for (uint32 index = 0;
+			index < valleyview::kPageSize / sizeof(uint32); index++) {
+		result[index] = valleyview::kRcsResultSentinel;
+	}
+	uint32* const ring = reinterpret_cast<uint32*>(memory
+		+ valleyview::kRcsSubmitRingPage * valleyview::kPageSize);
+	const size_t ringCount = valleyview::BuildRcsSubmitRing(ring,
+		valleyview::kPageSize / sizeof(uint32),
+		workspace.ggttOffset
+			+ valleyview::kRcsSubmitBatchPage * valleyview::kPageSize,
+		workspace.ggttOffset
+			+ valleyview::kRcsSubmitResultPage * valleyview::kPageSize,
+		submit.completionMarker);
+	if (ringCount != valleyview::kRcsSubmitRingCommandCount)
+		return B_BAD_DATA;
+	submit.ringTailBytes
+		= static_cast<uint32>(ringCount * sizeof(uint32));
+	memory_write_barrier();
+	return B_OK;
 }
 
 
@@ -576,6 +678,8 @@ ReleasePpgttResources(ValleyViewClient& client)
 	ValleyViewPpgttState& state = client.ppgtt;
 	ValleyViewDevice& device = *client.device;
 	state.ready = false;
+	if (state.quarantined)
+		return B_NOT_ALLOWED;
 	if (state.directoryBuffer != NULL) {
 		status_t status = UnbindRenderBufferGgtt(device,
 			*state.directoryBuffer);
@@ -611,6 +715,8 @@ DestroyPpgttContextLocked(ValleyViewClient& client, uint32 handle)
 {
 	if (handle == 0 || client.contextHandle != handle)
 		return B_BAD_VALUE;
+	if (client.ppgtt.quarantined)
+		return B_NOT_ALLOWED;
 
 	client.ppgtt.ready = false;
 	status_t status = B_OK;
@@ -754,6 +860,151 @@ DestroyRenderContext(ValleyViewClient& client,
 	request.status = DestroyPpgttContextLocked(client, request.handle);
 	UnlockRenderDevice(device);
 	return request.status;
+}
+
+
+status_t
+SubmitRenderCommands(ValleyViewClient& client,
+	valleyview::RenderSubmit& submit)
+{
+	InitializeRenderSubmitResult(submit);
+	const bigtime_t started = system_time();
+	if (submit.submitFlags != 0
+		|| !valleyview::ValidateRenderSubmitObjectHandles(
+			submit.objectHandles, submit.objectCount, submit.batchHandle)) {
+		submit.status = B_BAD_VALUE;
+		return submit.status;
+	}
+
+	ValleyViewDevice& device = *client.device;
+	LockRenderDevice(device);
+	status_t status = B_OK;
+	bool executed = false;
+	ValleyViewRenderBuffer* workspace = NULL;
+	ValleyViewRenderBuffer* objects[valleyview::kRenderMaxClientBuffers] = {};
+	if (!device.nativeActive || device.registers == NULL || device.gpuFaulted
+		|| device.p0MemoryQuarantined || device.renderMemoryQuarantined
+		|| !device.rcsReady) {
+		status = B_NO_INIT;
+	} else if (client.contextHandle == 0
+		|| submit.contextHandle != client.contextHandle
+		|| !client.ppgtt.ready || client.ppgtt.quarantined) {
+		status = B_BAD_VALUE;
+	}
+
+	ValleyViewRenderBuffer* batchBuffer = NULL;
+	for (uint32 index = 0; status == B_OK && index < submit.objectCount;
+			index++) {
+		ValleyViewRenderBuffer* buffer = FindRenderBuffer(client,
+			submit.objectHandles[index]);
+		if (buffer == NULL || buffer->quarantined
+			|| buffer->ppgttOffset
+				== valleyview::kInvalidRenderPpgttOffset
+			|| buffer->domain != valleyview::kRenderDomainCpu) {
+			status = B_BAD_VALUE;
+			break;
+		}
+		objects[index] = buffer;
+		if (buffer->handle == submit.batchHandle)
+			batchBuffer = buffer;
+	}
+	if (status == B_OK
+		&& (batchBuffer == NULL
+			|| !valleyview::ValidateRenderSubmitBatchRange(batchBuffer->size,
+				submit.batchOffset, submit.batchLength))) {
+		status = B_BAD_VALUE;
+	}
+	if (status == B_OK) {
+		submit.diagnosticFlags |= valleyview::kRenderSubmitObjectsOwned;
+		submit.stage = valleyview::kRenderSubmitStageObjectsOwned;
+	}
+
+	if (status == B_OK) {
+		status = AllocatePpgttBuffer(valleyview::kRcsSubmitWorkspaceBytes,
+			"intel_valleyview RCS submission",
+			kValleyViewRenderGgttData, 1, workspace);
+	}
+	if (status == B_OK)
+		status = BindRenderBufferGgtt(device, *workspace);
+	if (status == B_OK) {
+		submit.workspaceOffset = workspace->ggttOffset;
+		submit.workspacePages = workspace->pageCount;
+		submit.diagnosticFlags |= valleyview::kRenderSubmitWorkspaceBound;
+		submit.stage = valleyview::kRenderSubmitStageWorkspaceBound;
+		device.rcsSubmitSequence++;
+		if (device.rcsSubmitSequence == 0)
+			device.rcsSubmitSequence++;
+		submit.sequence = device.rcsSubmitSequence;
+		submit.completionMarker = valleyview::kRcsSubmitMarkerBase
+			| (submit.sequence & 0x00ffffff);
+		status = PrepareRcsSubmissionWorkspace(*workspace, *batchBuffer,
+			submit);
+	}
+	if (status == B_OK && !device.rcsSubmissionReady
+		&& (submit.batchLength != sizeof(uint32)
+			|| submit.parsedCommandCount != 1
+			|| submit.lriRegisterCount != 0
+			|| submit.pipeControlCount != 0
+			|| submit.primitiveCount != 0)) {
+		status = B_NOT_ALLOWED;
+	}
+
+	if (status == B_OK) {
+		for (uint32 index = 0; index < submit.objectCount; index++)
+			objects[index]->domain = valleyview::kRenderDomainRcs;
+		memory_write_barrier();
+		mutex_unlock(&device.renderLock);
+		mutex_lock(&device.presentLock);
+		executed = true;
+		status = ExecuteRcsSubmission(device, *workspace,
+			client.ppgtt.ppDirBase, submit);
+		mutex_unlock(&device.presentLock);
+		mutex_lock(&device.renderLock);
+	}
+
+	if (executed && (device.gpuFaulted || device.renderMemoryQuarantined)) {
+		for (ValleyViewRenderBuffer* buffer = client.buffers; buffer != NULL;
+				buffer = buffer->next) {
+			buffer->quarantined = true;
+		}
+		QuarantinePpgtt(client, NULL, "unsafe RCS submission retirement");
+	} else {
+		for (uint32 index = 0; index < submit.objectCount; index++) {
+			if (objects[index] != NULL)
+				objects[index]->domain = valleyview::kRenderDomainCpu;
+		}
+		memory_read_barrier();
+	}
+
+	if (workspace != NULL) {
+		status_t workspaceStatus = ReleaseRenderBufferBacking(device,
+			workspace);
+		workspace = NULL;
+		if (workspaceStatus == B_OK) {
+			submit.diagnosticFlags
+				|= valleyview::kRenderSubmitWorkspaceRestored;
+		} else
+			status = workspaceStatus;
+	}
+
+	if (executed) {
+		device.rcsSubmissions++;
+		if (status == B_OK)
+			device.rcsSubmissionReady = true;
+		else
+			device.rcsSubmissionFailures++;
+	}
+	if (status == B_OK) {
+		submit.stage = valleyview::kRenderSubmitStageRestored;
+	} else if (device.gpuFaulted || device.renderMemoryQuarantined)
+		device.rcsReady = false;
+	if (device.gpuFaulted || device.renderMemoryQuarantined)
+		device.rcsSubmissionReady = false;
+	const bigtime_t elapsed = system_time() - started;
+	submit.elapsedUs = elapsed > 0 ? static_cast<uint64>(elapsed) : 0;
+	submit.status = status;
+	UnlockRenderDevice(device);
+	return status;
 }
 
 
@@ -1154,6 +1405,7 @@ RunRcsDiagnostic(ValleyViewClient& client,
 		device.rcsStatus = B_OK;
 	} else {
 		device.rcsReady = false;
+		device.rcsSubmissionReady = false;
 		device.rcsFailures++;
 		device.rcsStatus = status;
 	}
