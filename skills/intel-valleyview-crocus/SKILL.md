@@ -92,6 +92,11 @@ reset after every attempt. Then restore and verify cache modes, HWS, ring,
 context, page-directory state, and every GGTT PTE for both hidden allocations.
 Unsafe restoration quarantines both buffers and fails closed.
 
+Verify shader output by exact content cardinality: 2,048 zero dwords, 14,336
+sentinel dwords, no third values, and an untouched guard. Do not require byte
+positions; the first Winky run showed that ValleyView media-block placement
+differs from the naive coordinate model.
+
 ## Validation gates
 
 Run the host suite and the existing P0 targets after every render ABI change:
@@ -122,5 +127,8 @@ sentinel, and unexpected counts, changed range, checksums, first unexpected
 value, guard mismatches, every shader PTE transition, cache modes,
 reset/restoration state, and P0 counters needed to diagnose a failed run
 offline. A hardware pass proves only the kernel-generated EU/render-cache
-workload; until one is recorded, do not claim hardware validation. It does not
-make `IsRenderReady()` true.
+workload. The `gfx_test8` Winky run hardware-validated the RCS marker and
+timestamp, EU shader/render-cache writes, `PIPE_CONTROL` completion, bounded
+reset, cache/ring/HWS/context and all 19 shader-PTE restorations, BCS operation,
+and P0 coexistence. It does not prove 3D rasterization or Crocus readiness and
+does not make `IsRenderReady()` true.

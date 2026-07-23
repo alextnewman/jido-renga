@@ -222,10 +222,12 @@ with a sentinel and emits 36 `MEDIA_OBJECT` dispatches, the ValleyView
 `max_threads` value, to write zero blocks. A following guard page must remain
 untouched.
 
-Verification reports zero, sentinel, and unexpected dword counts; the changed
-range; checksums before and after execution; the first unexpected value; guard
-mismatches; every shader GGTT PTE before binding, while bound, and after
-restoration; and cache modes 0 and 1 before and after execution.
+Output verification requires exactly 2,048 zero dwords and 14,336 sentinel
+dwords, no third values, and an untouched guard. It deliberately does not assume
+byte positions: the first Winky run showed that ValleyView media-block placement
+differs from the naive coordinate model. Diagnostics also retain the changed
+range, checksums, first unexpected value, every shader GGTT PTE transition, and
+cache modes 0 and 1 before and after execution.
 
 The diagnostic requires an idle legacy RCS with PPGTT and active CCID context
 selection disabled. It programs and posts the hardware-status page before the
@@ -241,7 +243,10 @@ A successful diagnostic adds RCS to `provenEngines`; it does not add RCS to
 `submissionEngines` or expose user commands, contexts, isolated RCS submission,
 completion fences, reset recovery as a service, tiling, or presentation. When
 hardware passes, it proves only this kernel-generated EU/render-cache workload.
-The workload has not yet been hardware-validated.
+The `gfx_test8` Winky run hardware-validated the RCS marker and timestamp, EU
+shader/render-cache writes, `PIPE_CONTROL` completion, bounded reset,
+cache/ring/HWS/context and all 19 shader-PTE restorations, BCS operation, and P0
+coexistence. This is not evidence of 3D rasterization or Crocus readiness.
 
 `intel_valleyview_probe --render-transport-test` is the combined hardware gate.
 It runs render discovery, captures P0 state, exercises mapping ownership and the

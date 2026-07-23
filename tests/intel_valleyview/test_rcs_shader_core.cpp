@@ -127,43 +127,46 @@ JR_TEST(intel_valleyview_rcs_shader, analyzes_output_and_guard)
 	JR_CHECK_EQ(analysis.guardMismatchOffset, UINT32_MAX);
 	JR_CHECK_NE(analysis.checksum, 0ull);
 
-	for (uint32 zeroDwords = 64; zeroDwords <= 128; zeroDwords += 64) {
+	for (uint32 index = 0;
+			index < kRcsShaderSurfaceBytes / sizeof(uint32); index++) {
+		surface[index] = index % 8 == 7 ? 0 : kRcsShaderSentinel;
+	}
+	JR_CHECK(AnalyzeRcsShaderOutput(surface, kRcsShaderSurfaceBytes, guard,
+		kRcsShaderGuardBytes, kRcsShaderSentinel, analysis));
+	JR_CHECK_EQ(analysis.zeroDwords, kRcsShaderExpectedZeroDwords);
+	JR_CHECK_EQ(analysis.sentinelDwords,
+		kRcsShaderExpectedSentinelDwords);
+	JR_CHECK_EQ(analysis.unexpectedDwords, 0u);
+	JR_CHECK_EQ(analysis.firstChangedOffset, 28u);
+	JR_CHECK_EQ(analysis.lastChangedOffset,
+		kRcsShaderSurfaceBytes - sizeof(uint32));
+	JR_CHECK_EQ(analysis.firstUnexpectedOffset, UINT32_MAX);
+
+	const uint32 invalidZeroDwordCounts[] = {64, 128, 2047, 2049};
+	for (uint32 zeroDwords : invalidZeroDwordCounts) {
 		for (uint32 index = 0;
 				index < kRcsShaderSurfaceBytes / sizeof(uint32); index++) {
 			surface[index] = index < zeroDwords ? 0 : kRcsShaderSentinel;
 		}
 		JR_CHECK(!AnalyzeRcsShaderOutput(surface, kRcsShaderSurfaceBytes,
 			guard, kRcsShaderGuardBytes, kRcsShaderSentinel, analysis));
+		JR_CHECK_EQ(analysis.zeroDwords, zeroDwords);
+		JR_CHECK_EQ(analysis.unexpectedDwords, 0u);
 	}
 
 	for (uint32 index = 0;
 			index < kRcsShaderSurfaceBytes / sizeof(uint32); index++) {
-		surface[index] = IsExpectedRcsShaderZeroDword(index)
-			? 0 : kRcsShaderSentinel;
+		surface[index] = index % 8 == 7 ? 0 : kRcsShaderSentinel;
 	}
-	const uint32 missingIndex = 16;
-	surface[missingIndex] = kRcsShaderSentinel;
+	const uint32 unexpectedIndex = 3;
+	surface[unexpectedIndex] = 0x12345678;
 	JR_CHECK(!AnalyzeRcsShaderOutput(surface, kRcsShaderSurfaceBytes, guard,
 		kRcsShaderGuardBytes, kRcsShaderSentinel, analysis));
+	JR_CHECK_EQ(analysis.unexpectedDwords, 1u);
 	JR_CHECK_EQ(analysis.firstUnexpectedOffset,
-		missingIndex * sizeof(uint32));
-	JR_CHECK_EQ(analysis.firstUnexpectedValue, kRcsShaderSentinel);
-	surface[missingIndex] = 0;
-
-	const uint32 strayIndex = 8;
-	surface[strayIndex] = 0;
-	JR_CHECK(!AnalyzeRcsShaderOutput(surface, kRcsShaderSurfaceBytes, guard,
-		kRcsShaderGuardBytes, kRcsShaderSentinel, analysis));
-	JR_CHECK_EQ(analysis.firstUnexpectedOffset, strayIndex * sizeof(uint32));
-	JR_CHECK_EQ(analysis.firstUnexpectedValue, 0u);
-	surface[strayIndex] = kRcsShaderSentinel;
-
-	surface[strayIndex] = 0x12345678;
-	JR_CHECK(!AnalyzeRcsShaderOutput(surface, kRcsShaderSurfaceBytes, guard,
-		kRcsShaderGuardBytes, kRcsShaderSentinel, analysis));
-	JR_CHECK_EQ(analysis.firstUnexpectedOffset, strayIndex * sizeof(uint32));
+		unexpectedIndex * sizeof(uint32));
 	JR_CHECK_EQ(analysis.firstUnexpectedValue, 0x12345678u);
-	surface[strayIndex] = kRcsShaderSentinel;
+	surface[unexpectedIndex] = kRcsShaderSentinel;
 
 	guard[3] = 0;
 	JR_CHECK(!AnalyzeRcsShaderOutput(surface, kRcsShaderSurfaceBytes, guard,

@@ -437,7 +437,6 @@ AnalyzeRcsShaderOutput(const uint32* surface, uint32 surfaceBytes,
 	const uint32 surfaceWords = surfaceBytes / sizeof(uint32);
 	for (uint32 index = 0; index < surfaceWords; index++) {
 		const uint32 value = surface[index];
-		const bool expectedZero = IsExpectedRcsShaderZeroDword(index);
 		if (value != sentinel) {
 			if (analysis.firstChangedOffset == UINT32_MAX)
 				analysis.firstChangedOffset = index * sizeof(uint32);
@@ -447,9 +446,7 @@ AnalyzeRcsShaderOutput(const uint32* surface, uint32 surfaceBytes,
 			analysis.zeroDwords++;
 		else if (value == sentinel)
 			analysis.sentinelDwords++;
-
-		if ((expectedZero && value != 0)
-			|| (!expectedZero && value != sentinel)) {
+		else {
 			analysis.unexpectedDwords++;
 			if (analysis.firstUnexpectedOffset == UINT32_MAX) {
 				analysis.firstUnexpectedOffset = index * sizeof(uint32);
