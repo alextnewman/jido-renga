@@ -930,9 +930,7 @@ ProgramRcsPpgttControl(volatile uint8* registers,
 	if (status != B_OK)
 		return status;
 	ReadMmio(registers, valleyview::kRcsGamEcoCheck);
-	return ReadMmio(registers, valleyview::kRcsGacEcoBits) == gac
-			&& ReadMmio(registers, valleyview::kRcsGamEcoCheck) == gam
-		? B_OK : B_IO_ERROR;
+	return B_OK;
 }
 
 

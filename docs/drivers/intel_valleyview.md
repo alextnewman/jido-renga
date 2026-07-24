@@ -298,8 +298,8 @@ but it uses the same transport as the installed Crocus screen.
 The derivative image installs `non-packaged/add-ons/opengl/Crocus`, a Mesa
 22.0.5 Gallium renderer built reproducibly by `tools/build-crocus`. Haiku checks
 the system non-packaged add-on directory before package add-ons, so Crocus
-deterministically owns renderer selection while its internal Softpipe fallback
-preserves operation after failed hardware discovery. Crocus is mastered as a
+deterministically owns renderer selection. If hardware screen creation fails,
+that add-on delegates to the packaged Software Pipe renderer. Crocus is mastered as a
 real loose file in `/boot/system/non-packaged/add-ons/opengl`, not as content
 inside packagefs; the packaged `mesa_swpipe` renderer remains installed as the
 next fallback. The maintained Mesa fork adds a
@@ -315,9 +315,8 @@ The HGL frontend creates the Crocus screen directly from
 linear. `flush_frontbuffer` maps the retired linear resource, copies it into a
 Haiku `BBitmap`, and hands it to the existing `BGLRenderer` clipping/direct-mode
 presentation path. The screen therefore reaches the P0-backed desktop without
-exposing overlay paths or GPU mappings at runtime. If discovery, bootstrap, or
-screen creation fails, the same add-on creates Mesa Softpipe instead, preserving
-a functional OpenGL renderer.
+exposing overlay paths or GPU mappings at runtime. If discovery, bootstrap, or screen creation fails, it loads Haiku's packaged
+Software Pipe add-on, preserving the proven llvmpipe fallback.
 
 `intel_valleyview_crocus_demo` opens a 600x500 `BGLView`, prints `GL_RENDERER`
 and `GL_VERSION`, and draws a visible interpolated RGB triangle. It is the

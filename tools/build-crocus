@@ -61,7 +61,7 @@ sed \
 if [ ! -f "$build/build.ninja" ]; then
 	meson setup "$build" "$source" --cross-file "$cross_file" \
 		-Dplatforms=haiku \
-		-Dgallium-drivers=crocus,swrast \
+		-Dgallium-drivers=crocus \
 		-Dvulkan-drivers= \
 		-Dllvm=disabled \
 		-Dshader-cache=disabled \
@@ -76,6 +76,8 @@ if [ ! -f "$build/build.ninja" ]; then
 		--buildtype=debugoptimized \
 		--prefix=/boot/system \
 		--libdir=/boot/system/lib
+else
+	meson configure "$build" -Dgallium-drivers=crocus
 fi
 
 ninja -C "$build" src/gallium/targets/haiku-crocus/libcrocus_haiku.so

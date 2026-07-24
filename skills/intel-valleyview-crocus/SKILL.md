@@ -21,8 +21,8 @@ marker and EU/render-cache diagnostic, and parsed synchronous RCS submission
 through a private GGTT shadow and the client's PPGTT. Trusted synchronous
 completion is the initial fence contract. The Mesa 22.0.5 Haiku Crocus backend
 uses stable ABI addresses, forces resources linear, and presents retired
-frontbuffers through HGL's clipped `BBitmap` path. Its add-on contains Softpipe
-fallback if hardware setup fails. The combined probe reconstructs the exact
+frontbuffers through HGL's clipped `BBitmap` path. Its add-on delegates to the
+packaged Software Pipe renderer if hardware setup fails. The combined probe reconstructs the exact
 ValleyView linear triangle corpus and verifies its offscreen color, geometry,
 fence, and allocation guard; this remains a hardware candidate until the
 combined Winky gate passes.
@@ -103,7 +103,7 @@ The hardware renderer is a `BGLRenderer` add-on installed in Haiku's canonical
 system non-packaged `add-ons/opengl` override path. This deterministically
 owns renderer selection when mastered as a loose image file outside packagefs.
 Keep the packaged `mesa_swpipe` renderer as the next fallback, and retain
-internal Softpipe fallback in Crocus as well. The overlay path and
+explicit delegation to that packaged add-on from Crocus. The overlay path and
 `JIDO_RENGA_TOP` are build-time details and must not appear in its runtime ABI,
 paths, or diagnostics.
 
