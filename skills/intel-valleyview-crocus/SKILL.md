@@ -20,12 +20,13 @@ context per open client. It also has a kernel-generated BCS copy test, an RCS
 marker and EU/render-cache diagnostic, and parsed synchronous RCS submission
 through a private GGTT shadow and the client's PPGTT. Trusted synchronous
 completion is the initial fence contract. The Mesa 22.0.5 Haiku Crocus backend
-uses stable ABI addresses, forces resources linear, and presents retired
-frontbuffers through HGL's clipped `BBitmap` path. Its add-on delegates to the
-packaged Software Pipe renderer if hardware setup fails. The combined probe reconstructs the exact
-ValleyView linear triangle corpus and verifies its offscreen color, geometry,
-fence, and allocation guard; this remains a hardware candidate until the
-combined Winky gate passes.
+uses stable ABI addresses, keeps color and staging resources linear, permits
+only the hardware-required Y/W layouts for depth and stencil, and presents
+retired frontbuffers through HGL's clipped `BBitmap` path. Its add-on delegates
+to the packaged Software Pipe renderer if hardware setup fails. The combined
+probe reconstructs the exact ValleyView linear triangle corpus and verifies its
+offscreen color, geometry, fence, and allocation guard; this remains a hardware
+candidate until the combined Winky gate passes.
 
 Keep the hardware renderer fail-closed. It may instantiate only when
 `IsRenderReady()` succeeds. Until then, Haiku's Software Pipe add-on remains
@@ -64,9 +65,12 @@ under `renderLock`, then releases it before taking
 
 The no-LLC cache model is part of the render contract. CPU mappings, PTE snoop
 bits, flushes, and GPU retirement must agree before a buffer changes owner.
-The current linear buffers are write-back and snooped. Do not advertise
-non-snooped or tiled mappings until their cache maintenance and fence-register
-ownership are implemented and tested.
+Current buffers are write-back and snooped. CPU-interpreted color, staging,
+batch, and state resources remain linear. Depth and stencil may use their
+hardware-required tiled layouts only as GPU resources; do not expose them as
+logically detiled CPU mappings. Do not advertise non-snooped mappings or tiled
+presentation until their cache maintenance and fence-register ownership are
+implemented and tested.
 
 Each open client may create one software PPGTT context before creating BOs.
 Rejected or duplicate context creation must not alter live client resources.

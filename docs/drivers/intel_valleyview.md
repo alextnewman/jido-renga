@@ -170,8 +170,8 @@ The render status is `B_NOT_SUPPORTED` until an open client has proven the RCS
 diagnostic, created its PPGTT, and completed the immutable-shadow submission
 bootstrap. It then becomes `B_OK`; `IsRenderReady()` requires the complete
 linear synchronous transport, trusted completion, command isolation, and reset
-recovery. Tiled BOs are not required by P1 because the packaged Crocus backend
-forces every resource linear.
+recovery. Crocus keeps color and staging resources linear while using the
+hardware-required Y/W layouts for Gen7 depth and stencil resources.
 
 `intel_valleyview_probe --render-info` prints this boundary without attempting
 submission or changing GPU state.
@@ -191,12 +191,14 @@ range, saves every displaced scratch entry, installs snooped writable PTEs, and
 verifies both installation and exact restoration. Buffer pages are quarantined
 rather than freed if restoration cannot be proven.
 
-Current buffers are linear, write-back CPU mappings with snooped GGTT entries.
-Mappings are non-transferable kernel areas revoked when their handle or client
-closes. Teardown detaches every inherited clone from the backing cache before
-releasing BO accounting, so forked mappings cannot retain pinned pages. Their
-tracked domains are CPU, the kernel-owned BCS, and synchronous RCS ownership.
-BCS submission remains kernel-generated under `bcsLock`.
+Buffers are write-back CPU mappings with snooped GGTT entries. Color, staging,
+batch, and state resources are linear. Depth and stencil BOs expose only their
+raw hardware layout to the CPU; Crocus does not advertise a logically detiled
+mapping. Mappings are non-transferable kernel areas revoked when their handle
+or client closes. Teardown detaches every inherited clone from the backing cache
+before releasing BO accounting, so forked mappings cannot retain pinned pages.
+Their tracked domains are CPU, the kernel-owned BCS, and synchronous RCS
+ownership. BCS submission remains kernel-generated under `bcsLock`.
 
 ### Per-client PPGTT substrate
 
@@ -318,15 +320,17 @@ Haiku Crocus buffer manager that creates and maps driver-owned BOs, uses their
 stable PPGTT addresses directly, shares the one per-open context between
 Crocus's synchronous render batches, submits the fixed inline validation list,
 and treats the returned trusted completion as its fence. DRM sharing, userptr
-aliasing, performance monitors, and tiled allocation fail closed or remain
-disabled.
+aliasing, performance monitors, and externally supplied tiled allocation fail
+closed or remain disabled.
 
 The HGL frontend creates the Crocus screen directly from
-`/dev/misc/intel_valleyview_probe`. Every color, depth, and staging resource is
-linear. `flush_frontbuffer` maps the retired linear resource, copies it into a
-Haiku `BBitmap`, and hands it to the existing `BGLRenderer` clipping/direct-mode
-presentation path. The screen therefore reaches the P0-backed desktop without
-exposing overlay paths or GPU mappings at runtime. If discovery, bootstrap, or screen creation fails, it loads Haiku's packaged
+`/dev/misc/intel_valleyview_probe`. Color and staging resources remain linear;
+Gen7 depth uses Y tiling and separate stencil uses W tiling as required by the
+hardware. `flush_frontbuffer` maps only the retired linear color resource,
+copies it into a Haiku `BBitmap`, and hands it to the existing `BGLRenderer`
+clipping/direct-mode presentation path. The screen therefore reaches the
+P0-backed desktop without exposing overlay paths or GPU mappings at runtime. If
+discovery, bootstrap, or screen creation fails, it loads Haiku's packaged
 Software Pipe add-on, preserving the proven llvmpipe fallback.
 
 `intel_valleyview_crocus_demo` opens a 600x500 `BGLView`, prints `GL_RENDERER`
