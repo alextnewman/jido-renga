@@ -89,6 +89,12 @@ started submission, and verify restoration before returning BOs to CPU.
 Gen7 submission must program the 64-byte PPGTT cache controls in
 `GAC_ECO_BITS` and `GAM_ECOCHK` before enabling the ring, then restore and
 verify both registers after reset.
+Load `PP_DIR_DCLV` and `PP_DIR_BASE` again through the trusted RCS ring, with a
+GGTT posting read and `INSTPM` invalidation. Then bracket an inhibited switch to
+a 64 KiB-aligned kernel context with `MI_ARB_ON_OFF`, followed by full pre/post
+PIPE_CONTROL barriers. Gen7 caches PDEs in the active hardware context, and Bay
+Trail cannot safely rely on low-latency MMIO-only full-PPGTT switching. Retain
+the context address, GPU-observed directory, and barrier markers in diagnostics.
 Do not advertise RCS submission until the immutable-shadow
 `MI_BATCH_BUFFER_END` bootstrap has itself completed and restored successfully;
 before that proof, reject every other user batch.

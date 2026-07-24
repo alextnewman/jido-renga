@@ -514,11 +514,13 @@ PrintRenderSubmit(const valleyview::RenderSubmit& submit)
 		B_PRIx32 " context=%" B_PRIu32 " batch=%" B_PRIu32
 		"/%#" B_PRIx32 "+%" B_PRIu32 " objects=%" B_PRIu32
 		" sequence=%" B_PRIu32 " workspace=%#08" B_PRIx32 "/%"
-		B_PRIu32 " elapsed_us=%" B_PRIu64 "\n",
+		B_PRIu32 " hw_context=%#08" B_PRIx32
+		" elapsed_us=%" B_PRIu64 "\n",
 		submit.status, submit.stage, submit.diagnosticFlags,
 		submit.contextHandle, submit.batchHandle, submit.batchOffset,
 		submit.batchLength, submit.objectCount, submit.sequence,
-		submit.workspaceOffset, submit.workspacePages, submit.elapsedUs);
+		submit.workspaceOffset, submit.workspacePages,
+		submit.hardwareContextOffset, submit.elapsedUs);
 	printf("render_submit_parser reason=%u fail=%#08" B_PRIx32 "/%#08"
 		B_PRIx32 " commands=%" B_PRIu32 " lri=%" B_PRIu32
 		" pipe_control=%" B_PRIu32 " primitive=%" B_PRIu32 "\n",
@@ -545,6 +547,13 @@ PrintRenderSubmit(const valleyview::RenderSubmit& submit)
 		B_PRIx32 " gam=%#08" B_PRIx32 "/%#08" B_PRIx32 "\n",
 		submit.ppgttControlBefore[0], submit.ppgttControlAfter[0],
 		submit.ppgttControlBefore[1], submit.ppgttControlAfter[1]);
+	printf("render_submit_ppgtt_load base=%#08" B_PRIx32 "/%#08"
+		B_PRIx32 "/%#08" B_PRIx32 " barriers=%#08" B_PRIx32 "/%#08"
+		B_PRIx32 "/%#08" B_PRIx32 "/%#08" B_PRIx32 "\n",
+		submit.ppDirBaseRequested, submit.ppDirBaseObserved[0],
+		submit.ppDirBaseObserved[1], submit.ppgttBarrierObserved[0],
+		submit.ppgttBarrierObserved[1], submit.ppgttBarrierObserved[2],
+		submit.ppgttBarrierObserved[3]);
 	PrintGpuRegisterSnapshot("render_submit_global_before",
 		submit.globalBefore);
 	PrintRcsRegisterSnapshot("render_submit_before", submit.before);

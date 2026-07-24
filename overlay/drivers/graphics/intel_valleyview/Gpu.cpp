@@ -910,6 +910,23 @@ CaptureRcsSubmissionFault(volatile uint8* registers,
 
 
 status_t
+ClearRcsFault(volatile uint8* registers)
+{
+	const uint32 fault = ReadMmio(registers, valleyview::kRcsRingFault);
+	if (!valleyview::RcsFaultIsValid(fault))
+		return B_OK;
+	status_t status = WriteGt(registers, valleyview::kRcsRingFault,
+		fault & ~valleyview::kRcsFaultValid);
+	if (status != B_OK)
+		return status;
+	ReadMmio(registers, valleyview::kRcsRingFault);
+	return valleyview::RcsFaultIsValid(
+		ReadMmio(registers, valleyview::kRcsRingFault))
+		? B_IO_ERROR : B_OK;
+}
+
+
+status_t
 ProgramRcsPpgttControl(volatile uint8* registers,
 	valleyview::RenderSubmit& submit, bool& touched)
 {
@@ -1578,6 +1595,9 @@ ExecuteRcsSubmission(ValleyViewDevice& device,
 	if (status != B_OK)
 		goto cleanup;
 	submit.diagnosticFlags |= valleyview::kRenderSubmitForcewakeAcquired;
+	status = ClearRcsFault(registers);
+	if (status != B_OK)
+		goto cleanup;
 
 	submit.l3Before[0] = ReadMmio(registers, valleyview::kRcsL3SqcReg1);
 	submit.l3Before[1] = ReadMmio(registers, valleyview::kRcsL3Control2);
@@ -1623,6 +1643,18 @@ ExecuteRcsSubmission(ValleyViewDevice& device,
 
 	status = WaitForRcsCompletion(result, submit.completionMarker);
 	memory_read_barrier();
+	submit.ppDirBaseObserved[0]
+		= result[valleyview::kRcsPpgttLoadPostOffset / sizeof(uint32)];
+	submit.ppDirBaseObserved[1]
+		= result[valleyview::kRcsPpgttSecondLoadPostOffset / sizeof(uint32)];
+	submit.ppgttBarrierObserved[0]
+		= result[valleyview::kRcsPpgttFirstFlushOffset / sizeof(uint32)];
+	submit.ppgttBarrierObserved[1]
+		= result[valleyview::kRcsPpgttFirstInvalidateOffset / sizeof(uint32)];
+	submit.ppgttBarrierObserved[2]
+		= result[valleyview::kRcsPpgttSecondInvalidateOffset / sizeof(uint32)];
+	submit.ppgttBarrierObserved[3]
+		= result[valleyview::kRcsPpgttFinalFlushOffset / sizeof(uint32)];
 	submit.observedCompletionMarker
 		= result[valleyview::kRcsCompletionOffset / sizeof(uint32)];
 	if (submit.observedCompletionMarker == submit.completionMarker) {

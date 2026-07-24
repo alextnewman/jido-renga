@@ -526,7 +526,7 @@ InitializeRenderSubmitResult(valleyview::RenderSubmit& submit)
 status_t
 PrepareRcsSubmissionWorkspace(ValleyViewRenderBuffer& workspace,
 	const ValleyViewRenderBuffer& batchBuffer,
-	valleyview::RenderSubmit& submit)
+	uint32 ppDirBase, valleyview::RenderSubmit& submit)
 {
 	if (workspace.address == NULL
 		|| workspace.size != valleyview::kRcsSubmitWorkspaceBytes) {
@@ -557,6 +557,9 @@ PrepareRcsSubmissionWorkspace(ValleyViewRenderBuffer& workspace,
 		return B_NOT_ALLOWED;
 	submit.diagnosticFlags |= valleyview::kRenderSubmitBatchAccepted;
 	submit.stage = valleyview::kRenderSubmitStageBatchParsed;
+	submit.ppDirBaseRequested = ppDirBase;
+	submit.hardwareContextOffset = workspace.ggttOffset
+		+ valleyview::kRcsSubmitContextPage * valleyview::kPageSize;
 
 	uint32* const result = reinterpret_cast<uint32*>(memory
 		+ valleyview::kRcsSubmitResultPage * valleyview::kPageSize);
@@ -572,6 +575,8 @@ PrepareRcsSubmissionWorkspace(ValleyViewRenderBuffer& workspace,
 			+ valleyview::kRcsSubmitBatchPage * valleyview::kPageSize,
 		workspace.ggttOffset
 			+ valleyview::kRcsSubmitResultPage * valleyview::kPageSize,
+		submit.hardwareContextOffset,
+		ppDirBase,
 		submit.completionMarker);
 	if (ringCount != valleyview::kRcsSubmitRingCommandCount)
 		return B_BAD_DATA;
@@ -923,7 +928,10 @@ SubmitRenderCommands(ValleyViewClient& client,
 	if (status == B_OK) {
 		status = AllocatePpgttBuffer(valleyview::kRcsSubmitWorkspaceBytes,
 			"intel_valleyview RCS submission",
-			kValleyViewRenderGgttData, 1, workspace);
+			kValleyViewRenderGgttData,
+			valleyview::kPpgttDirectoryAlignment
+				/ valleyview::kPpgttPageBytes,
+			workspace);
 	}
 	if (status == B_OK)
 		status = BindRenderBufferGgtt(device, *workspace);
@@ -939,7 +947,7 @@ SubmitRenderCommands(ValleyViewClient& client,
 		submit.completionMarker = valleyview::kRcsSubmitMarkerBase
 			| (submit.sequence & 0x00ffffff);
 		status = PrepareRcsSubmissionWorkspace(*workspace, *batchBuffer,
-			submit);
+			client.ppgtt.ppDirBase, submit);
 	}
 	if (status == B_OK && !device.rcsSubmissionReady
 		&& (submit.batchLength != sizeof(uint32)

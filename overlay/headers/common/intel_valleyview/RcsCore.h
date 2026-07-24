@@ -4,6 +4,7 @@
 #ifndef INTEL_VALLEYVIEW_RCS_CORE_H
 #define INTEL_VALLEYVIEW_RCS_CORE_H
 
+#include <common/intel_valleyview/PpgttCore.h>
 #include <common/intel_valleyview/RcsShaderCore.h>
 
 #include <stddef.h>
@@ -69,14 +70,42 @@ constexpr uint32 kRcsCompletionMarker = 0x52435343;
 constexpr uint32 kRcsShaderCompletionMarker = 0x52435345;
 constexpr uint32 kRcsResultSentinel = 0xa55a3cc3;
 constexpr uint32 kRcsSubmitMarkerBase = 0x53000000;
+constexpr uint32 kRcsPpgttLoadPostOffset = 16;
+constexpr uint32 kRcsPpgttFirstFlushOffset = 24;
+constexpr uint32 kRcsPpgttFirstInvalidateOffset = 32;
+constexpr uint32 kRcsPpgttSecondLoadPostOffset = 40;
+constexpr uint32 kRcsPpgttSecondInvalidateOffset = 48;
+constexpr uint32 kRcsPpgttFinalFlushOffset = 56;
+
+constexpr uint32 kMiLoadRegisterImm1 = 0x11000001;
+constexpr uint32 kMiArbitrationControl = 0x04000000;
+constexpr uint32 kMiArbitrationEnable = 1u << 0;
+constexpr uint32 kMiSetContext = 0x0c000000;
+constexpr uint32 kMiContextAddressGgtt = 1u << 8;
+constexpr uint32 kMiContextSaveExtendedState = 1u << 3;
+constexpr uint32 kMiContextRestoreInhibit = 1u << 0;
+constexpr uint32 kRcsPpgttStallFlags
+	= kPipeControlQwordWrite | kPipeControlCsStall
+		| kPipeControlGlobalGttIvb;
+constexpr uint32 kRcsPpgttInvalidateFlags
+	= kRcsPpgttStallFlags
+		| (1u << 18) // TLB invalidate
+		| (1u << 16) // media state clear
+		| (1u << 11) // instruction cache invalidate
+		| (1u << 10) // texture cache invalidate
+		| (1u << 4)  // vertex fetch cache invalidate
+		| (1u << 3)  // constant cache invalidate
+		| (1u << 2); // state cache invalidate
 
 constexpr uint32 kRcsSubmitRingPage = 0;
 constexpr uint32 kRcsSubmitStatusPage = 1;
 constexpr uint32 kRcsSubmitResultPage = 2;
 constexpr uint32 kRcsSubmitBatchPage = 3;
 constexpr uint32 kRcsSubmitBatchPages = 16;
+constexpr uint32 kRcsSubmitContextPage = 32;
+constexpr uint32 kRcsSubmitContextPages = 16;
 constexpr uint32 kRcsSubmitWorkspacePages
-	= kRcsSubmitBatchPage + kRcsSubmitBatchPages;
+	= kRcsSubmitContextPage + kRcsSubmitContextPages;
 constexpr uint32 kRcsSubmitWorkspaceBytes
 	= kRcsSubmitWorkspacePages * kPageSize;
 
@@ -92,7 +121,7 @@ constexpr uint32 kRcsCompletionFlags
 constexpr size_t kRcsBatchCommandCount = 6;
 constexpr size_t kRcsRingCommandCount = 10;
 constexpr size_t kRcsCombinedRingCommandCount = 12;
-constexpr size_t kRcsSubmitRingCommandCount = 10;
+constexpr size_t kRcsSubmitRingCommandCount = 58;
 
 
 struct RcsRegisterSnapshot {
@@ -264,27 +293,84 @@ BuildRcsCombinedDiagnosticRing(uint32* commands, size_t capacity,
 
 inline size_t
 BuildRcsSubmitRing(uint32* commands, size_t capacity, uint32 batchOffset,
-	uint32 resultOffset, uint32 completionMarker)
+	uint32 resultOffset, uint32 contextOffset, uint32 ppDirBase,
+	uint32 completionMarker)
 {
 	if (commands == NULL || capacity < kRcsSubmitRingCommandCount
 		|| (batchOffset & kPageMask) != 0
 		|| (resultOffset & kPageMask) != 0
-		|| resultOffset > UINT32_MAX - kRcsCompletionOffset
+		|| resultOffset > UINT32_MAX - kRcsPpgttFinalFlushOffset
+		|| (contextOffset & (kPpgttDirectoryAlignment - 1)) != 0
+		|| (ppDirBase & (kPpgttDirectoryAlignment - 1)) != 0
 		|| completionMarker == 0) {
 		return 0;
 	}
 
-	commands[0] = kMiBatchBufferStart;
-	commands[1] = batchOffset;
-	commands[2] = kMiStoreRegisterMem | kMiUseGgtt;
-	commands[3] = kRcsRingTimestamp;
-	commands[4] = resultOffset + kRcsTimestampOffset;
-	commands[5] = kGen7PipeControl;
-	commands[6] = kRcsCompletionFlags;
-	commands[7] = resultOffset + kRcsCompletionOffset;
-	commands[8] = completionMarker;
-	commands[9] = kMiNoop;
-	return kRcsSubmitRingCommandCount;
+	size_t count = 0;
+#define ADD(value) commands[count++] = (value)
+#define ADD_LRI(reg, value) \
+	do { \
+		ADD(kMiLoadRegisterImm1); \
+		ADD(reg); \
+		ADD(value); \
+	} while (0)
+#define ADD_SRM(reg, address) \
+	do { \
+		ADD(kMiStoreRegisterMem | kMiUseGgtt); \
+		ADD(reg); \
+		ADD(address); \
+	} while (0)
+#define ADD_PIPE_CONTROL(flags, address, value) \
+	do { \
+		ADD(kGen7PipeControl); \
+		ADD(flags); \
+		ADD(address); \
+		ADD(value); \
+	} while (0)
+
+	ADD_LRI(kRcsRingPpDirDclv, UINT32_MAX);
+	ADD_LRI(kRcsRingPpDirBase, ppDirBase);
+	ADD_SRM(kRcsRingPpDirBase,
+		resultOffset + kRcsPpgttLoadPostOffset);
+	ADD_LRI(kRcsRingInstpm,
+		(kRcsInstpmTlbInvalidate << 16) | kRcsInstpmTlbInvalidate);
+	ADD_PIPE_CONTROL(kRcsCompletionFlags,
+		resultOffset + kRcsPpgttFirstFlushOffset, 1);
+	ADD(kMiArbitrationControl);
+	ADD(kMiSetContext);
+	ADD(contextOffset | kMiContextAddressGgtt
+		| kMiContextSaveExtendedState | kMiContextRestoreInhibit);
+	ADD(kMiNoop);
+	ADD(kMiArbitrationControl | kMiArbitrationEnable);
+	ADD_PIPE_CONTROL(kRcsPpgttStallFlags,
+		resultOffset + kRcsPpgttFirstInvalidateOffset, 1);
+	ADD_PIPE_CONTROL(kRcsPpgttInvalidateFlags,
+		resultOffset + kRcsPpgttFirstInvalidateOffset, 2);
+
+	ADD_SRM(kRcsRingPpDirBase,
+		resultOffset + kRcsPpgttSecondLoadPostOffset);
+	ADD_LRI(kRcsRingInstpm,
+		(kRcsInstpmTlbInvalidate << 16) | kRcsInstpmTlbInvalidate);
+	ADD_PIPE_CONTROL(kRcsPpgttStallFlags,
+		resultOffset + kRcsPpgttSecondInvalidateOffset, 1);
+	ADD_PIPE_CONTROL(kRcsPpgttInvalidateFlags,
+		resultOffset + kRcsPpgttSecondInvalidateOffset, 2);
+	ADD_PIPE_CONTROL(kRcsCompletionFlags,
+		resultOffset + kRcsPpgttFinalFlushOffset, 1);
+
+	ADD(kMiBatchBufferStart);
+	ADD(batchOffset);
+	ADD_SRM(kRcsRingTimestamp, resultOffset + kRcsTimestampOffset);
+	ADD_PIPE_CONTROL(kRcsCompletionFlags,
+		resultOffset + kRcsCompletionOffset, completionMarker);
+	ADD(kMiNoop);
+	ADD(kMiNoop);
+
+#undef ADD_PIPE_CONTROL
+#undef ADD_SRM
+#undef ADD_LRI
+#undef ADD
+	return count == kRcsSubmitRingCommandCount ? count : 0;
 }
 
 

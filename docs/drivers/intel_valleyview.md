@@ -261,7 +261,18 @@ retirement or modify the shadow.
 Submission freezes presentation, programs the client's 2 GiB `PP_DIR`, enables
 the Gen7 64-byte PPGTT cache controls in `GAC_ECO_BITS` and `GAM_ECOCHK`,
 programs the client's 2 GiB `PP_DIR`, enables legacy RCS PPGTT, flushes the TLB,
-and waits synchronously for the trusted completion marker. Every started
+then repeats the page-directory load inside the trusted RCS ring. That sequence
+matches Linux's Gen7 legacy-ring path: LRI loads of `PP_DIR_DCLV` and
+`PP_DIR_BASE`, a GGTT posting read, and `INSTPM` TLB invalidation. The ring then
+disables arbitration, switches to a 64 KiB-aligned kernel-owned hardware context
+with restore inhibited, reenables arbitration, and issues two complete
+PIPE_CONTROL invalidate/flush barriers before dispatch. The posting-read values,
+context address, and all barrier markers are returned in submission diagnostics.
+The context transition is required because Gen7 caches the PDEs in the active
+hardware context; it also avoids Bay Trail's documented full-PPGTT timing
+instability when execution follows page-directory changes too quickly.
+
+The driver waits synchronously for the trusted completion marker. Every started
 submission resets RCS, restores and verifies the original ring, HWS, mode,
 `PP_DIR`, global PPGTT controls, L3 registers, `INSTPM`, wake state, display
 signature, and BCS state, then restores BO ownership to CPU. A timeout, fault,

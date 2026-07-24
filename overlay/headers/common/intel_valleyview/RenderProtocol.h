@@ -11,7 +11,7 @@
 namespace valleyview {
 
 constexpr uint32 kRenderProtocolMagic = 0x564c5652;
-constexpr uint16 kRenderProtocolVersion = 7;
+constexpr uint16 kRenderProtocolVersion = 9;
 constexpr uint32 kRenderSubmitMaxObjects = 64;
 
 enum RenderDeviceFlag : uint32 {
@@ -205,7 +205,11 @@ struct RenderSubmit {
 	RenderSubmitStage stage;
 	uint32			workspaceOffset;
 	uint32			workspacePages;
+	uint32			hardwareContextOffset;
 	uint32			ringTailBytes;
+	uint32			ppDirBaseRequested;
+	uint32			ppDirBaseObserved[2];
+	uint32			ppgttBarrierObserved[4];
 	uint32			completionMarker;
 	uint32			observedCompletionMarker;
 	uint32			parserReason;

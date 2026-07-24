@@ -138,27 +138,58 @@ JR_TEST(intel_valleyview_rcs, builds_an_isolated_ggtt_shadow_submission)
 	uint32 commands[kRcsSubmitRingCommandCount] = {};
 	const uint32 batch = 0x00203000;
 	const uint32 result = 0x00202000;
+	const uint32 context = 0x00400000;
+	const uint32 ppDir = 0x003e0000;
 	const uint32 marker = kRcsSubmitMarkerBase | 7;
 	JR_CHECK_EQ(BuildRcsSubmitRing(commands, kRcsSubmitRingCommandCount,
-		batch, result, marker), kRcsSubmitRingCommandCount);
-	JR_CHECK_EQ(commands[0], kMiBatchBufferStart);
-	JR_CHECK_EQ(commands[1], batch);
-	JR_CHECK_EQ(commands[2], kMiStoreRegisterMem | kMiUseGgtt);
-	JR_CHECK_EQ(commands[4], result + kRcsTimestampOffset);
-	JR_CHECK_EQ(commands[5], kGen7PipeControl);
-	JR_CHECK_EQ(commands[6], kRcsCompletionFlags);
-	JR_CHECK_EQ(commands[7], result + kRcsCompletionOffset);
-	JR_CHECK_EQ(commands[8], marker);
-	JR_CHECK_EQ(commands[9], kMiNoop);
+		batch, result, context, ppDir, marker), kRcsSubmitRingCommandCount);
+	JR_CHECK_EQ(commands[0], kMiLoadRegisterImm1);
+	JR_CHECK_EQ(commands[1], kRcsRingPpDirDclv);
+	JR_CHECK_EQ(commands[2], UINT32_MAX);
+	JR_CHECK_EQ(commands[3], kMiLoadRegisterImm1);
+	JR_CHECK_EQ(commands[4], kRcsRingPpDirBase);
+	JR_CHECK_EQ(commands[5], ppDir);
+	JR_CHECK_EQ(commands[6], kMiStoreRegisterMem | kMiUseGgtt);
+	JR_CHECK_EQ(commands[7], kRcsRingPpDirBase);
+	JR_CHECK_EQ(commands[8], result + kRcsPpgttLoadPostOffset);
+	JR_CHECK_EQ(commands[9], kMiLoadRegisterImm1);
+	JR_CHECK_EQ(commands[10], kRcsRingInstpm);
+	JR_CHECK_EQ(commands[16], kMiArbitrationControl);
+	JR_CHECK_EQ(commands[17], kMiSetContext);
+	JR_CHECK_EQ(commands[18],
+		context | kMiContextAddressGgtt
+			| kMiContextSaveExtendedState | kMiContextRestoreInhibit);
+	JR_CHECK_EQ(commands[19], kMiNoop);
+	JR_CHECK_EQ(commands[20],
+		kMiArbitrationControl | kMiArbitrationEnable);
+	JR_CHECK_EQ(commands[25], kGen7PipeControl);
+	JR_CHECK_EQ(commands[26], kRcsPpgttInvalidateFlags);
+	JR_CHECK_EQ(commands[29], kMiStoreRegisterMem | kMiUseGgtt);
+	JR_CHECK_EQ(commands[39], kGen7PipeControl);
+	JR_CHECK_EQ(commands[40], kRcsPpgttInvalidateFlags);
+	JR_CHECK_EQ(commands[47], kMiBatchBufferStart);
+	JR_CHECK_EQ(commands[48], batch);
+	JR_CHECK_EQ(commands[49], kMiStoreRegisterMem | kMiUseGgtt);
+	JR_CHECK_EQ(commands[51], result + kRcsTimestampOffset);
+	JR_CHECK_EQ(commands[52], kGen7PipeControl);
+	JR_CHECK_EQ(commands[53], kRcsCompletionFlags);
+	JR_CHECK_EQ(commands[54], result + kRcsCompletionOffset);
+	JR_CHECK_EQ(commands[55], marker);
+	JR_CHECK_EQ(commands[56], kMiNoop);
+	JR_CHECK_EQ(commands[57], kMiNoop);
 
 	JR_CHECK_EQ(BuildRcsSubmitRing(NULL, kRcsSubmitRingCommandCount,
-		batch, result, marker), 0u);
+		batch, result, context, ppDir, marker), 0u);
 	JR_CHECK_EQ(BuildRcsSubmitRing(commands, kRcsSubmitRingCommandCount - 1,
-		batch, result, marker), 0u);
+		batch, result, context, ppDir, marker), 0u);
 	JR_CHECK_EQ(BuildRcsSubmitRing(commands, kRcsSubmitRingCommandCount,
-		batch + 4, result, marker), 0u);
+		batch + 4, result, context, ppDir, marker), 0u);
 	JR_CHECK_EQ(BuildRcsSubmitRing(commands, kRcsSubmitRingCommandCount,
-		batch, result, 0), 0u);
+		batch, result, context + kPageSize, ppDir, marker), 0u);
+	JR_CHECK_EQ(BuildRcsSubmitRing(commands, kRcsSubmitRingCommandCount,
+		batch, result, context, ppDir + kPageSize, marker), 0u);
+	JR_CHECK_EQ(BuildRcsSubmitRing(commands, kRcsSubmitRingCommandCount,
+		batch, result, context, ppDir, 0), 0u);
 }
 
 
