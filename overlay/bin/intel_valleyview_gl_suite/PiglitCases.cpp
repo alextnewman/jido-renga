@@ -205,7 +205,6 @@ DrawTexture()
 	glVertex2f(-0.8f, 0.8f);
 	glEnd();
 	glDisable(GL_TEXTURE_2D);
-	glDeleteTextures(1, &texture);
 }
 
 
