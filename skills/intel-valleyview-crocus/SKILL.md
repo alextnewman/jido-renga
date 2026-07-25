@@ -22,11 +22,13 @@ through a private GGTT shadow and the client's PPGTT. Trusted synchronous
 completion is the initial fence contract. The Mesa 22.0.5 Haiku Crocus backend
 uses stable ABI addresses, keeps color and staging resources linear, permits
 only the hardware-required Y/W layouts for depth and stencil, and presents
-retired frontbuffers through HGL's clipped `BBitmap` path. Its add-on delegates
-to the packaged Software Pipe renderer if hardware setup fails. The combined
-probe reconstructs the exact ValleyView linear triangle corpus and verifies its
-offscreen color, geometry, fence, and allocation guard; this remains a hardware
-candidate until the combined Winky gate passes.
+retired frontbuffers through HGL's clipped `BBitmap` path. Compatibility
+uniforms use binding-table pull loads; display-list BOs are capped at 4 MiB;
+texture transfers and sampler validation use Haiku-safe allocation and atomic
+locks. Its add-on delegates to the packaged Software Pipe renderer if hardware
+setup fails. The combined probe reconstructs the exact ValleyView linear
+triangle corpus and verifies its offscreen color, geometry, fence, and
+allocation guard.
 
 Keep the hardware renderer fail-closed. It may instantiate only when
 `IsRenderReady()` succeeds. Until then, Haiku's Software Pipe add-on remains
@@ -173,7 +175,12 @@ ACTHD. Treat each application as one compatibility workload, not as proof of
 the complete OpenGL API. The image-resident `intel_valleyview_gl_suite` is the
 compatibility capture: run the complete process-isolated staged ladder once
 rather than flashing one-case probes. It enables Mesa batch decoding in
-addition to the ValleyView telemetry. The final transport and explicit-render
+addition to the ValleyView telemetry. Winky must complete all 18 cases without
+a parser rejection, timeout, GL error, or core; texture upload must change the
+frontbuffer and the final explicit case must recover. GLTeapot is a compatibility
+workload, not a performance benchmark: it is retrace-limited, emits roughly 162
+immediate primitives per frame, and exercises the current synchronous
+reset/readback/copy presentation path. The final transport and explicit-render
 gate remains:
 
 ```sh

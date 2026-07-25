@@ -321,7 +321,10 @@ stable PPGTT addresses directly, shares the one per-open context between
 Crocus's synchronous render batches, submits the fixed inline validation list,
 and treats the returned trusted completion as its fence. DRM sharing, userptr
 aliasing, performance monitors, and externally supplied tiled allocation fail
-closed or remain disabled.
+closed or remain disabled. The Haiku path uses binding-table pull constants
+because BYT VS push fetches do not retire in the isolated context, caps
+display-list save BOs at 4 MiB, and uses direct transfer records plus atomic
+Mesa-internal locks for texture upload and sampler validation.
 
 The HGL frontend creates the Crocus screen directly from
 `/dev/misc/intel_valleyview_probe`. Color and staging resources remain linear;
@@ -355,7 +358,20 @@ stages in separate child processes so one failure cannot exhaust the following
 cases. It sets `VALLEYVIEW_GPU_DEBUG` and Mesa's batch decoder itself, and
 labels every submission through `VALLEYVIEW_GPU_CASE`, producing one capture
 that includes command/state decoding and can locate a hang without a flash per
-hypothesis.
+hypothesis. Winky hardware passes all 18 stages without a parser rejection,
+timeout, GL error, or core dump. The uploaded-texture stage presents the
+expected green sample, and the final explicit stage proves recovery after the
+legacy cases.
+
+GLTeapot also renders through Crocus. Its default **Limit FPS to refresh rate**
+setting calls `WaitForRetrace()` after every frame; Winky currently sustains
+about 44 fps and can dip during manipulation. GLTeapot emits roughly 162
+immediate-mode primitives per frame, while the current renderer submits
+synchronously, resets/restores RCS after each batch, invalidates the CPU mapping,
+copies into a temporary `BBitmap`, and then copies into the direct framebuffer.
+Because GLTeapot uses `BDirectWindow`, app_server composition is not the primary
+limit. The result is a compatibility proof, not a representative Crocus
+throughput benchmark.
 
 `intel_valleyview_probe --render-memory-test` creates two client-owned buffers,
 clones both into the process, writes coordinate-dependent source and destination
