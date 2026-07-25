@@ -15,7 +15,8 @@ void DrawImmediateQuadStrips(unsigned count);
 void DrawImmediateTriangle();
 void DrawLighting();
 void DrawLines();
-void DrawTexture();
+void DrawTextureAllocation();
+void DrawTextureUpload();
 
 }
 

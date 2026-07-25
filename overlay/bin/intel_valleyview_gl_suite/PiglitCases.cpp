@@ -10,6 +10,7 @@
 #include <GL/gl.h>
 
 #include <math.h>
+#include <stdio.h>
 
 
 namespace glsuite {
@@ -178,20 +179,21 @@ DrawLighting()
 }
 
 
-void
-DrawTexture()
+static void
+DrawTexture(const void* data)
 {
-	static const GLubyte pixels[] = {
-		255, 32, 32, 255, 32, 255, 32, 255,
-		32, 32, 255, 255, 255, 255, 32, 255
-	};
+	printf("jr_gl_texture step=generate upload=%s\n",
+		data != NULL ? "yes" : "no");
 	GLuint texture;
 	glGenTextures(1, &texture);
+	printf("jr_gl_texture step=bind texture=%u\n", texture);
 	glBindTexture(GL_TEXTURE_2D, texture);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	printf("jr_gl_texture step=image\n");
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 2, 2, 0, GL_RGBA,
-		GL_UNSIGNED_BYTE, pixels);
+		GL_UNSIGNED_BYTE, data);
+	printf("jr_gl_texture step=draw\n");
 	glEnable(GL_TEXTURE_2D);
 	glColor3f(1.0f, 1.0f, 1.0f);
 	glBegin(GL_QUADS);
@@ -205,6 +207,25 @@ DrawTexture()
 	glVertex2f(-0.8f, 0.8f);
 	glEnd();
 	glDisable(GL_TEXTURE_2D);
+	printf("jr_gl_texture step=queued\n");
+}
+
+
+void
+DrawTextureAllocation()
+{
+	DrawTexture(NULL);
+}
+
+
+void
+DrawTextureUpload()
+{
+	static const GLubyte pixels[] = {
+		255, 32, 32, 255, 32, 255, 32, 255,
+		32, 32, 255, 255, 255, 255, 32, 255
+	};
+	DrawTexture(pixels);
 }
 
 

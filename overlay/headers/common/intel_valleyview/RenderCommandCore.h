@@ -127,6 +127,7 @@ IsAllowedRenderOpcode(uint32 opcode)
 		case kRenderVfStatisticsOpcode:
 		case 0x78080000: // 3DSTATE_VERTEX_BUFFERS
 		case 0x78090000: // 3DSTATE_VERTEX_ELEMENTS
+		case 0x780a0000: // 3DSTATE_INDEX_BUFFER
 		case 0x78300000: // 3DSTATE_URB_VS
 		case 0x78310000: // 3DSTATE_URB_HS
 		case 0x78320000: // 3DSTATE_URB_DS

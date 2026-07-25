@@ -69,7 +69,8 @@ enum CaseId {
 	kImmediate162,
 	kDepthFunctions,
 	kLighting,
-	kTexture,
+	kTextureAllocation,
+	kTextureUpload,
 	kLines
 };
 
@@ -93,7 +94,8 @@ const CaseDefinition kCases[] = {
 	{"immediate-quad-strip-162", kImmediate162},
 	{"depth-functions", kDepthFunctions},
 	{"fixed-lighting", kLighting},
-	{"immediate-texture", kTexture},
+	{"texture-allocation", kTextureAllocation},
+	{"texture-upload", kTextureUpload},
 	{"immediate-lines", kLines},
 	{"explicit-vbo-recovery", kExplicitVbo}
 };
@@ -322,8 +324,11 @@ private:
 			case kLighting:
 				glsuite::DrawLighting();
 				break;
-			case kTexture:
-				glsuite::DrawTexture();
+			case kTextureAllocation:
+				glsuite::DrawTextureAllocation();
+				break;
+			case kTextureUpload:
+				glsuite::DrawTextureUpload();
 				break;
 			case kLines:
 				glsuite::DrawLines();
