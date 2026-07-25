@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
+# SPDX-License-Identifier: MIT
+# SPDX-FileContributor: Generated with GitHub Copilot
+
+SubDir JIDO_RENGA_TOP overlay bin intel_valleyview_gl_suite ;
+
+UseBuildFeatureHeaders mesa ;
+
+local sources =
+	Main.cpp
+	PiglitCases.cpp
+	;
+Includes [ FGristFiles $(sources) ]
+	: [ BuildFeatureAttribute mesa : headers ] ;
+
+Application intel_valleyview_gl_suite :
+	$(sources)
+	:
+	be [ TargetLibsupc++ ]
+	[ BuildFeatureAttribute mesa : library ]
+;

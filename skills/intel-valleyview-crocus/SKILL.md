@@ -153,7 +153,8 @@ make -C tests -j4
 tools/weave generated.x86_64
 cd generated.x86_64
 ../tools/jr-jam -q intel_valleyview intel_valleyview.accelerant \
-  intel_valleyview_probe intel_valleyview_crocus_demo
+  intel_valleyview_probe intel_valleyview_crocus_demo \
+  intel_valleyview_gl_suite
 cd ..
 tools/build-crocus generated.x86_64
 ```
@@ -166,10 +167,12 @@ Conserve device flashes by accumulating cohesive functionality behind
 diagnostics. Keep a one-flash combined gate; do not add incremental hardware
 tests. Set `VALLEYVIEW_GPU_DEBUG=1` for application investigations; normal
 applications must not emit submit snapshots or per-frame presentation
-checksums. The mode reports the first 32 submissions and the first RCS stall,
-including the exact immutable batch words around ACTHD. Treat each application
-as one compatibility workload, not as proof of the complete OpenGL API. The
-final transport and explicit-render gate is:
+checksums. The mode reports up to 256 submissions and the first RCS stall for
+each `VALLEYVIEW_GPU_CASE`, including the exact immutable batch words around
+ACTHD. Treat each application as one compatibility workload, not as proof of
+the complete OpenGL API. The image-resident `intel_valleyview_gl_suite` is the
+compatibility capture: run the complete staged ladder once rather than flashing
+one-case probes. The final transport and explicit-render gate remains:
 
 ```sh
 intel_valleyview_probe --render-transport-test

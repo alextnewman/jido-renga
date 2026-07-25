@@ -339,12 +339,21 @@ visible half of the final hardware gate after
 `intel_valleyview_probe --render-transport-test` passes.
 
 Set `VALLEYVIEW_GPU_DEBUG=1` in an application's environment to enable Crocus
-submission and presentation telemetry. The mode reports the first 32 parsed
-batches, the first timeout's RCS instruction/fault snapshot and surrounding
-immutable batch words, and frontbuffer samples and checksums. It is an
-investigation interface, not an acceptance test; GLTeapot covers one
-fixed-function compatibility workload and does not represent the complete
-OpenGL surface.
+submission and presentation telemetry. The mode reports up to 256 parsed
+batches, the first timeout for each `VALLEYVIEW_GPU_CASE` with its RCS
+instruction/fault snapshot and surrounding immutable batch words, and
+frontbuffer samples and checksums. It is an investigation interface, not an
+acceptance test; GLTeapot covers one fixed-function compatibility workload and
+does not represent the complete OpenGL surface.
+
+`intel_valleyview_gl_suite` is a focused Haiku port of permissively licensed
+Piglit GL 1.0/1.1 batch, depth-function, and array-start cases, combined with
+project-owned explicit GLSL/VBO controls. One invocation tags and isolates
+clear, client-array, fixed-function VBO, immediate-mode, display-list,
+quad-strip scaling, depth, lighting, texture, line, and post-stall recovery
+stages. It sets `VALLEYVIEW_GPU_DEBUG` itself and labels every submission
+through `VALLEYVIEW_GPU_CASE`, producing one capture that can locate a hang
+without a flash per hypothesis.
 
 `intel_valleyview_probe --render-memory-test` creates two client-owned buffers,
 clones both into the process, writes coordinate-dependent source and destination

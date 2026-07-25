@@ -127,7 +127,7 @@ cd generated.x86_64
 ../tools/jr-jam -q gpio byt_gpio i2c_guarded iosf_mbi sdhci_embedded \
   cros_ec_keyboard i2c_atmel_mxt byt_max98090 intel_valleyview \
   intel_valleyview.accelerant intel_valleyview_probe \
-  intel_valleyview_crocus_demo
+  intel_valleyview_crocus_demo intel_valleyview_gl_suite
 ```
 
 Build the reproducible Mesa 22.0.5 Crocus add-on after the Haiku development

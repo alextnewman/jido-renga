@@ -29,6 +29,7 @@ JIDO_RENGA_BSP_IMAGE_ACCELERANTS += intel_valleyview.accelerant ;
 JIDO_RENGA_BSP_IMAGE_BIN +=
 	intel_valleyview_probe
 	intel_valleyview_crocus_demo
+	intel_valleyview_gl_suite
 	;
 JIDO_RENGA_BSP_IMAGE_OPENGL += $(JIDO_RENGA_CROCUS_RENDERER) ;
 
