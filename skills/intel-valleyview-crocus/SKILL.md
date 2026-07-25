@@ -171,8 +171,10 @@ checksums. The mode reports up to 256 submissions and the first RCS stall for
 each `VALLEYVIEW_GPU_CASE`, including the exact immutable batch words around
 ACTHD. Treat each application as one compatibility workload, not as proof of
 the complete OpenGL API. The image-resident `intel_valleyview_gl_suite` is the
-compatibility capture: run the complete staged ladder once rather than flashing
-one-case probes. The final transport and explicit-render gate remains:
+compatibility capture: run the complete process-isolated staged ladder once
+rather than flashing one-case probes. It enables Mesa batch decoding in
+addition to the ValleyView telemetry. The final transport and explicit-render
+gate remains:
 
 ```sh
 intel_valleyview_probe --render-transport-test

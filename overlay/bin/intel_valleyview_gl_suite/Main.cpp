@@ -13,8 +13,14 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+
+#include <spawn.h>
+#include <sys/wait.h>
 
 #include "PiglitCases.h"
+
+extern char** environ;
 
 extern "C" {
 GLuint APIENTRY glCreateShader(GLenum type);
@@ -67,14 +73,42 @@ enum CaseId {
 	kLines
 };
 
+struct CaseDefinition {
+	const char* name;
+	CaseId id;
+};
+
+const CaseDefinition kCases[] = {
+	{"clear", kClear},
+	{"explicit-vbo-glsl", kExplicitVbo},
+	{"client-arrays-fixed", kClientArrays},
+	{"vbo-fixed", kFixedVbo},
+	{"immediate-triangle", kImmediateTriangle},
+	{"immediate-quad-strip", kImmediateQuadStrip},
+	{"draw-arrays-start", kDrawArraysStart},
+	{"draw-arrays-start-list", kDrawArraysStartList},
+	{"display-list-begin-end", kDisplayListBeginEnd},
+	{"immediate-quad-strip-8", kImmediate8},
+	{"immediate-quad-strip-32", kImmediate32},
+	{"immediate-quad-strip-162", kImmediate162},
+	{"depth-functions", kDepthFunctions},
+	{"fixed-lighting", kLighting},
+	{"immediate-texture", kTexture},
+	{"immediate-lines", kLines},
+	{"explicit-vbo-recovery", kExplicitVbo}
+};
+
+const unsigned kCaseCount = sizeof(kCases) / sizeof(kCases[0]);
+
 
 class SuiteView : public BGLView {
 public:
-	SuiteView(BRect frame)
+	SuiteView(BRect frame, unsigned selectedCase)
 		:
 		BGLView(frame, "ValleyView GL suite", B_FOLLOW_ALL, B_WILL_DRAW,
 			BGL_RGB | BGL_DOUBLE | BGL_ALPHA | BGL_DEPTH),
 		fRan(false),
+		fSelectedCase(selectedCase),
 		fProgram(0),
 		fVertexBuffer(0),
 		fPositionAttribute(-1),
@@ -97,7 +131,7 @@ public:
 		if (fRan)
 			return;
 		fRan = true;
-		_RunSuite();
+		_RunSelectedCase();
 	}
 
 private:
@@ -334,40 +368,17 @@ private:
 			name, index, clearError, drawError, system_time() - started);
 	}
 
-	void _RunSuite()
+	void _RunSelectedCase()
 	{
-		static const struct {
-			const char* name;
-			CaseId id;
-		} cases[] = {
-			{"clear", kClear},
-			{"explicit-vbo-glsl", kExplicitVbo},
-			{"client-arrays-fixed", kClientArrays},
-			{"vbo-fixed", kFixedVbo},
-			{"immediate-triangle", kImmediateTriangle},
-			{"immediate-quad-strip", kImmediateQuadStrip},
-			{"draw-arrays-start", kDrawArraysStart},
-			{"draw-arrays-start-list", kDrawArraysStartList},
-			{"display-list-begin-end", kDisplayListBeginEnd},
-			{"immediate-quad-strip-8", kImmediate8},
-			{"immediate-quad-strip-32", kImmediate32},
-			{"immediate-quad-strip-162", kImmediate162},
-			{"depth-functions", kDepthFunctions},
-			{"fixed-lighting", kLighting},
-			{"immediate-texture", kTexture},
-			{"immediate-lines", kLines},
-			{"explicit-vbo-recovery", kExplicitVbo}
-		};
-		printf("jr_gl_suite begin cases=%zu\n", sizeof(cases) / sizeof(cases[0]));
-		for (unsigned index = 0; index < sizeof(cases) / sizeof(cases[0]);
-				index++) {
-			_RunCase(cases[index].name, cases[index].id, index);
+		if (fSelectedCase < kCaseCount) {
+			_RunCase(kCases[fSelectedCase].name, kCases[fSelectedCase].id,
+				fSelectedCase);
 		}
-		setenv("VALLEYVIEW_GPU_CASE", "suite-complete", 1);
-		printf("jr_gl_suite end cases=%zu\n", sizeof(cases) / sizeof(cases[0]));
+		be_app->PostMessage(B_QUIT_REQUESTED);
 	}
 
 	bool fRan;
+	unsigned fSelectedCase;
 	GLuint fProgram;
 	GLuint fVertexBuffer;
 	GLint fPositionAttribute;
@@ -377,39 +388,83 @@ private:
 
 class SuiteWindow : public BWindow {
 public:
-	SuiteWindow()
+	SuiteWindow(unsigned selectedCase)
 		:
 		BWindow(BRect(80, 80, 720, 560), "ValleyView GL compatibility suite",
 			B_TITLED_WINDOW, B_QUIT_ON_WINDOW_CLOSE)
 	{
-		AddChild(new SuiteView(Bounds()));
+		AddChild(new SuiteView(Bounds(), selectedCase));
 	}
 };
 
 
 class SuiteApplication : public BApplication {
 public:
-	SuiteApplication()
+	SuiteApplication(unsigned selectedCase)
 		:
-		BApplication("application/x-vnd.JidoRenga-ValleyViewGLSuite")
+		BApplication("application/x-vnd.JidoRenga-ValleyViewGLSuite"),
+		fSelectedCase(selectedCase)
 	{
 	}
 
 	virtual void ReadyToRun()
 	{
-		SuiteWindow* window = new SuiteWindow();
+		SuiteWindow* window = new SuiteWindow(fSelectedCase);
 		window->Show();
 	}
+
+private:
+	unsigned fSelectedCase;
 };
 
 }
 
 
 int
-main()
+main(int argc, char** argv)
 {
+	setvbuf(stdout, NULL, _IONBF, 0);
 	setenv("VALLEYVIEW_GPU_DEBUG", "1", 1);
-	SuiteApplication application;
-	application.Run();
-	return 0;
+	setenv("INTEL_DEBUG", "bat,submit", 1);
+	if (argc == 3 && strcmp(argv[1], "--case") == 0) {
+		char* end;
+		const unsigned long selected = strtoul(argv[2], &end, 10);
+		if (*end != '\0' || selected >= kCaseCount)
+			return 2;
+		SuiteApplication application(static_cast<unsigned>(selected));
+		application.Run();
+		return 0;
+	}
+	if (argc != 1)
+		return 2;
+
+	printf("jr_gl_suite begin cases=%u\n", kCaseCount);
+	unsigned launchFailures = 0;
+	for (unsigned index = 0; index < kCaseCount; index++) {
+		char caseNumber[16];
+		snprintf(caseNumber, sizeof(caseNumber), "%u", index);
+		char* childArguments[] = {
+			argv[0],
+			const_cast<char*>("--case"),
+			caseNumber,
+			NULL
+		};
+		pid_t child;
+		const int spawnStatus = posix_spawnp(&child, argv[0], NULL, NULL,
+			childArguments, environ);
+		if (spawnStatus != 0) {
+			printf("jr_gl_suite child name=%s index=%u spawn=%d\n",
+				kCases[index].name, index, spawnStatus);
+			launchFailures++;
+			continue;
+		}
+		int childStatus;
+		const pid_t waited = waitpid(child, &childStatus, 0);
+		printf("jr_gl_suite child name=%s index=%u waited=%" B_PRId32
+			" status=%#x\n", kCases[index].name, index,
+			static_cast<int32>(waited), childStatus);
+	}
+	printf("jr_gl_suite end cases=%u launch_failures=%u\n", kCaseCount,
+		launchFailures);
+	return launchFailures == 0 ? 0 : 1;
 }

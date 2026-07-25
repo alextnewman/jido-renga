@@ -351,9 +351,11 @@ Piglit GL 1.0/1.1 batch, depth-function, and array-start cases, combined with
 project-owned explicit GLSL/VBO controls. One invocation tags and isolates
 clear, client-array, fixed-function VBO, immediate-mode, display-list,
 quad-strip scaling, depth, lighting, texture, line, and post-stall recovery
-stages. It sets `VALLEYVIEW_GPU_DEBUG` itself and labels every submission
-through `VALLEYVIEW_GPU_CASE`, producing one capture that can locate a hang
-without a flash per hypothesis.
+stages in separate child processes so one failure cannot exhaust the following
+cases. It sets `VALLEYVIEW_GPU_DEBUG` and Mesa's batch decoder itself, and
+labels every submission through `VALLEYVIEW_GPU_CASE`, producing one capture
+that includes command/state decoding and can locate a hang without a flash per
+hypothesis.
 
 `intel_valleyview_probe --render-memory-test` creates two client-owned buffers,
 clones both into the process, writes coordinate-dependent source and destination
