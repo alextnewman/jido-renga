@@ -340,10 +340,11 @@ visible half of the final hardware gate after
 
 Set `VALLEYVIEW_GPU_DEBUG=1` in an application's environment to enable Crocus
 submission and presentation telemetry. The mode reports the first 32 parsed
-batches, the first timeout's RCS instruction/fault snapshot, and frontbuffer
-samples and checksums. It is an investigation interface, not an acceptance
-test; GLTeapot covers one fixed-function compatibility workload and does not
-represent the complete OpenGL surface.
+batches, the first timeout's RCS instruction/fault snapshot and surrounding
+immutable batch words, and frontbuffer samples and checksums. It is an
+investigation interface, not an acceptance test; GLTeapot covers one
+fixed-function compatibility workload and does not represent the complete
+OpenGL surface.
 
 `intel_valleyview_probe --render-memory-test` creates two client-owned buffers,
 clones both into the process, writes coordinate-dependent source and destination
