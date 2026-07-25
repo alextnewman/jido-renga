@@ -21,6 +21,7 @@ constexpr bigtime_t kForcewakeTimeoutUs = 50000;
 constexpr bigtime_t kGtThreadTimeoutUs = 5000;
 constexpr bigtime_t kGtFifoTimeoutUs = 10000;
 constexpr bigtime_t kRingTimeoutUs = 100000;
+constexpr bigtime_t kRenderSubmitTimeoutUs = 500000;
 constexpr bigtime_t kResetTimeoutUs = 2000;
 constexpr uint32 kSourceSentinel = 0x11111111;
 constexpr uint32 kDestinationSentinel = 0x22222222;
@@ -751,11 +752,12 @@ EnableRcsRing(volatile uint8* registers, uint32 tailBytes)
 
 
 status_t
-WaitForRcsCompletion(const uint32* result, uint32 marker)
+WaitForRcsCompletion(const uint32* result, uint32 marker,
+	bigtime_t timeoutUs = kRingTimeoutUs)
 {
 	const volatile uint32* value = result
 		+ valleyview::kRcsCompletionOffset / sizeof(uint32);
-	const bigtime_t deadline = system_time() + kRingTimeoutUs;
+	const bigtime_t deadline = system_time() + timeoutUs;
 	do {
 		memory_read_barrier();
 		if (*value == marker)
@@ -1641,7 +1643,8 @@ ExecuteRcsSubmission(ValleyViewDevice& device,
 	submit.stage = valleyview::kRenderSubmitStageRingStarted;
 	resetRcs = true;
 
-	status = WaitForRcsCompletion(result, submit.completionMarker);
+	status = WaitForRcsCompletion(result, submit.completionMarker,
+		kRenderSubmitTimeoutUs);
 	memory_read_barrier();
 	submit.ppDirBaseObserved[0]
 		= result[valleyview::kRcsPpgttLoadPostOffset / sizeof(uint32)];

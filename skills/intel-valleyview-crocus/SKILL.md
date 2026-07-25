@@ -164,7 +164,11 @@ presentation under concurrent render load. Build success is not hardware proof.
 
 Conserve device flashes by accumulating cohesive functionality behind
 diagnostics. Keep a one-flash combined gate; do not add incremental hardware
-tests. The final gate is:
+tests. Set `VALLEYVIEW_GPU_DEBUG=1` for application investigations; normal
+applications must not emit submit snapshots or per-frame presentation
+checksums. The mode reports the first 32 submissions and the first RCS stall.
+Treat each application as one compatibility workload, not as proof of the
+complete OpenGL API. The final transport and explicit-render gate is:
 
 ```sh
 intel_valleyview_probe --render-transport-test
