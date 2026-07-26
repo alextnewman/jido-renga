@@ -25,8 +25,9 @@
 by humans and AI together.**
 
 Jidō Renga is a Haiku-based driver project, not a broad fork of Haiku. It keeps
-Haiku and its buildtools as pinned, unmodified submodules, then grafts
-project-owned kernel add-ons into Haiku's build at composition time.
+Haiku and its buildtools as pinned, unmodified submodules, grafts project-owned
+kernel add-ons into Haiku's build at composition time, and maintains the Mesa
+fork used by its hardware OpenGL renderer.
 
 The name means "automatic linked verse." Each supported machine is one verse:
 a focused board-support package (BSP) with the drivers and image policy needed
@@ -46,7 +47,8 @@ The first BSP targets the Samsung Chromebook 2 `XE500C12`, ChromeOS board
 | `byt_gpio` | Interrupt-driven GPIO controller | Bay Trail `INT33FC`/`INT33B2` |
 | `iosf_mbi` | Shared IOSF sideband access | Bay Trail transaction router |
 | `sdhci_embedded` | eMMC and removable-SD host controller | ACPI `80860F14`, `80860F16` |
-| `intel_valleyview` | Native P0 graphics, BCS page-flip presentation, and ARGB cursor | ValleyView `8086:0f31`, eDP on DP_C |
+| `intel_valleyview` | Native P0 graphics and isolated RCS render service | ValleyView `8086:0f31`, eDP on DP_C |
+| `Crocus` | Hardware OpenGL renderer with Software Pipe fallback | Mesa Gallium on ValleyView Gen7 |
 | `cros_ec_keyboard` | 8042-compatible EC keyboard | ACPI `GOOG000A` |
 | `i2c_atmel_mxt` | Atmel maXTouch touchpad | ACPI `ATML0000` |
 | `byt_max98090` | Internal audio (SST + MAX98090) | SST `80860F28`, I2C `193C9890` |
@@ -63,6 +65,25 @@ vblank. The display never scans the buffer being drawn or copied. A 64x64 ARGB
 hardware cursor, PWM brightness, and soft DPMS complete the P0 path. This
 architecture is hardware-validated for fast, smooth window, text, and cursor
 motion without the transient block shimmer of direct live-framebuffer updates.
+
+The graphics stack also provides hardware-accelerated OpenGL through Crocus.
+The kernel render boundary gives each client a scratch-backed 2 GiB Gen7 PPGTT,
+stable private GPU addresses, immutable kernel-owned batch shadows, strict
+command parsing, trusted completion, and mandatory RCS reset and restoration.
+The renderer is built reproducibly from the maintained
+[`alextnewman/mesa`](https://github.com/alextnewman/mesa) fork and installed in
+Haiku's higher-priority non-packaged OpenGL path. If hardware discovery or
+screen creation fails, it delegates to Haiku's packaged Software Pipe renderer
+rather than exposing a partial hardware path.
+
+Both modern and compatibility rendering are hardware-proven on Winky. The
+validation includes an exact Crocus color/coverage/interpolation corpus and an
+18-stage, process-isolated OpenGL suite covering explicit GLSL/VBO drawing,
+client arrays, immediate mode, display lists, indexed draws, depth, lighting,
+textures, lines, and post-failure recovery. GLTeapot renders through Crocus as
+a real legacy application. The current path favors correctness and isolation
+over throughput: submission is synchronous, RCS is reset after each batch, and
+presentation reads back a linear color buffer through a Haiku `BBitmap`.
 
 The audio driver implements the complete legacy Intel SST/MRFLD playback path:
 firmware loading, codec initialization, 10-command route configuration, stream
@@ -188,6 +209,7 @@ build the add-ons without applying a BSP image policy. Set
 
 ```text
 overlay/    project-owned kernel add-ons and public headers
+mesa/       maintained Mesa fork used by the Crocus renderer build
 config/     graft template, BSP manifests, and revision configuration
 firmware/   separately licensed firmware vendored unchanged for BSP packages
 tools/      weave, revision, Jam wrapper, and terminal banner
@@ -221,8 +243,9 @@ correctness, licensing, and maintenance standards as any other kernel code.
 
 ## Status and license
 
-Jidō Renga is experimental board-support software. The Winky BSP is usable, but
-interfaces and implementation details may change as hardware support expands.
+Jidō Renga is experimental board-support software. The Winky BSP is usable with
+native P0 desktop graphics and hardware Crocus OpenGL, but interfaces and
+implementation details may change as hardware support expands.
 
 The project is MIT-licensed. See [`LICENSE`](LICENSE). Licensing metadata follows
 the [REUSE](https://reuse.software/) specification through per-file SPDX tags,
