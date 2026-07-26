@@ -39,7 +39,11 @@ enum RenderCapability : uint64 {
 	kRenderCapabilityCommandIsolation = 1ull << 9,
 	kRenderCapabilityResetRecovery = 1ull << 10,
 	kRenderCapabilityDrawablePresent = 1ull << 11,
-	kRenderCapabilityPpgtt = 1ull << 12
+	kRenderCapabilityPpgtt = 1ull << 12,
+	kRenderCapabilityQueuedSubmission = 1ull << 13,
+	kRenderCapabilityTimelineFences = 1ull << 14,
+	kRenderCapabilityPersistentRcsContext = 1ull << 15,
+	kRenderCapabilityDirectGpuPresent = 1ull << 16
 };
 
 enum RenderBufferFlag : uint32 {

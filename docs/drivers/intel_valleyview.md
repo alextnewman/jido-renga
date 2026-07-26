@@ -373,6 +373,12 @@ Because GLTeapot uses `BDirectWindow`, app_server composition is not the primary
 limit. The result is a compatibility proof, not a representative Crocus
 throughput benchmark.
 
+The asynchronous successor is specified in
+[`docs/design/intel_valleyview_p2.md`](../design/intel_valleyview_p2.md). P2
+keeps this Safe GL path as a separately selectable recovery mode while moving
+healthy work to queued timelines, persistent contexts, and fence-aware direct
+presentation. EGL remains outside that phase.
+
 `intel_valleyview_probe --render-memory-test` creates two client-owned buffers,
 clones both into the process, writes coordinate-dependent source and destination
 patterns, confirms that userspace cannot delete the driver-owned mappings,

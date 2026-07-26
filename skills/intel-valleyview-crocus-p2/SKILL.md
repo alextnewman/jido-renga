@@ -1,0 +1,94 @@
+---
+name: intel-valleyview-crocus-p2
+description: Build Jidō Renga's asynchronous P2 Crocus engine on ValleyView while preserving Safe GL isolation and P0. Use for queued submission, timeline fences, persistent RCS contexts, scheduling, residency, direct GPU presentation, performance, or conformance work.
+---
+
+# Building the ValleyView P2 render engine
+
+Read [`AGENTS.md`](../../AGENTS.md), the
+[`jido-renga-overlay-build`](../jido-renga-overlay-build/SKILL.md),
+[`intel-valleyview-p0`](../intel-valleyview-p0/SKILL.md), and
+[`intel-valleyview-crocus`](../intel-valleyview-crocus/SKILL.md) skills first.
+The P2 contract is
+[`docs/design/intel_valleyview_p2.md`](../../docs/design/intel_valleyview_p2.md).
+
+## Phase boundary
+
+P1 is Safe GL and remains a supported recovery mode. P2 adds a separately
+advertised queued engine. Do not make existing synchronous submission
+success-shaped when P2 is unavailable, and do not advertise P2 because queue
+types or worker code merely exist.
+
+EGL, GLES, WebGL, and WebKit are P3. Do not add them to P2 patches.
+
+## Queue ownership
+
+- Copy and parse the batch before enqueue succeeds.
+- Hold kernel references on every shadow, BO, context, and completion record
+  until ordered retirement or explicit failure.
+- Assign nonzero 64-bit fences monotonically and never wrap them.
+- Retire fences in submission order per client.
+- Use explicit read/write/execute object flags. Only the batch BO is
+  executable, and it is never writable by the GPU.
+- Bound per-client and device queue depth. Apply backpressure; do not allocate
+  unbounded kernel work.
+- Schedule clients round-robin. A client that continuously submits must not
+  starve another ready client.
+
+The device worker owns RCS programming. Ioctl, `select()`, close, and
+presentation paths must not program the ring.
+
+## Haiku synchronization
+
+Use a kernel worker plus semaphore for queued work. Use per-client wait
+semaphores for blocking fence waits and `select_sync_pool` for event-loop
+integration:
+
+- `B_SELECT_READ`: one or more completion records are ready;
+- `B_SELECT_WRITE`: queue capacity is available;
+- `B_SELECT_ERROR`: a fence failed, the context was lost, or the client was
+  disconnected.
+
+Never spin in userspace. Interrupt handlers acknowledge hardware, capture the
+minimal retirement state, and release a semaphore with
+`B_DO_NOT_RESCHEDULE`; parsing, reset, cleanup, and notification run outside
+interrupt context.
+
+## Persistent RCS
+
+Keep per-context ring, HWS, trusted shadow storage, hardware context, and PPGTT
+resources alive. Reuse the current context for adjacent jobs. On a client
+switch, execute the proven directory-load, TLB-invalidate, arbitration, and
+`MI_SET_CONTEXT` sequence.
+
+Do not reset healthy submissions. On timeout or fault:
+
+1. stop accepting work for the affected context;
+2. snapshot the engine and trusted completion memory;
+3. reset and restore using the Safe GL machinery;
+4. complete proven fences only;
+5. fail or cancel every uncertain fence in order;
+6. quarantine memory whose retirement cannot be established; and
+7. preserve P0 and other clients whenever hardware state permits.
+
+## Memory and presentation
+
+BO close is deferred while queued or active references exist. CPU access waits
+only for conflicting writer/reader fences. Stable VA does not imply permanent
+residency.
+
+Direct presentation is fence-aware BCS work, not CPU readback. Preserve
+`device.lock -> presentLock -> bcsLock`; never nest `renderLock` and
+`presentLock`. Retain the `BBitmap` path as a fallback until app_server has a
+proven shareable surface contract.
+
+## Validation order
+
+1. Host-test queue, timeline, access, fairness, cancellation, and wrap policy.
+2. Prove queued Safe execution with two clients and deterministic waits.
+3. Prove persistent context reuse and failure-only reset.
+4. Prove direct BCS presentation and frame dropping.
+5. Expand residency and resource formats.
+6. Run broad conformance only after the engine metrics and recovery gates pass.
+
+Every hardware capture must include Safe GL control results and P0 state.

@@ -10,6 +10,10 @@ Read [`AGENTS.md`](../../AGENTS.md), the
 the [`intel-valleyview-p0`](../intel-valleyview-p0/SKILL.md) skill first. Never
 modify the captive `haiku/` or `buildtools/` submodules.
 
+Safe GL is the P1 baseline. Performance-oriented queue, timeline, persistent
+context, residency, and direct-presentation work must also follow the
+[`intel-valleyview-crocus-p2`](../intel-valleyview-crocus-p2/SKILL.md) skill.
+
 ## Current boundary
 
 `kGetRenderDeviceInfo` is the userspace discovery boundary. Its ABI is
