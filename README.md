@@ -49,6 +49,7 @@ The first BSP targets the Samsung Chromebook 2 `XE500C12`, ChromeOS board
 | `sdhci_embedded` | eMMC and removable-SD host controller | ACPI `80860F14`, `80860F16` |
 | `intel_valleyview` | Native P0 graphics and isolated RCS render service | ValleyView `8086:0f31`, eDP on DP_C |
 | `Crocus` | Hardware OpenGL renderer with Software Pipe fallback | Mesa Gallium on ValleyView Gen7 |
+| `byt_xhci_filter` | PCI policy filter delegating to stock xHCI | PCI `8086:0f35` |
 | `cros_ec_keyboard` | 8042-compatible EC keyboard | ACPI `GOOG000A` |
 | `i2c_atmel_mxt` | Atmel maXTouch touchpad | ACPI `ATML0000` |
 | `byt_max98090` | Internal audio (SST + MAX98090) | SST `80860F28`, I2C `193C9890` |
@@ -95,6 +96,10 @@ now use SCORE GPIO interrupts with 200 ms debounce and automatic MAX98090
 speaker/headphone switching; insertion and removal are hardware-validated and
 reliable. Board assumptions are selected at load time from immutable
 `byt_max98090` profiles, with Winky currently the sole configured profile.
+The Winky image also places `byt_xhci_filter` ahead of unchanged stock xHCI.
+The filter preserves coreboot's Bay Trail USB port routing through a delegated
+PCI interface. External USB insertion and internal-camera enumeration are
+hardware-validated; the internal Bluetooth device remains unvalidated.
 Winky's profile follows the historical UCM hardware policy: speaker volume is
 capped at 0 dB with -6 dB at the speaker mixer, while headphones remain capped
 at -9 dB. The separate ChromeOS -5 dB speaker curve was software gain for its
@@ -145,9 +150,9 @@ cd generated.x86_64
 cd ..
 tools/weave generated.x86_64
 cd generated.x86_64
-../tools/jr-jam -q gpio byt_gpio i2c_guarded iosf_mbi sdhci_embedded \
-  cros_ec_keyboard i2c_atmel_mxt byt_max98090 intel_valleyview \
-  intel_valleyview.accelerant intel_valleyview_probe \
+../tools/jr-jam -q gpio byt_gpio byt_xhci_filter i2c_guarded iosf_mbi \
+  sdhci_embedded cros_ec_keyboard i2c_atmel_mxt byt_max98090 \
+  intel_valleyview intel_valleyview.accelerant intel_valleyview_probe \
   intel_valleyview_crocus_demo intel_valleyview_gl_suite
 ```
 

@@ -24,7 +24,8 @@ CXXFLAGS := -std=c++17 -Wall -Wextra -Wshadow -O1 -g -pthread \
 	-I../overlay/drivers/gpio/byt_gpio \
 	-I../overlay/bus_managers/iosf_mbi \
 	-Ishims -I../overlay/drivers/input/i2c_atmel_mxt \
-	-I../overlay/drivers/audio/byt_max98090
+	-I../overlay/drivers/audio/byt_max98090 \
+	-I../overlay/busses/usb/byt_xhci_filter
 
 DRIVER_DIR := ../overlay/busses/mmc/sdhci_embedded
 MXT_DIR := ../overlay/drivers/input/i2c_atmel_mxt
@@ -71,6 +72,7 @@ TEST_SRC := \
 	i2c_atmel_mxt/test_message_protocol.cpp \
 	i2c_atmel_mxt/test_touch_engine.cpp \
 	byt_max98090/test_firmware.cpp \
+	byt_xhci_filter/test_policy.cpp \
 	byt_gpio/test_baytrail_gpio.cpp \
 	sdhci_embedded/test_main.cpp
 

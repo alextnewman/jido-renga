@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
+# SPDX-License-Identifier: MIT
+# SPDX-FileContributor: Generated with GitHub Copilot
+
+SubDir JIDO_RENGA_TOP overlay busses usb byt_xhci_filter ;
+
+SubDirSysHdrs $(JIDO_RENGA_TOP) overlay headers ;
+UsePrivateKernelHeaders ;
+
+if $(TARGET_ARCH) = "x86" || $(TARGET_ARCH) = "x86_64" {
+	KernelAddon byt_xhci_filter :
+		Driver.cpp
+		;
+}

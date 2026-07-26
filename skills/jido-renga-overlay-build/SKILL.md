@@ -87,9 +87,9 @@ tools/weave generated.x86_64
 
 # 3. Build from inside the build dir, via the jr-jam wrapper.
 cd generated.x86_64
-../tools/jr-jam -q gpio byt_gpio i2c_guarded iosf_mbi sdhci_embedded \
-  cros_ec_keyboard i2c_atmel_mxt byt_max98090 intel_valleyview \
-  intel_valleyview.accelerant intel_valleyview_probe \
+../tools/jr-jam -q gpio byt_gpio byt_xhci_filter i2c_guarded iosf_mbi \
+  sdhci_embedded cros_ec_keyboard i2c_atmel_mxt byt_max98090 \
+  intel_valleyview intel_valleyview.accelerant intel_valleyview_probe \
   intel_valleyview_crocus_demo
 
 # 4. Build the external Mesa Crocus source corpus into its disposable add-on.
@@ -115,9 +115,9 @@ outside the submodules is only an extraction source and is never referenced.
 The default BSP is `winky`; set `JIDO_RENGA_BSP = none` in `UserBuildConfig`
 before the overlay walk to build the add-ons without a BSP image policy.
 
-### Proven Winky composition
+### Winky composition
 
-The Winky image applies three surgical composition policies:
+The Winky image applies four surgical composition policies:
 
 1. Omit stock `add-ons/kernel/busses/mmc/sdhci`, package
    `sdhci_embedded` in its canonical bus directory, and create its boot link.
@@ -127,6 +127,9 @@ The Winky image applies three surgical composition policies:
    attributes during child registration, then package it under the canonical
    `bus_managers/i2c` filename. Unchanged I2C companion units compile directly
    from the captive tree; no captive source is copied or rewritten.
+4. Package `byt_xhci_filter` alongside unchanged stock xHCI. The filter claims
+   only Bay Trail `8086:0f35`, delegates the complete PCI interface, and makes
+   the stock driver's legacy routing writes preserve coreboot's live values.
 
 ### maXTouch message-drain invariant
 
@@ -288,9 +291,9 @@ git diff --check
 
 # Cross-link every overlay module used by the BSP.
 cd generated.x86_64
-../tools/jr-jam -q gpio byt_gpio i2c_guarded iosf_mbi sdhci_embedded \
-  cros_ec_keyboard i2c_atmel_mxt byt_max98090 intel_valleyview \
-  intel_valleyview.accelerant intel_valleyview_probe
+../tools/jr-jam -q gpio byt_gpio byt_xhci_filter i2c_guarded iosf_mbi \
+  sdhci_embedded cros_ec_keyboard i2c_atmel_mxt byt_max98090 \
+  intel_valleyview intel_valleyview.accelerant intel_valleyview_probe
 
 # Compose the real package/image, not only loose add-ons.
 ../tools/jr-jam -q @nightly-anyboot
@@ -300,7 +303,7 @@ package_tool=$(find objects/linux -path '*/tools/package/package' \
   -type f -print -quit)
 "$package_tool" list -p \
   objects/haiku/x86_64/packaging/packages/haiku.hpkg \
-  | grep -E 'add-ons/(accelerants|kernel/(boot|bus_managers|busses/mmc|drivers/(graphics|input)))|bin/intel_valleyview_probe'
+  | grep -E 'add-ons/(accelerants|kernel/(boot|bus_managers|busses/(mmc|usb)|drivers/(graphics|input)))|bin/intel_valleyview_probe'
 ```
 
 For Winky, require all of these:
@@ -312,6 +315,8 @@ For Winky, require all of these:
 - `add-ons/kernel/drivers/graphics/intel_valleyview`
 - `add-ons/accelerants/intel_valleyview.accelerant`
 - `bin/intel_valleyview_probe`
+- `add-ons/kernel/busses/usb/byt_xhci_filter`
+- `add-ons/kernel/busses/usb/xhci`
 - `add-ons/kernel/drivers/input/i2c_atmel_mxt`
 - `add-ons/kernel/drivers/input/i2c_elan`
 - no stock `add-ons/kernel/busses/mmc/sdhci`

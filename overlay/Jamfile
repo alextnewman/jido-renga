@@ -71,6 +71,7 @@ SubInclude JIDO_RENGA_TOP overlay bus_managers iosf_mbi ;
 
 # Bus drivers (host controllers).
 SubInclude JIDO_RENGA_TOP overlay busses mmc sdhci_embedded ;
+SubInclude JIDO_RENGA_TOP overlay busses usb byt_xhci_filter ;
 
 # Leaf drivers.
 SubInclude JIDO_RENGA_TOP overlay drivers audio byt_max98090 ;
@@ -92,6 +93,7 @@ SubInclude JIDO_RENGA_TOP overlay bin intel_valleyview_gl_suite ;
 JIDO_RENGA_BSP_IMAGE_BUS_MANAGERS = ;
 JIDO_RENGA_BSP_IMAGE_I2C_BUS_MANAGER = ;
 JIDO_RENGA_BSP_IMAGE_BUSSES_MMC = ;
+JIDO_RENGA_BSP_IMAGE_BUSSES_USB = ;
 JIDO_RENGA_BSP_IMAGE_DRIVERS_AUDIO = ;
 JIDO_RENGA_BSP_IMAGE_DRIVERS_GRAPHICS = ;
 JIDO_RENGA_BSP_IMAGE_DRIVERS_GPIO = ;
@@ -147,6 +149,8 @@ rule JidoRengaPackageTargets directory : targets
 			additions = $(JIDO_RENGA_BSP_IMAGE_BUS_MANAGERS) ;
 		} else if $(directoryPath) = add-ons/kernel/busses/mmc {
 			additions = $(JIDO_RENGA_BSP_IMAGE_BUSSES_MMC) ;
+		} else if $(directoryPath) = add-ons/kernel/busses/usb {
+			additions = $(JIDO_RENGA_BSP_IMAGE_BUSSES_USB) ;
 		} else if $(directoryPath) = add-ons/accelerants {
 			additions = $(JIDO_RENGA_BSP_IMAGE_ACCELERANTS) ;
 		} else if $(directoryPath) = bin {
