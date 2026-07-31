@@ -73,10 +73,17 @@ to stock xHCI, and preserves usable port routing.
 The internal camera is also hardware-validated to enumerate as UVC 1.0 device
 `2232:1068`.
 
+Camera streaming is outside this filter's scope. The camera requires a
+three-transaction high-speed isochronous endpoint, which stock Haiku xHCI
+currently encodes incorrectly. A single-transaction userspace fallback reaches
+the device but receives header-only UVC packets. See
+[`jr_uvc_probe.md`](jr_uvc_probe.md).
+
 The following remain unvalidated:
 
 - internal Bluetooth `8087:07dc` enumerates;
 - a USB device present during boot enumerates;
 - removal/reinsertion and both external ports enumerate without rebooting.
 
-Camera UVC support remains a separate Media Kit task.
+Camera UVC streaming remains blocked on a generic upstream xHCI fix; no Media
+Kit add-on is planned before that transport works.

@@ -50,6 +50,8 @@ The first BSP targets the Samsung Chromebook 2 `XE500C12`, ChromeOS board
 | `intel_valleyview` | Native P0 graphics and isolated RCS render service | ValleyView `8086:0f31`, eDP on DP_C |
 | `Crocus` | Hardware OpenGL renderer with Software Pipe fallback | Mesa Gallium on ValleyView Gen7 |
 | `byt_xhci_filter` | PCI policy filter delegating to stock xHCI | PCI `8086:0f35` |
+| `jr_uvc_probe` | Userspace UVC enumeration and capture fitness sweep | Internal camera `2232:1068` |
+| `jr_uvc_collect` | One-command UVC evidence collection and archive | `jr_uvc_probe` output |
 | `cros_ec_keyboard` | 8042-compatible EC keyboard | ACPI `GOOG000A` |
 | `i2c_atmel_mxt` | Atmel maXTouch touchpad | ACPI `ATML0000` |
 | `byt_max98090` | Internal audio (SST + MAX98090) | SST `80860F28`, I2C `193C9890` |
@@ -99,7 +101,10 @@ reliable. Board assumptions are selected at load time from immutable
 The Winky image also places `byt_xhci_filter` ahead of unchanged stock xHCI.
 The filter preserves coreboot's Bay Trail USB port routing through a delegated
 PCI interface. External USB insertion and internal-camera enumeration are
-hardware-validated; the internal Bluetooth device remains unvalidated.
+hardware-validated. Camera controls and all 41 standard mode negotiations work,
+but video streaming is blocked by stock Haiku xHCI's high-bandwidth
+isochronous-endpoint handling; the single-transaction fallback receives only
+UVC headers. No camera Media Kit add-on is shipped.
 Winky's profile follows the historical UCM hardware policy: speaker volume is
 capped at 0 dB with -6 dB at the speaker mixer, while headphones remain capped
 at -9 dB. The separate ChromeOS -5 dB speaker curve was software gain for its
@@ -153,7 +158,8 @@ cd generated.x86_64
 ../tools/jr-jam -q gpio byt_gpio byt_xhci_filter i2c_guarded iosf_mbi \
   sdhci_embedded cros_ec_keyboard i2c_atmel_mxt byt_max98090 \
   intel_valleyview intel_valleyview.accelerant intel_valleyview_probe \
-  intel_valleyview_crocus_demo intel_valleyview_gl_suite
+  intel_valleyview_crocus_demo intel_valleyview_gl_suite jr_uvc_probe \
+  jr_uvc_collect
 ```
 
 Build the reproducible Mesa 22.0.5 Crocus add-on after the Haiku development
@@ -181,6 +187,8 @@ packages; later builds are incremental.
 
 The complete build, extension, and validation procedure is in
 [`skills/jido-renga-overlay-build/SKILL.md`](skills/jido-renga-overlay-build/SKILL.md).
+The Winky UVC fitness tool is documented in
+[`docs/drivers/jr_uvc_probe.md`](docs/drivers/jr_uvc_probe.md).
 
 ## Image composition
 

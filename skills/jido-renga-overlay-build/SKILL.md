@@ -90,7 +90,7 @@ cd generated.x86_64
 ../tools/jr-jam -q gpio byt_gpio byt_xhci_filter i2c_guarded iosf_mbi \
   sdhci_embedded cros_ec_keyboard i2c_atmel_mxt byt_max98090 \
   intel_valleyview intel_valleyview.accelerant intel_valleyview_probe \
-  intel_valleyview_crocus_demo
+  intel_valleyview_crocus_demo jr_uvc_probe jr_uvc_collect
 
 # 4. Build the external Mesa Crocus source corpus into its disposable add-on.
 ../tools/jr-jam -q haiku_devel.hpkg
@@ -293,7 +293,8 @@ git diff --check
 cd generated.x86_64
 ../tools/jr-jam -q gpio byt_gpio byt_xhci_filter i2c_guarded iosf_mbi \
   sdhci_embedded cros_ec_keyboard i2c_atmel_mxt byt_max98090 \
-  intel_valleyview intel_valleyview.accelerant intel_valleyview_probe
+  intel_valleyview intel_valleyview.accelerant intel_valleyview_probe \
+  jr_uvc_probe jr_uvc_collect
 
 # Compose the real package/image, not only loose add-ons.
 ../tools/jr-jam -q @nightly-anyboot
@@ -303,7 +304,7 @@ package_tool=$(find objects/linux -path '*/tools/package/package' \
   -type f -print -quit)
 "$package_tool" list -p \
   objects/haiku/x86_64/packaging/packages/haiku.hpkg \
-  | grep -E 'add-ons/(accelerants|kernel/(boot|bus_managers|busses/(mmc|usb)|drivers/(graphics|input)))|bin/intel_valleyview_probe'
+  | grep -E 'add-ons/(accelerants|kernel/(boot|bus_managers|busses/(mmc|usb)|drivers/(graphics|input)))|bin/(intel_valleyview_probe|jr_uvc_probe)'
 ```
 
 For Winky, require all of these:
@@ -315,6 +316,8 @@ For Winky, require all of these:
 - `add-ons/kernel/drivers/graphics/intel_valleyview`
 - `add-ons/accelerants/intel_valleyview.accelerant`
 - `bin/intel_valleyview_probe`
+- `bin/jr_uvc_probe`
+- `bin/jr_uvc_collect`
 - `add-ons/kernel/busses/usb/byt_xhci_filter`
 - `add-ons/kernel/busses/usb/xhci`
 - `add-ons/kernel/drivers/input/i2c_atmel_mxt`

@@ -38,7 +38,8 @@ CORE_SRC := \
 	$(MXT_DIR)/ObjectTable.cpp \
 	$(MXT_DIR)/TouchEngine.cpp \
 	$(BYT_AUDIO_DIR)/Firmware.cpp \
-	$(BYT_AUDIO_DIR)/PlatformProfile.cpp
+	$(BYT_AUDIO_DIR)/PlatformProfile.cpp \
+	../overlay/bin/jr_uvc_probe/core/UvcCore.cpp
 
 TEST_SRC := \
 	framework/test_worker_rig.cpp \
@@ -74,6 +75,7 @@ TEST_SRC := \
 	byt_max98090/test_firmware.cpp \
 	byt_xhci_filter/test_policy.cpp \
 	byt_gpio/test_baytrail_gpio.cpp \
+	jr_uvc/test_uvc.cpp \
 	sdhci_embedded/test_main.cpp
 
 BIN := jr_tests

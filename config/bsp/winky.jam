@@ -31,6 +31,8 @@ JIDO_RENGA_BSP_IMAGE_BIN +=
 	intel_valleyview_probe
 	intel_valleyview_crocus_demo
 	intel_valleyview_gl_suite
+	jr_uvc_probe
+	jr_uvc_collect
 	;
 JIDO_RENGA_BSP_IMAGE_OPENGL += $(JIDO_RENGA_CROCUS_RENDERER) ;
 

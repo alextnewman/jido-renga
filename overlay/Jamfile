@@ -87,6 +87,7 @@ SubInclude JIDO_RENGA_TOP overlay accelerants intel_valleyview ;
 SubInclude JIDO_RENGA_TOP overlay bin intel_valleyview_probe ;
 SubInclude JIDO_RENGA_TOP overlay bin intel_valleyview_crocus_demo ;
 SubInclude JIDO_RENGA_TOP overlay bin intel_valleyview_gl_suite ;
+SubInclude JIDO_RENGA_TOP overlay bin jr_uvc_probe ;
 
 # A BSP declares two things: the overlay add-ons to ship and the exact paths in
 # haiku.hpkg that it replaces. Controller ownership is resolved at image time.
