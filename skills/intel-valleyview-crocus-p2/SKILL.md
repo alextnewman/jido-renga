@@ -100,8 +100,9 @@ For the first lab image, run only:
 intel_valleyview_gl_suite --p2-lab
 ```
 
-It owns the Safe/queued/direct compatibility matrix, two-client queue burst,
-failure injection, and recovery. Do not request separate flashes for those
-stages. `direct` is reset-safe BCS-to-P0-shadow presentation; it is not the
-final app_server-sharing design. Do not revive the reset-omission experiment:
-P2B requires a kernel-owned resident hardware context and explicit switching.
+After P2A passes, it runs one Safe control, one queued control, and the complete
+direct compatibility matrix. Do not repeat the proven queue burst or full
+Safe/queued matrices in presentation captures. `direct` is reset-safe
+BCS-to-P0-shadow presentation; it is not the final app_server-sharing design.
+Do not revive the reset-omission experiment: P2B requires a kernel-owned
+resident hardware context and explicit switching.

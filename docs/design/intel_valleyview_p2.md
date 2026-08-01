@@ -124,12 +124,11 @@ Run the complete lab matrix with:
 intel_valleyview_gl_suite --p2-lab
 ```
 
-The command first initializes RCS and runs a raw two-client queue burst with
-ordered fault and recovery. It then executes all 18 GL cases in Safe, queued,
-and direct modes from a `BDirectWindow`, followed by an injected queue failure
-and fresh-client recovery. Queue captures report depth, high-water marks,
-submitted/completed/failed/cancelled jobs, queue/execution latency, direct
-presentation results, and submission cleanup status.
+After the queue gate has passed, the command runs one explicit Safe control,
+one queued control, and all 18 direct cases from a `BDirectWindow`. It does not
+repeat the raw queue burst, failure injection, or complete Safe/queued matrices.
+Queue captures report queue/execution latency, direct presentation results, and
+submission cleanup status.
 
 ## Required evidence
 

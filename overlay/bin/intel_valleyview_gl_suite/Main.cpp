@@ -445,7 +445,7 @@ main(int argc, char** argv)
 {
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setenv("VALLEYVIEW_GPU_DEBUG", "1", 1);
-	setenv("INTEL_DEBUG", "bat,submit", 1);
+	setenv("INTEL_DEBUG", "submit", 1);
 	if (argc == 3 && strcmp(argv[1], "--case") == 0) {
 		char* end;
 		const unsigned long selected = strtoul(argv[2], &end, 10);
@@ -463,28 +463,14 @@ main(int argc, char** argv)
 	const unsigned modeCount = p2Lab ? 3 : 1;
 	printf("jr_gl_suite begin cases=%u modes=%u\n", kCaseCount, modeCount);
 	unsigned launchFailures = 0;
-	if (p2Lab) {
-		char* queueArguments[] = {
-			const_cast<char*>("intel_valleyview_probe"),
-			const_cast<char*>("--render-queue-test"),
-			NULL
-		};
-		pid_t child;
-		const int queueSpawn = posix_spawnp(&child, queueArguments[0], NULL,
-			NULL, queueArguments, environ);
-		int queueStatus = 0;
-		if (queueSpawn == 0)
-			waitpid(child, &queueStatus, 0);
-		else
-			launchFailures++;
-		printf("jr_p2_queue_probe spawn=%d status=%#x\n", queueSpawn,
-			queueStatus);
-	}
+	unsigned caseFailures = 0;
 	for (unsigned modeIndex = 0; modeIndex < modeCount; modeIndex++) {
 		setenv("VALLEYVIEW_GPU_MODE", modes[modeIndex], 1);
 		unsetenv("VALLEYVIEW_GPU_FAULT");
 		printf("jr_p2_stage begin mode=%s\n", modes[modeIndex]);
-		for (unsigned index = 0; index < kCaseCount; index++) {
+		const unsigned firstCase = p2Lab && modeIndex < 2 ? 1 : 0;
+		const unsigned endCase = p2Lab && modeIndex < 2 ? 2 : kCaseCount;
+		for (unsigned index = firstCase; index < endCase; index++) {
 			char caseNumber[16];
 			snprintf(caseNumber, sizeof(caseNumber), "%u", index);
 			char* childArguments[] = {
@@ -502,47 +488,22 @@ main(int argc, char** argv)
 				launchFailures++;
 				continue;
 			}
-			int childStatus;
+			int childStatus = 0;
 			const pid_t waited = waitpid(child, &childStatus, 0);
 			printf("jr_gl_suite child mode=%s name=%s index=%u waited=%"
 				B_PRId32 " status=%#x\n", modes[modeIndex],
 				kCases[index].name, index, static_cast<int32>(waited),
 				childStatus);
+			if (waited < 0 || !WIFEXITED(childStatus)
+				|| WEXITSTATUS(childStatus) != 0) {
+				caseFailures++;
+			}
 		}
 		printf("jr_p2_stage end mode=%s\n", modes[modeIndex]);
 	}
 
-	if (p2Lab) {
-		setenv("VALLEYVIEW_GPU_MODE", "queued", 1);
-		setenv("VALLEYVIEW_GPU_FAULT", "next", 1);
-		char caseNumber[] = "1";
-		char* faultArguments[] = {
-			argv[0], const_cast<char*>("--case"), caseNumber, NULL
-		};
-		pid_t child;
-		const int spawnStatus = posix_spawnp(&child, argv[0], NULL, NULL,
-			faultArguments, environ);
-		int childStatus = 0;
-		if (spawnStatus == 0)
-			waitpid(child, &childStatus, 0);
-		else
-			launchFailures++;
-		printf("jr_p2_fault injected spawn=%d status=%#x\n", spawnStatus,
-			childStatus);
-
-		unsetenv("VALLEYVIEW_GPU_FAULT");
-		const int recoverySpawn = posix_spawnp(&child, argv[0], NULL, NULL,
-			faultArguments, environ);
-		childStatus = 0;
-		if (recoverySpawn == 0)
-			waitpid(child, &childStatus, 0);
-		else
-			launchFailures++;
-		printf("jr_p2_recovery spawn=%d status=%#x\n", recoverySpawn,
-			childStatus);
-	}
-
-	printf("jr_gl_suite end cases=%u modes=%u launch_failures=%u\n",
-		kCaseCount, modeCount, launchFailures);
-	return launchFailures == 0 ? 0 : 1;
+	printf("jr_gl_suite end cases=%u modes=%u launch_failures=%u"
+		" case_failures=%u\n", kCaseCount, modeCount, launchFailures,
+		caseFailures);
+	return launchFailures == 0 && caseFailures == 0 ? 0 : 1;
 }
