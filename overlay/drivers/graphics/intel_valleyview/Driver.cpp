@@ -398,6 +398,8 @@ InitDriver(device_node* node, void** cookie)
 	device->presentStatus = B_NO_INIT;
 	device->presentBcsStatus = B_NO_INIT;
 	device->presentThread = -1;
+	device->renderQueueSem = -1;
+	device->renderQueueThread = -1;
 	device->activeScanout = -1;
 	device->pendingScanout = -1;
 	device_node* parent = gDeviceManager->get_parent_node(node);
@@ -429,6 +431,12 @@ InitDriver(device_node* node, void** cookie)
 	mutex_init(&device->renderLock, "intel_valleyview render");
 	mutex_init(&device->presentLock, "intel_valleyview present");
 	mutex_init(&device->bcsLock, "intel_valleyview BCS");
+	mutex_init(&device->renderQueueLock, "intel_valleyview render queue");
+	status_t queueStatus = InitializeRenderQueue(*device);
+	if (queueStatus != B_OK) {
+		dprintf("intel_valleyview: render queue unavailable: %"
+			B_PRId32 "\n", queueStatus);
+	}
 
 	device->snapshot.header
 		= valleyview::MakeAbiHeader(sizeof(device->snapshot));
@@ -485,6 +493,7 @@ UninitDriver(void* cookie)
 
 	if (device->sharedArea >= B_OK)
 		delete_area(device->sharedArea);
+	ShutdownRenderQueue(*device);
 	ShutdownP0(*device);
 	if (!device->p0MemoryQuarantined)
 		ReleaseP0Areas(*device);
@@ -493,6 +502,7 @@ UninitDriver(void* cookie)
 	if (device->registerArea >= B_OK)
 		delete_area(device->registerArea);
 	mutex_destroy(&device->bcsLock);
+	mutex_destroy(&device->renderQueueLock);
 	mutex_destroy(&device->presentLock);
 	mutex_destroy(&device->renderLock);
 	mutex_destroy(&device->lock);

@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/select.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 
@@ -761,6 +762,214 @@ CloseRenderBuffer(int device, uint32 handle)
 }
 
 
+struct QueueProbeClient {
+	int device;
+	valleyview::RenderContextCreate context;
+	valleyview::RenderBufferCreate batch;
+	valleyview::RenderBufferMap mapping;
+	uint64 lastFence;
+};
+
+
+status_t
+InitializeQueueProbeClient(QueueProbeClient& client)
+{
+	client.context = {};
+	client.context.header
+		= valleyview::MakeRenderAbiHeader(sizeof(client.context));
+	status_t status = ioctl(client.device, valleyview::kRenderCreateContext,
+		&client.context, sizeof(client.context));
+	if (status != B_OK)
+		return status;
+	status = RunRcsSubmissionProbe(client.device, client.context);
+	if (status != B_OK)
+		return status;
+
+	client.batch = {};
+	client.batch.header = valleyview::MakeRenderAbiHeader(sizeof(client.batch));
+	client.batch.requestedSize = valleyview::kPageSize;
+	client.batch.flags = valleyview::kRenderBufferCpuCached;
+	status = ioctl(client.device, valleyview::kRenderCreateBuffer,
+		&client.batch, sizeof(client.batch));
+	if (status != B_OK)
+		return status;
+	client.mapping = {};
+	client.mapping.header
+		= valleyview::MakeRenderAbiHeader(sizeof(client.mapping));
+	client.mapping.handle = client.batch.handle;
+	client.mapping.area = -1;
+	status = ioctl(client.device, valleyview::kRenderMapBuffer,
+		&client.mapping, sizeof(client.mapping));
+	if (status != B_OK)
+		return status;
+	uint32* command = reinterpret_cast<uint32*>(
+		static_cast<addr_t>(client.mapping.address));
+	command[0] = valleyview::kMiBatchBufferEnd;
+	__sync_synchronize();
+
+	valleyview::RenderQueueConfigure configure = {};
+	configure.header = valleyview::MakeRenderAbiHeader(sizeof(configure));
+	configure.mode = valleyview::kRenderQueueModeAsynchronous;
+	status = ioctl(client.device, valleyview::kRenderQueueConfigure,
+		&configure, sizeof(configure));
+	return status == B_OK ? configure.status : status;
+}
+
+
+status_t
+EnqueueQueueProbeJob(QueueProbeClient& client)
+{
+	valleyview::RenderQueueSubmit submit = {};
+	submit.header = valleyview::MakeRenderAbiHeader(sizeof(submit));
+	submit.contextHandle = client.context.handle;
+	submit.batchHandle = client.batch.handle;
+	submit.batchLength = sizeof(uint32);
+	submit.objectCount = 1;
+	submit.objects[0].handle = client.batch.handle;
+	submit.objects[0].access
+		= valleyview::kRenderObjectRead | valleyview::kRenderObjectExecute;
+	status_t status = ioctl(client.device, valleyview::kRenderQueueSubmit,
+		&submit, sizeof(submit));
+	if (status == B_OK)
+		status = submit.status;
+	if (status == B_OK)
+		client.lastFence = submit.fence;
+	return status;
+}
+
+
+status_t
+WaitQueueProbeFence(QueueProbeClient& client,
+	valleyview::RenderFenceResult expected)
+{
+	valleyview::RenderQueueWait wait = {};
+	wait.header = valleyview::MakeRenderAbiHeader(sizeof(wait));
+	wait.fence = client.lastFence;
+	wait.timeoutUs = 5000000;
+	status_t status = ioctl(client.device, valleyview::kRenderQueueWait,
+		&wait, sizeof(wait));
+	printf("render_queue_wait fd=%d fence=%" B_PRIu64
+		" retired=%" B_PRIu64 " result=%u status=%" B_PRId32
+		" ioctl=%" B_PRId32 "\n", client.device, client.lastFence,
+		wait.retiredFence, wait.result, wait.status, status);
+	if (status != B_OK)
+		return status;
+	return wait.result == expected ? B_OK : B_BAD_DATA;
+}
+
+
+void
+PrintQueueProbeInfo(QueueProbeClient& client, const char* label)
+{
+	valleyview::RenderQueueInfo info = {};
+	info.header = valleyview::MakeRenderAbiHeader(sizeof(info));
+	status_t status = ioctl(client.device, valleyview::kRenderQueueGetInfo,
+		&info, sizeof(info));
+	printf("render_queue_%s fd=%d ioctl=%" B_PRId32 " status=%" B_PRId32
+		" mode=%u queued=%u completions=%u high_water=%u device_queued=%u"
+		" fence=%" B_PRIu64 "/%" B_PRIu64 "/%" B_PRIu64
+		" jobs=%" B_PRIu64 "/%" B_PRIu64 "/%" B_PRIu64 "/%" B_PRIu64
+		" no_reset=%" B_PRIu64 " queue_us=%" B_PRIu64 "/%" B_PRIu64
+		" execution_us=%" B_PRIu64 "/%" B_PRIu64 "\n",
+		label, client.device, status, info.status, info.mode, info.queuedJobs,
+		info.completionCount, info.queueHighWater, info.deviceQueuedJobs,
+		info.nextFence, info.lastStartedFence, info.lastRetiredFence,
+		info.submittedJobs, info.completedJobs, info.failedJobs,
+		info.cancelledJobs, info.noResetJobs, info.totalQueueLatencyUs,
+		info.maxQueueLatencyUs, info.totalExecutionUs, info.maxExecutionUs);
+}
+
+
+void
+DestroyQueueProbeClient(QueueProbeClient& client)
+{
+	CloseRenderBuffer(client.device, client.batch.handle);
+	if (client.context.handle != 0) {
+		valleyview::RenderContextDestroy destroy = {};
+		destroy.header = valleyview::MakeRenderAbiHeader(sizeof(destroy));
+		destroy.handle = client.context.handle;
+		ioctl(client.device, valleyview::kRenderDestroyContext, &destroy,
+			sizeof(destroy));
+	}
+}
+
+
+status_t
+RunRenderQueueProbe(int firstDevice)
+{
+	QueueProbeClient clients[2] = {};
+	clients[0].device = firstDevice;
+	clients[1].device = open(kDevicePath, O_RDONLY);
+	if (clients[1].device < 0)
+		return B_ERROR;
+
+	status_t status = InitializeQueueProbeClient(clients[0]);
+	if (status == B_OK)
+		status = InitializeQueueProbeClient(clients[1]);
+	constexpr uint32 kJobsPerClient = 16;
+	for (uint32 round = 0; status == B_OK && round < kJobsPerClient; round++) {
+		for (uint32 index = 0; index < 2; index++) {
+			status = EnqueueQueueProbeJob(clients[index]);
+			if (status != B_OK)
+				break;
+		}
+	}
+	if (status == B_OK) {
+		fd_set readSet;
+		FD_ZERO(&readSet);
+		FD_SET(clients[0].device, &readSet);
+		FD_SET(clients[1].device, &readSet);
+		timeval timeout = {5, 0};
+		const int selected = select(
+			clients[0].device > clients[1].device
+				? clients[0].device + 1 : clients[1].device + 1,
+			&readSet, NULL, NULL, &timeout);
+		printf("render_queue_select result=%d first=%s second=%s\n",
+			selected, YesNo(FD_ISSET(clients[0].device, &readSet)),
+			YesNo(FD_ISSET(clients[1].device, &readSet)));
+		if (selected <= 0)
+			status = selected == 0 ? B_TIMED_OUT : B_ERROR;
+	}
+	for (uint32 index = 0; status == B_OK && index < 2; index++)
+		status = WaitQueueProbeFence(clients[index],
+			valleyview::kRenderFenceComplete);
+	PrintQueueProbeInfo(clients[0], "first");
+	PrintQueueProbeInfo(clients[1], "second");
+
+	if (status == B_OK) {
+		valleyview::RenderQueueConfigure configure = {};
+		configure.header = valleyview::MakeRenderAbiHeader(sizeof(configure));
+		configure.mode = valleyview::kRenderQueueModeAsynchronous;
+		configure.flags = valleyview::kRenderQueueFailNextSubmission;
+		status = ioctl(clients[0].device, valleyview::kRenderQueueConfigure,
+			&configure, sizeof(configure));
+		if (status == B_OK)
+			status = EnqueueQueueProbeJob(clients[0]);
+		if (status == B_OK)
+			status = WaitQueueProbeFence(clients[0],
+				valleyview::kRenderFenceFailed);
+	}
+	if (status == B_OK) {
+		valleyview::RenderQueueConfigure configure = {};
+		configure.header = valleyview::MakeRenderAbiHeader(sizeof(configure));
+		configure.mode = valleyview::kRenderQueueModeAsynchronous;
+		status = ioctl(clients[0].device, valleyview::kRenderQueueConfigure,
+			&configure, sizeof(configure));
+		if (status == B_OK)
+			status = EnqueueQueueProbeJob(clients[0]);
+		if (status == B_OK)
+			status = WaitQueueProbeFence(clients[0],
+				valleyview::kRenderFenceComplete);
+	}
+	PrintQueueProbeInfo(clients[0], "recovery");
+
+	DestroyQueueProbeClient(clients[1]);
+	DestroyQueueProbeClient(clients[0]);
+	close(clients[1].device);
+	return status;
+}
+
+
 status_t
 CycleRenderBufferDomain(int device, uint32 handle)
 {
@@ -1364,6 +1573,16 @@ main(int argc, char** argv)
 			close(device);
 			return 1;
 		}
+	} else if (argc == 2
+		&& strcmp(argv[1], "--render-queue-test") == 0) {
+		status = RunRenderQueueProbe(device);
+		if (status != B_OK) {
+			fprintf(stderr,
+				"intel_valleyview_probe: render queue failed: %s\n",
+				strerror(status));
+			close(device);
+			return 1;
+		}
 	} else if (argc == 2 && strcmp(argv[1], "--render-info") == 0) {
 		valleyview::RenderDeviceInfo info = {};
 		status = ReadRenderDeviceInfo(device, info);
@@ -1464,7 +1683,7 @@ main(int argc, char** argv)
 		fprintf(stderr, "usage: intel_valleyview_probe"
 			" [--publish|--gpu-diagnostics|--gpu-self-test"
 			"|--render-info|--render-memory-test|--rcs-test"
-			"|--render-transport-test"
+			"|--render-transport-test|--render-queue-test"
 			"|--p0-status|--p0-test|--p0-benchmark]\n");
 		close(device);
 		return 1;

@@ -9,4 +9,4 @@
 [submodule "mesa"]
 	path = mesa
 	url = https://github.com/alextnewman/mesa.git
-	branch = jido-renga/haiku-crocus-22.0.5
+	branch = jido-renga/haiku-crocus-p2

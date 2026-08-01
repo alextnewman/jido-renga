@@ -9,36 +9,6 @@
 
 namespace valleyview {
 
-constexpr uint32 kRenderMaxQueuedJobsPerClient = 32;
-constexpr uint32 kRenderMaxQueuedJobsPerDevice = 128;
-constexpr uint64 kInvalidRenderFence = 0;
-
-enum RenderQueueMode : uint32 {
-	kRenderQueueModeSafe = 1,
-	kRenderQueueModeAsynchronous = 2
-};
-
-enum RenderFenceResult : uint32 {
-	kRenderFencePending = 0,
-	kRenderFenceComplete,
-	kRenderFenceFailed,
-	kRenderFenceCancelled
-};
-
-enum RenderObjectAccess : uint32 {
-	kRenderObjectRead = 1u << 0,
-	kRenderObjectWrite = 1u << 1,
-	kRenderObjectExecute = 1u << 2
-};
-
-constexpr uint32 kRenderObjectAccessMask = kRenderObjectRead
-	| kRenderObjectWrite | kRenderObjectExecute;
-
-struct RenderObjectReference {
-	uint32	handle;
-	uint32	access;
-};
-
 struct RenderClientQueueState {
 	uint64	nextFence;
 	uint64	lastStartedFence;

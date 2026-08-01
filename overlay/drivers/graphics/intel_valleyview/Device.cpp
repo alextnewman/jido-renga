@@ -62,6 +62,13 @@ Open(void* deviceCookie, const char*, int, void** cookie)
 	if (client == NULL)
 		return B_NO_MEMORY;
 	client->device = device;
+	client->completionSem = -1;
+	client->queueIdleSem = -1;
+	status_t status = RegisterRenderQueueClient(*client);
+	if (status != B_OK) {
+		free(client);
+		return status;
+	}
 
 	mutex_lock(&device->lock);
 	device->openCount++;
@@ -87,6 +94,7 @@ Free(void* cookie)
 		return B_BAD_VALUE;
 	ValleyViewDevice* device = client->device;
 
+	ShutdownRenderQueueClient(*client);
 	DestroyRenderClient(*client);
 	free(client);
 
@@ -506,6 +514,11 @@ Control(void* cookie, uint32 operation, void* buffer, size_t length)
 						info.capabilities
 							|= valleyview::kRenderCapabilityRcsSubmission
 								| valleyview::kRenderCapabilityCompletionFences;
+						if (device->renderQueueReady) {
+							info.capabilities
+								|= valleyview::kRenderCapabilityQueuedSubmission
+									| valleyview::kRenderCapabilityTimelineFences;
+						}
 						info.submissionEngines
 							|= valleyview::kRenderEngineRcs;
 					}
@@ -605,6 +618,125 @@ Control(void* cookie, uint32 operation, void* buffer, size_t length)
 			}
 
 			status = SubmitRenderCommands(*client, request);
+			status_t copyStatus = user_memcpy(buffer, &request,
+				sizeof(request));
+			return copyStatus == B_OK ? status : copyStatus;
+		}
+
+		case valleyview::kRenderQueueConfigure:
+		{
+			if (buffer == NULL
+				|| length < sizeof(valleyview::RenderQueueConfigure)) {
+				return B_BAD_VALUE;
+			}
+			valleyview::RenderQueueConfigure request;
+			status_t status = user_memcpy(&request, buffer, sizeof(request));
+			if (status != B_OK)
+				return status;
+			if (!valleyview::IsValidRenderAbiHeader(request.header,
+					sizeof(request))) {
+				return B_BAD_VALUE;
+			}
+			status = ConfigureRenderQueue(*client, request);
+			status_t copyStatus = user_memcpy(buffer, &request,
+				sizeof(request));
+			return copyStatus == B_OK ? status : copyStatus;
+		}
+
+		case valleyview::kRenderQueueSubmit:
+		{
+			if (buffer == NULL
+				|| length < sizeof(valleyview::RenderQueueSubmit)) {
+				return B_BAD_VALUE;
+			}
+			valleyview::RenderQueueSubmit request;
+			status_t status = user_memcpy(&request, buffer, sizeof(request));
+			if (status != B_OK)
+				return status;
+			if (!valleyview::IsValidRenderAbiHeader(request.header,
+					sizeof(request))) {
+				return B_BAD_VALUE;
+			}
+			status = EnqueueRenderCommands(*client, request);
+			status_t copyStatus = user_memcpy(buffer, &request,
+				sizeof(request));
+			return copyStatus == B_OK ? status : copyStatus;
+		}
+
+		case valleyview::kRenderQueueWait:
+		{
+			if (buffer == NULL
+				|| length < sizeof(valleyview::RenderQueueWait)) {
+				return B_BAD_VALUE;
+			}
+			valleyview::RenderQueueWait request;
+			status_t status = user_memcpy(&request, buffer, sizeof(request));
+			if (status != B_OK)
+				return status;
+			if (!valleyview::IsValidRenderAbiHeader(request.header,
+					sizeof(request))) {
+				return B_BAD_VALUE;
+			}
+			status = WaitRenderQueueFence(*client, request);
+			status_t copyStatus = user_memcpy(buffer, &request,
+				sizeof(request));
+			return copyStatus == B_OK ? status : copyStatus;
+		}
+
+		case valleyview::kRenderQueueDequeue:
+		{
+			if (buffer == NULL
+				|| length < sizeof(valleyview::RenderQueueCompletion)) {
+				return B_BAD_VALUE;
+			}
+			valleyview::RenderQueueCompletion request;
+			status_t status = user_memcpy(&request, buffer, sizeof(request));
+			if (status != B_OK)
+				return status;
+			if (!valleyview::IsValidRenderAbiHeader(request.header,
+					sizeof(request))) {
+				return B_BAD_VALUE;
+			}
+			status = DequeueRenderCompletion(*client, request);
+			if (status != B_OK)
+				return status;
+			return user_memcpy(buffer, &request, sizeof(request));
+		}
+
+		case valleyview::kRenderQueueGetInfo:
+		{
+			if (buffer == NULL
+				|| length < sizeof(valleyview::RenderQueueInfo)) {
+				return B_BAD_VALUE;
+			}
+			valleyview::RenderQueueInfo info;
+			status_t status = user_memcpy(&info, buffer, sizeof(info));
+			if (status != B_OK)
+				return status;
+			if (!valleyview::IsValidRenderAbiHeader(info.header,
+					sizeof(info))) {
+				return B_BAD_VALUE;
+			}
+			status = GetRenderQueueInfo(*client, info);
+			status_t copyStatus = user_memcpy(buffer, &info, sizeof(info));
+			return copyStatus == B_OK ? status : copyStatus;
+		}
+
+		case valleyview::kRenderDirectPresent:
+		{
+			if (buffer == NULL
+				|| length < sizeof(valleyview::RenderDirectPresent)) {
+				return B_BAD_VALUE;
+			}
+			valleyview::RenderDirectPresent request;
+			status_t status = user_memcpy(&request, buffer, sizeof(request));
+			if (status != B_OK)
+				return status;
+			if (!valleyview::IsValidRenderAbiHeader(request.header,
+					sizeof(request))) {
+				return B_BAD_VALUE;
+			}
+			status = SubmitRenderDirectPresent(*client, request);
 			status_t copyStatus = user_memcpy(buffer, &request,
 				sizeof(request));
 			return copyStatus == B_OK ? status : copyStatus;
@@ -762,6 +894,26 @@ Write(void*, off_t, const void*, size_t* length)
 	return B_NOT_ALLOWED;
 }
 
+
+status_t
+Select(void* cookie, uint8 event, selectsync* sync)
+{
+	ValleyViewClient* client = static_cast<ValleyViewClient*>(cookie);
+	if (client == NULL || sync == NULL)
+		return B_BAD_VALUE;
+	return SelectRenderQueue(*client, event, sync);
+}
+
+
+status_t
+Deselect(void* cookie, uint8 event, selectsync* sync)
+{
+	ValleyViewClient* client = static_cast<ValleyViewClient*>(cookie);
+	if (client == NULL || sync == NULL)
+		return B_BAD_VALUE;
+	return DeselectRenderQueue(*client, event, sync);
+}
+
 } // namespace
 
 
@@ -784,6 +936,6 @@ device_module_info gValleyViewDeviceModule = {
 	NULL,
 	Control,
 
-	NULL,
-	NULL
+	Select,
+	Deselect
 };

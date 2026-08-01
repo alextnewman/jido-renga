@@ -50,7 +50,13 @@ enum {
 	kRunRcsDiagnostic,
 	kRenderCreateContext,
 	kRenderDestroyContext,
-	kRenderSubmit
+	kRenderSubmit,
+	kRenderQueueConfigure,
+	kRenderQueueSubmit,
+	kRenderQueueWait,
+	kRenderQueueDequeue,
+	kRenderQueueGetInfo,
+	kRenderDirectPresent
 };
 
 enum DisplayState : uint32 {

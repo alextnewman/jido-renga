@@ -379,6 +379,15 @@ keeps this Safe GL path as a separately selectable recovery mode while moving
 healthy work to queued timelines, persistent contexts, and fence-aware direct
 presentation. EGL remains outside that phase.
 
+Render protocol version 10 adds the P2 lab queue: immutable enqueue, explicit
+BO access, 64-bit timeline waits, completion dequeue, `select()` readiness,
+bounded per-client/device depth, and a round-robin kernel worker. The initial
+worker calls the proven Safe GL executor. Experimental modes additionally skip
+healthy resets while restoring all engine state, and present clipped linear
+color BOs into P0's framebuffer shadow with BCS. These capabilities remain
+runtime-selected and are not advertised as final P2 services before the lab
+gate passes.
+
 `intel_valleyview_probe --render-memory-test` creates two client-owned buffers,
 clones both into the process, writes coordinate-dependent source and destination
 patterns, confirms that userspace cannot delete the driver-owned mappings,

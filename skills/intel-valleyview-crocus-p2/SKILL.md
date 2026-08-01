@@ -92,3 +92,15 @@ proven shareable surface contract.
 6. Run broad conformance only after the engine metrics and recovery gates pass.
 
 Every hardware capture must include Safe GL control results and P0 state.
+
+For the first lab image, run only:
+
+```sh
+intel_valleyview_gl_suite --p2-lab
+```
+
+It owns the Safe/queued/persistent/direct matrix, two-client queue burst,
+failure injection, recovery, and per-mode compatibility cases. Do not request
+separate flashes for those stages. Treat the current `persistent` mode as a
+healthy no-reset experiment and `direct` as BCS-to-P0-shadow presentation;
+neither is the final resident-context or app_server-sharing design.

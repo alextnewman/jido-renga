@@ -11,6 +11,7 @@
 #include <common/intel_valleyview/DisplaySharedInfo.h>
 #include <common/intel_valleyview/P0Core.h>
 #include <common/intel_valleyview/Protocol.h>
+#include <common/intel_valleyview/RenderQueueCore.h>
 #include <common/intel_valleyview/RenderProtocol.h>
 
 
@@ -22,6 +23,7 @@ constexpr const char* kValleyViewAccelerantName
 	= "intel_valleyview.accelerant";
 
 struct ValleyViewDevice;
+struct select_sync_pool;
 
 enum ValleyViewRenderGgttEncoding {
 	kValleyViewRenderGgttData,
@@ -44,6 +46,8 @@ struct ValleyViewRenderBuffer {
 	uint32					ggttAlignmentPages;
 	ValleyViewRenderGgttEncoding ggttEncoding;
 	valleyview::RenderBufferDomain domain;
+	uint32					queuedReferenceCount;
+	bool					closePending;
 	bool					quarantined;
 	ValleyViewRenderBuffer*	next;
 };
@@ -57,8 +61,23 @@ struct ValleyViewPpgttState {
 	bool					quarantined;
 };
 
+struct ValleyViewRenderJob {
+	ValleyViewRenderJob*	next;
+	struct ValleyViewClient* client;
+	valleyview::RenderSubmit submit;
+	uint8*					batch;
+	uint64					fence;
+	bigtime_t				enqueuedAt;
+};
+
+struct ValleyViewRenderCompletion {
+	ValleyViewRenderCompletion* next;
+	valleyview::RenderQueueCompletion record;
+};
+
 struct ValleyViewClient {
 	ValleyViewDevice*		device;
+	ValleyViewClient*		queueNext;
 	ValleyViewRenderBuffer*	buffers;
 	uint64					allocatedBytes;
 	uint32					bufferCount;
@@ -66,6 +85,32 @@ struct ValleyViewClient {
 	uint32					contextHandle;
 	uint32					contextGeneration;
 	ValleyViewPpgttState		ppgtt;
+	valleyview::RenderClientQueueState queueState;
+	valleyview::RenderQueueMode queueMode;
+	ValleyViewRenderJob*		queueHead;
+	ValleyViewRenderJob*		queueTail;
+	ValleyViewRenderJob*		activeJob;
+	ValleyViewRenderCompletion* completionHead;
+	ValleyViewRenderCompletion* completionTail;
+	uint32					completionCount;
+	uint32					queueHighWater;
+	uint64					lastFailedFence;
+	int32					lastFailureStatus;
+	uint64					submittedJobs;
+	uint64					completedJobs;
+	uint64					failedJobs;
+	uint64					cancelledJobs;
+	uint64					noResetJobs;
+	uint64					totalQueueLatencyUs;
+	uint64					maxQueueLatencyUs;
+	uint64					totalExecutionUs;
+	uint64					maxExecutionUs;
+	sem_id					completionSem;
+	sem_id					queueIdleSem;
+	select_sync_pool*		selectPool;
+	bool					failNextSubmission;
+	bool					queueLost;
+	bool					closing;
 };
 
 struct ValleyViewDevice {
@@ -77,6 +122,7 @@ struct ValleyViewDevice {
 	mutex						renderLock;
 	mutex						presentLock;
 	mutex						bcsLock;
+	mutex						renderQueueLock;
 	int32						openCount;
 	bool						enabled;
 	bool						allowModeset;
@@ -168,6 +214,16 @@ struct ValleyViewDevice {
 	uint64						rcsResets;
 	uint64						rcsSubmissions;
 	uint64						rcsSubmissionFailures;
+	uint64						renderDirectPresents;
+	uint64						renderDirectPresentFailures;
+	sem_id						renderQueueSem;
+	thread_id					renderQueueThread;
+	ValleyViewClient*		renderClients;
+	ValleyViewClient*		renderQueueCursor;
+	uint32						renderQueuedJobs;
+	uint32						renderQueueHighWater;
+	bool						renderQueueRunning;
+	bool						renderQueueReady;
 	uint32						bcsSequence;
 	uint32						rcsSubmitSequence;
 	valleyview::FirmwareSnapshot	snapshot;
@@ -195,6 +251,8 @@ status_t SubmitBcsFill(ValleyViewDevice& device,
 	const valleyview::BcsFillRequest& request);
 status_t SubmitBcsBlit(ValleyViewDevice& device,
 	const valleyview::BcsBlitRequest& request);
+status_t SubmitBcsRenderCopy(ValleyViewDevice& device, uint32 sourceOffset,
+	uint32 sourceStride, const valleyview::RenderDirectPresent& request);
 status_t GetBrightness(ValleyViewDevice& device,
 	valleyview::BrightnessRequest& request);
 status_t SetBrightness(ValleyViewDevice& device,
@@ -217,7 +275,32 @@ status_t CreateRenderContext(ValleyViewClient& client,
 status_t DestroyRenderContext(ValleyViewClient& client,
 	valleyview::RenderContextDestroy& request);
 status_t SubmitRenderCommands(ValleyViewClient& client,
-	valleyview::RenderSubmit& submit);
+	valleyview::RenderSubmit& submit, const void* immutableBatch = NULL,
+	bool resetAfterSubmission = true);
+status_t InitializeRenderQueue(ValleyViewDevice& device);
+void ShutdownRenderQueue(ValleyViewDevice& device);
+status_t RegisterRenderQueueClient(ValleyViewClient& client);
+void ShutdownRenderQueueClient(ValleyViewClient& client);
+status_t ConfigureRenderQueue(ValleyViewClient& client,
+	valleyview::RenderQueueConfigure& request);
+status_t EnqueueRenderCommands(ValleyViewClient& client,
+	valleyview::RenderQueueSubmit& request);
+status_t WaitRenderQueueFence(ValleyViewClient& client,
+	valleyview::RenderQueueWait& request);
+status_t DequeueRenderCompletion(ValleyViewClient& client,
+	valleyview::RenderQueueCompletion& request);
+status_t GetRenderQueueInfo(ValleyViewClient& client,
+	valleyview::RenderQueueInfo& info);
+status_t SubmitRenderDirectPresent(ValleyViewClient& client,
+	valleyview::RenderDirectPresent& request);
+status_t SelectRenderQueue(ValleyViewClient& client, uint8 event,
+	selectsync* sync);
+status_t DeselectRenderQueue(ValleyViewClient& client, uint8 event,
+	selectsync* sync);
+ValleyViewRenderBuffer* FindClientRenderBuffer(ValleyViewClient& client,
+	uint32 handle);
+void ReleaseRenderQueueReferences(ValleyViewClient& client,
+	const uint32* handles, uint32 count);
 status_t MapRenderBuffer(ValleyViewClient& client,
 	valleyview::RenderBufferMap& request);
 status_t DiscardRenderBufferMapping(ValleyViewClient& client, uint32 handle,
@@ -241,6 +324,6 @@ status_t ExecuteRcsDiagnostic(ValleyViewDevice& device,
 	valleyview::RcsDiagnostic& diagnostics);
 status_t ExecuteRcsSubmission(ValleyViewDevice& device,
 	ValleyViewRenderBuffer& workspace, uint32 ppDirBase,
-	valleyview::RenderSubmit& submit);
+	valleyview::RenderSubmit& submit, bool resetAfterSubmission = true);
 
 #endif

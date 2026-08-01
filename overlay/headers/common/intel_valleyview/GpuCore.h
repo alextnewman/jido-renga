@@ -184,18 +184,21 @@ AppendBcsFill(uint32* commands, size_t capacity, size_t& count,
 
 
 inline bool
-AppendBcsCopy(uint32* commands, size_t capacity, size_t& count,
-	uint32 sourceOffset, uint32 destinationOffset, uint32 stride,
+AppendBcsCopyPitches(uint32* commands, size_t capacity, size_t& count,
+	uint32 sourceOffset, uint32 destinationOffset, uint32 sourceStride,
+	uint32 destinationStride,
 	uint16 sourceLeft, uint16 sourceTop, uint16 destinationLeft,
 	uint16 destinationTop, uint16 width, uint16 height)
 {
 	if (commands == NULL || count > capacity || capacity - count < 8
-		|| stride == 0 || width == UINT16_MAX || height == UINT16_MAX) {
+		|| sourceStride == 0 || destinationStride == 0
+		|| sourceStride > UINT16_MAX || destinationStride > UINT16_MAX
+		|| width == UINT16_MAX || height == UINT16_MAX) {
 		return false;
 	}
 
 	commands[count++] = 0x54f00006;
-	commands[count++] = (3u << 24) | (0xccu << 16) | stride;
+	commands[count++] = (3u << 24) | (0xccu << 16) | destinationStride;
 	commands[count++] = (static_cast<uint32>(destinationTop) << 16)
 		| destinationLeft;
 	commands[count++] = (static_cast<uint32>(
@@ -204,9 +207,21 @@ AppendBcsCopy(uint32* commands, size_t capacity, size_t& count,
 	commands[count++] = destinationOffset;
 	commands[count++] = (static_cast<uint32>(sourceTop) << 16)
 		| sourceLeft;
-	commands[count++] = stride;
+	commands[count++] = sourceStride;
 	commands[count++] = sourceOffset;
 	return true;
+}
+
+
+inline bool
+AppendBcsCopy(uint32* commands, size_t capacity, size_t& count,
+	uint32 sourceOffset, uint32 destinationOffset, uint32 stride,
+	uint16 sourceLeft, uint16 sourceTop, uint16 destinationLeft,
+	uint16 destinationTop, uint16 width, uint16 height)
+{
+	return AppendBcsCopyPitches(commands, capacity, count, sourceOffset,
+		destinationOffset, stride, stride, sourceLeft, sourceTop,
+		destinationLeft, destinationTop, width, height);
 }
 
 

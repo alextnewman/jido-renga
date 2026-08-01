@@ -1556,7 +1556,7 @@ SubmitRenderBcsCopy(ValleyViewDevice& device, uint32 sourceOffset,
 status_t
 ExecuteRcsSubmission(ValleyViewDevice& device,
 	ValleyViewRenderBuffer& workspace, uint32 ppDirBase,
-	valleyview::RenderSubmit& submit)
+	valleyview::RenderSubmit& submit, bool resetAfterSubmission)
 {
 	uint32* result = static_cast<uint32*>(workspace.address)
 		+ valleyview::kRcsSubmitResultPage
@@ -1639,9 +1639,11 @@ ExecuteRcsSubmission(ValleyViewDevice& device,
 		goto cleanup;
 	submit.diagnosticFlags |= valleyview::kRenderSubmitRingStarted;
 	submit.stage = valleyview::kRenderSubmitStageRingStarted;
-	resetRcs = true;
+	resetRcs = resetAfterSubmission;
 
 	status = WaitForRcsCompletion(result, submit.completionMarker);
+	if (status != B_OK)
+		resetRcs = true;
 	memory_read_barrier();
 	submit.ppDirBaseObserved[0]
 		= result[valleyview::kRcsPpgttLoadPostOffset / sizeof(uint32)];
@@ -2431,6 +2433,53 @@ SubmitBcsPresent(ValleyViewDevice& device, uint32 sourceOffset,
 
 	const uint32 marker
 		= 0xb3000000u | (++device.bcsSequence & 0x0fffffff);
+	if (status == B_OK
+		&& !valleyview::AppendBcsCompletion(ring,
+			valleyview::kPageSize / sizeof(uint32), count, marker)) {
+		status = B_BUFFER_OVERFLOW;
+	}
+	if (status == B_OK) {
+		memory_write_barrier();
+		status = SubmitBcsCommandsLocked(device,
+			static_cast<uint32>(count * sizeof(uint32)), marker);
+	}
+	mutex_unlock(&device.bcsLock);
+	return status;
+}
+
+
+status_t
+SubmitBcsRenderCopy(ValleyViewDevice& device, uint32 sourceOffset,
+	uint32 sourceStride, const valleyview::RenderDirectPresent& request)
+{
+	mutex_lock(&device.bcsLock);
+	if (!device.nativeActive || !device.bcsReady
+		|| device.p0Private == NULL || device.gpuFaulted
+		|| device.p0MemoryQuarantined || device.renderMemoryQuarantined) {
+		mutex_unlock(&device.bcsLock);
+		return B_NO_INIT;
+	}
+
+	uint32* ring = static_cast<uint32*>(device.p0Private)
+		+ (device.p0Layout.ring - device.p0Layout.cursor) / sizeof(uint32);
+	memset(ring, 0, valleyview::kPageSize);
+	size_t count = 0;
+	status_t status = B_OK;
+	for (uint32 index = 0; index < request.rectCount; index++) {
+		const valleyview::RenderPresentRect& rect = request.rects[index];
+		if (!valleyview::AppendBcsCopyPitches(ring,
+				valleyview::kPageSize / sizeof(uint32), count,
+				sourceOffset, device.p0Layout.framebuffer, sourceStride,
+				valleyview::kP0BytesPerRow, rect.sourceLeft, rect.sourceTop,
+				rect.destinationLeft, rect.destinationTop, rect.width,
+				rect.height)) {
+			status = B_BUFFER_OVERFLOW;
+			break;
+		}
+	}
+
+	const uint32 marker
+		= 0xb5000000u | (++device.bcsSequence & 0x0fffffff);
 	if (status == B_OK
 		&& !valleyview::AppendBcsCompletion(ring,
 			valleyview::kPageSize / sizeof(uint32), count, marker)) {

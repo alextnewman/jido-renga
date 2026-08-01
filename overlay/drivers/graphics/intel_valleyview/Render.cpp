@@ -525,11 +525,12 @@ InitializeRenderSubmitResult(valleyview::RenderSubmit& submit)
 
 status_t
 PrepareRcsSubmissionWorkspace(ValleyViewRenderBuffer& workspace,
-	const ValleyViewRenderBuffer& batchBuffer,
-	uint32 ppDirBase, valleyview::RenderSubmit& submit)
+	const void* batchData, uint32 ppDirBase,
+	valleyview::RenderSubmit& submit)
 {
 	if (workspace.address == NULL
-		|| workspace.size != valleyview::kRcsSubmitWorkspaceBytes) {
+		|| workspace.size != valleyview::kRcsSubmitWorkspaceBytes
+		|| batchData == NULL) {
 		return B_BAD_VALUE;
 	}
 
@@ -537,9 +538,7 @@ PrepareRcsSubmissionWorkspace(ValleyViewRenderBuffer& workspace,
 	memset(memory, 0, workspace.size);
 	uint8* const batch = memory
 		+ valleyview::kRcsSubmitBatchPage * valleyview::kPageSize;
-	memcpy(batch,
-		static_cast<const uint8*>(batchBuffer.address) + submit.batchOffset,
-		submit.batchLength);
+	memcpy(batch, batchData, submit.batchLength);
 	memory_write_barrier();
 	submit.diagnosticFlags |= valleyview::kRenderSubmitBatchCopied;
 	submit.stage = valleyview::kRenderSubmitStageBatchCopied;
@@ -764,6 +763,49 @@ FindRenderTestMismatch(const uint32* words, uint32 count, uint32 seed,
 } // namespace
 
 
+ValleyViewRenderBuffer*
+FindClientRenderBuffer(ValleyViewClient& client, uint32 handle)
+{
+	return FindRenderBuffer(client, handle);
+}
+
+
+void
+ReleaseRenderQueueReferences(ValleyViewClient& client, const uint32* handles,
+	uint32 count)
+{
+	if (handles == NULL)
+		return;
+
+	ValleyViewDevice& device = *client.device;
+	LockRenderDevice(device);
+	for (uint32 index = 0; index < count; index++) {
+		ValleyViewRenderBuffer* buffer = FindRenderBuffer(client,
+			handles[index]);
+		if (buffer == NULL || buffer->queuedReferenceCount == 0)
+			continue;
+		buffer->queuedReferenceCount--;
+		if (buffer->queuedReferenceCount != 0 || !buffer->closePending)
+			continue;
+
+		ValleyViewRenderBuffer** link = &client.buffers;
+		while (*link != NULL && *link != buffer)
+			link = &(*link)->next;
+		if (*link == NULL)
+			continue;
+		*link = buffer->next;
+		client.bufferCount--;
+		client.allocatedBytes -= buffer->size;
+		status_t status = ReleaseClientRenderBuffer(client, buffer);
+		if (status != B_OK) {
+			dprintf("intel_valleyview: deferred render BO close failed: %"
+				B_PRId32 "\n", status);
+		}
+	}
+	UnlockRenderDevice(device);
+}
+
+
 status_t
 CreateRenderContext(ValleyViewClient& client,
 	valleyview::RenderContextCreate& request)
@@ -863,7 +905,12 @@ DestroyRenderContext(ValleyViewClient& client,
 
 	ValleyViewDevice& device = *client.device;
 	LockRenderDevice(device);
-	request.status = DestroyPpgttContextLocked(client, request.handle);
+	mutex_lock(&device.renderQueueLock);
+	const bool queueBusy = client.activeJob != NULL
+		|| client.queueHead != NULL;
+	mutex_unlock(&device.renderQueueLock);
+	request.status = queueBusy
+		? B_BUSY : DestroyPpgttContextLocked(client, request.handle);
 	UnlockRenderDevice(device);
 	return request.status;
 }
@@ -871,7 +918,8 @@ DestroyRenderContext(ValleyViewClient& client,
 
 status_t
 SubmitRenderCommands(ValleyViewClient& client,
-	valleyview::RenderSubmit& submit)
+	valleyview::RenderSubmit& submit, const void* immutableBatch,
+	bool resetAfterSubmission)
 {
 	InitializeRenderSubmitResult(submit);
 	const bigtime_t started = system_time();
@@ -904,6 +952,7 @@ SubmitRenderCommands(ValleyViewClient& client,
 		ValleyViewRenderBuffer* buffer = FindRenderBuffer(client,
 			submit.objectHandles[index]);
 		if (buffer == NULL || buffer->quarantined
+			|| (buffer->closePending && immutableBatch == NULL)
 			|| buffer->ppgttOffset
 				== valleyview::kInvalidRenderPpgttOffset
 			|| buffer->domain != valleyview::kRenderDomainCpu) {
@@ -936,6 +985,10 @@ SubmitRenderCommands(ValleyViewClient& client,
 	if (status == B_OK)
 		status = BindRenderBufferGgtt(device, *workspace);
 	if (status == B_OK) {
+		const void* batchData = immutableBatch != NULL
+			? immutableBatch
+			: static_cast<const uint8*>(batchBuffer->address)
+				+ submit.batchOffset;
 		submit.workspaceOffset = workspace->ggttOffset;
 		submit.workspacePages = workspace->pageCount;
 		submit.diagnosticFlags |= valleyview::kRenderSubmitWorkspaceBound;
@@ -946,7 +999,7 @@ SubmitRenderCommands(ValleyViewClient& client,
 		submit.sequence = device.rcsSubmitSequence;
 		submit.completionMarker = valleyview::kRcsSubmitMarkerBase
 			| (submit.sequence & 0x00ffffff);
-		status = PrepareRcsSubmissionWorkspace(*workspace, *batchBuffer,
+		status = PrepareRcsSubmissionWorkspace(*workspace, batchData,
 			client.ppgtt.ppDirBase, submit);
 	}
 	if (status == B_OK && !device.rcsSubmissionReady
@@ -966,7 +1019,7 @@ SubmitRenderCommands(ValleyViewClient& client,
 		mutex_lock(&device.presentLock);
 		executed = true;
 		status = ExecuteRcsSubmission(device, *workspace,
-			client.ppgtt.ppDirBase, submit);
+			client.ppgtt.ppDirBase, submit, resetAfterSubmission);
 		mutex_unlock(&device.presentLock);
 		mutex_lock(&device.renderLock);
 	}
@@ -1098,9 +1151,13 @@ MapRenderBuffer(ValleyViewClient& client, valleyview::RenderBufferMap& request)
 	ValleyViewDevice& device = *client.device;
 	LockRenderDevice(device);
 	ValleyViewRenderBuffer* buffer = FindRenderBuffer(client, request.handle);
-	if (buffer == NULL || buffer->quarantined) {
+	if (buffer == NULL || buffer->quarantined || buffer->closePending) {
 		UnlockRenderDevice(device);
 		return B_BAD_VALUE;
+	}
+	if (buffer->queuedReferenceCount != 0) {
+		UnlockRenderDevice(device);
+		return B_BUSY;
 	}
 	if (buffer->mappingArea >= B_OK) {
 		UnlockRenderDevice(device);
@@ -1172,6 +1229,11 @@ CloseRenderBuffer(ValleyViewClient& client, uint32 handle)
 	}
 
 	ValleyViewRenderBuffer* buffer = *link;
+	if (buffer->queuedReferenceCount != 0) {
+		buffer->closePending = true;
+		UnlockRenderDevice(device);
+		return B_OK;
+	}
 	*link = buffer->next;
 	client.bufferCount--;
 	client.allocatedBytes -= buffer->size;
@@ -1188,11 +1250,15 @@ SetRenderBufferDomain(ValleyViewClient& client,
 	ValleyViewDevice& device = *client.device;
 	LockRenderDevice(device);
 	ValleyViewRenderBuffer* buffer = FindRenderBuffer(client, request.handle);
-	if (buffer == NULL || buffer->quarantined
+	if (buffer == NULL || buffer->quarantined || buffer->closePending
 		|| !valleyview::CanTransitionRenderBufferDomain(buffer->domain,
 			request.domain, buffer->flags)) {
 		UnlockRenderDevice(device);
 		return B_BAD_VALUE;
+	}
+	if (buffer->queuedReferenceCount != 0) {
+		UnlockRenderDevice(device);
+		return B_BUSY;
 	}
 	if (!device.nativeActive || device.gpuFaulted
 		|| device.p0MemoryQuarantined || device.renderMemoryQuarantined) {
@@ -1210,6 +1276,87 @@ SetRenderBufferDomain(ValleyViewClient& client,
 	}
 	UnlockRenderDevice(device);
 	return B_OK;
+}
+
+
+status_t
+SubmitRenderDirectPresent(ValleyViewClient& client,
+	valleyview::RenderDirectPresent& request)
+{
+	request.status = B_NO_INIT;
+	request.elapsedUs = 0;
+	if (request.flags != 0 || request.reserved != 0
+		|| request.sourceHandle == 0 || request.sourceWidth == 0
+		|| request.sourceHeight == 0 || request.sourceWidth > UINT16_MAX
+		|| request.sourceHeight > UINT16_MAX
+		|| static_cast<uint64>(request.sourceStride)
+			< static_cast<uint64>(request.sourceWidth) * sizeof(uint32)
+		|| request.sourceStride > UINT16_MAX
+		|| (request.sourceOffset & (sizeof(uint32) - 1)) != 0
+		|| request.rectCount == 0
+		|| request.rectCount > valleyview::kRenderMaxPresentRects) {
+		request.status = B_BAD_VALUE;
+		return request.status;
+	}
+	const uint64 sourceBytes
+		= static_cast<uint64>(request.sourceStride)
+			* (request.sourceHeight - 1)
+		+ static_cast<uint64>(request.sourceWidth) * sizeof(uint32);
+	for (uint32 index = 0; index < request.rectCount; index++) {
+		const valleyview::RenderPresentRect& rect = request.rects[index];
+		if (static_cast<uint32>(rect.sourceLeft) + rect.width
+				>= request.sourceWidth
+			|| static_cast<uint32>(rect.sourceTop) + rect.height
+				>= request.sourceHeight
+			|| static_cast<uint32>(rect.destinationLeft) + rect.width
+				>= valleyview::kP0Width
+			|| static_cast<uint32>(rect.destinationTop) + rect.height
+				>= valleyview::kP0Height) {
+			request.status = B_BAD_VALUE;
+			return request.status;
+		}
+	}
+
+	const bigtime_t started = system_time();
+	ValleyViewDevice& device = *client.device;
+	mutex_lock(&device.lock);
+	mutex_lock(&device.renderLock);
+	ValleyViewRenderBuffer* buffer = FindRenderBuffer(client,
+		request.sourceHandle);
+	status_t status = B_OK;
+	if (buffer == NULL || buffer->quarantined || buffer->closePending
+		|| buffer->queuedReferenceCount != 0
+		|| buffer->domain != valleyview::kRenderDomainCpu
+		|| buffer->ggttOffset == valleyview::kInvalidRenderGgttOffset
+		|| request.sourceOffset > buffer->size
+		|| sourceBytes > buffer->size - request.sourceOffset) {
+		status = B_BAD_VALUE;
+	}
+	if (status == B_OK)
+		buffer->domain = valleyview::kRenderDomainBcs;
+	mutex_unlock(&device.renderLock);
+
+	if (status == B_OK) {
+		mutex_lock(&device.presentLock);
+		status = SubmitBcsRenderCopy(device,
+			buffer->ggttOffset + request.sourceOffset, request.sourceStride,
+			request);
+		mutex_unlock(&device.presentLock);
+
+		mutex_lock(&device.renderLock);
+		buffer->domain = valleyview::kRenderDomainCpu;
+		mutex_unlock(&device.renderLock);
+	}
+	if (status == B_OK)
+		device.renderDirectPresents++;
+	else
+		device.renderDirectPresentFailures++;
+	mutex_unlock(&device.lock);
+
+	const bigtime_t elapsed = system_time() - started;
+	request.elapsedUs = elapsed > 0 ? static_cast<uint64>(elapsed) : 0;
+	request.status = status;
+	return status;
 }
 
 

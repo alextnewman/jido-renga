@@ -125,3 +125,21 @@ JR_TEST(intel_valleyview_gpu, builds_runtime_fill_and_copy_commands)
 	JR_CHECK_EQ(commands[14], 0x13204001u);
 	JR_CHECK_EQ(commands[16], 0x12345678u);
 }
+
+
+JR_TEST(intel_valleyview_gpu, builds_copy_with_distinct_pitches)
+{
+	uint32 commands[8] = {};
+	size_t count = 0;
+	JR_CHECK(AppendBcsCopyPitches(commands, 8, count, 0x100000, 0x200000,
+		2564, 5504, 1, 2, 100, 200, 31, 15));
+	JR_CHECK_EQ(count, 8u);
+	JR_CHECK_EQ(commands[0], 0x54f00006u);
+	JR_CHECK_EQ(commands[1] & 0xffffu, 5504u);
+	JR_CHECK_EQ(commands[2], 0x00c80064u);
+	JR_CHECK_EQ(commands[3], 0x00d80084u);
+	JR_CHECK_EQ(commands[5], 0x00020001u);
+	JR_CHECK_EQ(commands[6], 2564u);
+	JR_CHECK(!AppendBcsCopyPitches(commands, 8, count, 0, 0, 0, 5504,
+		0, 0, 0, 0, 1, 1));
+}

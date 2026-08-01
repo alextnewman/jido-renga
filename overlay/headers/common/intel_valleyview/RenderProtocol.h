@@ -11,8 +11,13 @@
 namespace valleyview {
 
 constexpr uint32 kRenderProtocolMagic = 0x564c5652;
-constexpr uint16 kRenderProtocolVersion = 9;
+constexpr uint16 kRenderProtocolVersion = 10;
 constexpr uint32 kRenderSubmitMaxObjects = 64;
+constexpr uint32 kRenderMaxQueuedJobsPerClient = 32;
+constexpr uint32 kRenderMaxQueuedJobsPerDevice = 128;
+constexpr uint32 kRenderMaxCompletionRecords = 64;
+constexpr uint32 kRenderMaxPresentRects = 64;
+constexpr uint64 kInvalidRenderFence = 0;
 
 enum RenderDeviceFlag : uint32 {
 	kRenderDeviceGgtt = 1u << 0,
@@ -56,6 +61,38 @@ enum RenderBufferDomain : uint32 {
 	kRenderDomainCpu = 1,
 	kRenderDomainBcs = 2,
 	kRenderDomainRcs = 3
+};
+
+enum RenderQueueMode : uint32 {
+	kRenderQueueModeSafe = 1,
+	kRenderQueueModeAsynchronous = 2,
+	kRenderQueueModeFailureOnlyReset = 3,
+	kRenderQueueModeDirectPresent = 4
+};
+
+enum RenderQueueConfigureFlag : uint32 {
+	kRenderQueueFailNextSubmission = 1u << 0
+};
+
+enum RenderObjectAccess : uint32 {
+	kRenderObjectRead = 1u << 0,
+	kRenderObjectWrite = 1u << 1,
+	kRenderObjectExecute = 1u << 2
+};
+
+constexpr uint32 kRenderObjectAccessMask = kRenderObjectRead
+	| kRenderObjectWrite | kRenderObjectExecute;
+
+enum RenderFenceResult : uint32 {
+	kRenderFencePending = 0,
+	kRenderFenceComplete,
+	kRenderFenceFailed,
+	kRenderFenceCancelled
+};
+
+struct RenderObjectReference {
+	uint32	handle;
+	uint32	access;
 };
 
 enum RenderMemoryTestStage : uint32 {
@@ -241,6 +278,106 @@ struct RenderSubmit {
 	RcsRegisterSnapshot active;
 	RcsRegisterSnapshot fault;
 	RcsRegisterSnapshot after;
+};
+
+struct RenderQueueConfigure {
+	RenderAbiHeader	header;
+	uint32			mode;
+	uint32			flags;
+	int32			status;
+	uint32			reserved;
+};
+
+struct RenderQueueSubmit {
+	RenderAbiHeader	header;
+	uint32			flags;
+	uint32			contextHandle;
+	uint32			batchHandle;
+	uint32			batchOffset;
+	uint32			batchLength;
+	uint32			objectCount;
+	RenderObjectReference objects[kRenderSubmitMaxObjects];
+	uint64			fence;
+	int32			status;
+	uint32			parserReason;
+	uint32			parsedCommandCount;
+	uint32			primitiveCount;
+};
+
+struct RenderQueueWait {
+	RenderAbiHeader	header;
+	uint32			flags;
+	uint32			reserved;
+	uint64			fence;
+	int64			timeoutUs;
+	RenderFenceResult result;
+	int32			status;
+	uint64			retiredFence;
+};
+
+struct RenderQueueCompletion {
+	RenderAbiHeader	header;
+	uint32			flags;
+	RenderFenceResult result;
+	uint64			fence;
+	int32			status;
+	RenderSubmitStage stage;
+	uint32			parserReason;
+	uint32			parsedCommandCount;
+	uint32			primitiveCount;
+	uint64			enqueuedUs;
+	uint64			startedUs;
+	uint64			retiredUs;
+};
+
+struct RenderQueueInfo {
+	RenderAbiHeader	header;
+	int32			status;
+	uint32			mode;
+	uint32			supportedModes;
+	uint32			queuedJobs;
+	uint32			completionCount;
+	uint32			queueHighWater;
+	uint32			deviceQueuedJobs;
+	uint64			nextFence;
+	uint64			lastStartedFence;
+	uint64			lastRetiredFence;
+	uint64			lastFailedFence;
+	uint64			submittedJobs;
+	uint64			completedJobs;
+	uint64			failedJobs;
+	uint64			cancelledJobs;
+	uint64			noResetJobs;
+	uint64			directPresents;
+	uint64			directPresentFailures;
+	uint64			totalQueueLatencyUs;
+	uint64			maxQueueLatencyUs;
+	uint64			totalExecutionUs;
+	uint64			maxExecutionUs;
+};
+
+struct RenderPresentRect {
+	uint16	sourceLeft;
+	uint16	sourceTop;
+	uint16	destinationLeft;
+	uint16	destinationTop;
+	uint16	width;
+	uint16	height;
+};
+
+struct RenderDirectPresent {
+	RenderAbiHeader	header;
+	uint32			flags;
+	uint32			sourceHandle;
+	uint32			sourceOffset;
+	uint32			sourceStride;
+	uint32			sourceWidth;
+	uint32			sourceHeight;
+	uint32			rectCount;
+	RenderPresentRect rects[kRenderMaxPresentRects];
+	int32			status;
+	uint32			reserved;
+	uint64			elapsedUs;
 };
 
 
