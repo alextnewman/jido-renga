@@ -399,11 +399,12 @@ latency ranged from 881 to 4,245 us, averaging 2,087 us. This proves the
 render-BO-to-P0-shadow path; a latest-frame presentation queue and nonblocking
 `SwapBuffers()` remain separate P2C work.
 
-The version 12 hardware candidate moves direct presents onto the render
+Version 12 moves direct presents onto the render
 timeline and returns their fences from `SwapBuffers()` without waiting for RCS
 or BCS. It preserves BO lifetime through BCS completion and coalesces obsolete
-queued frames per window. This candidate remains experimental until the direct
-burst gate proves bounded enqueue, ordered retirement, and actual frame drops.
+queued frames per window. Winky proves bounded 1–16 us present ioctls, queue
+depth six, seven same-stream drops, ordered retirement through fence 11, and
+the complete 18-case direct regression with zero failures or mapped fallback.
 
 `intel_valleyview_probe --render-memory-test` creates two client-owned buffers,
 clones both into the process, writes coordinate-dependent source and destination

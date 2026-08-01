@@ -57,10 +57,13 @@ Graphics development continues in
 [`P2`](docs/design/intel_valleyview_p2.md). Its bounded timeline queue, fair
 two-client scheduling, ordered fault recovery, and reset-safe BCS direct-copy
 path are hardware-proven. The direct gate completed all 18 compatibility cases
-with no presentation failure or CPU fallback. Safe GL remains the recovery
-baseline; persistent RCS contexts, latest-frame presentation, scalable
-residency, and performance tuning remain P2 work. EGL and browser integration
-are reserved for P3.
+with 18 successful GPU presents, no direct-present failure, and no CPU
+frontbuffer fallback. Its asynchronous successor queues render and presentation
+on one timeline; an eight-request hardware burst reached depth six, discarded
+seven obsolete frames, and presented the newest without losing fence order.
+Safe GL remains the default recovery baseline; persistent RCS contexts,
+scalable residency, and performance tuning remain P2 work. EGL and browser
+integration are reserved for P3.
 
 ## Why an overlay?
 

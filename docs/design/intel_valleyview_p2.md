@@ -108,14 +108,12 @@ bursts, `select()` readiness is deterministic, injected failure retires in
 order, a fresh client recovers, and the queued mode completes the 18-case
 compatibility suite.
 
-The first P2C data path is also hardware-proven. A `BDirectWindow` run completed
+P2C is hardware-proven. A `BDirectWindow` run completed
 all 18 cases with 18 successful BCS copies from Crocus render BOs to P0's
 framebuffer shadow, zero direct-present failures, and no CPU frontbuffer
-fallback. This is not the complete asynchronous presentation phase:
-`SwapBuffers()` still waits the render fence and issues presentation
-synchronously, and P0 retains its existing shadow-to-scanout worker.
+fallback.
 
-Render protocol version 12 is the next P2C hardware candidate. Render and
+Render protocol version 12 makes render and
 presentation jobs share one ordered per-client timeline; `SwapBuffers()`
 enqueues a copied clipping snapshot and returns its fence without waiting for
 RCS or BCS. BO mapping, reuse, close, and teardown honor that presentation
@@ -123,6 +121,14 @@ fence. Older queued frames are dropped only within the same presentation
 stream, while their timeline records still retire in order. Queue-pressure
 fallback drains the timeline before CPU presentation so an older BCS copy
 cannot overwrite the fallback frame.
+
+The Winky collapse gate queued eight same-stream presents with 1–16 us ioctl
+latency, reached queue depth six, retired seven obsolete presents with dropped
+completion flags, and executed the newest BCS copy. Fences 4 through 11 retired
+successfully in order. The full direct matrix then completed 18/18 with 25
+queued presents, 18 executed copies, seven drops, zero presentation failures,
+and zero mapped fallbacks. P0 retains its existing shadow-to-scanout worker;
+that ownership boundary is intentional.
 
 ## First lab image
 
