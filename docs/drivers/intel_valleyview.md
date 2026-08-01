@@ -391,6 +391,14 @@ changes hardware-context state that cannot be restored by MMIO ring cleanup
 alone. A future persistent mode must own and switch resident context state
 rather than omit reset from the Safe executor.
 
+Winky completes the direct `BDirectWindow` gate across all 18 compatibility
+cases. Every render fence retired successfully, all submission cleanup fields
+were `B_OK`, and the kernel recorded 18 direct presents with zero failures.
+No direct case entered the mapped `BBitmap` fallback. BCS direct-copy ioctl
+latency ranged from 881 to 4,245 us, averaging 2,087 us. This proves the
+render-BO-to-P0-shadow path; a latest-frame presentation queue and nonblocking
+`SwapBuffers()` remain separate P2C work.
+
 `intel_valleyview_probe --render-memory-test` creates two client-owned buffers,
 clones both into the process, writes coordinate-dependent source and destination
 patterns, confirms that userspace cannot delete the driver-owned mappings,

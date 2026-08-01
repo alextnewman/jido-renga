@@ -106,3 +106,7 @@ Safe/queued matrices in presentation captures. `direct` is reset-safe
 BCS-to-P0-shadow presentation; it is not the final app_server-sharing design.
 Do not revive the reset-omission experiment: P2B requires a kernel-owned
 resident hardware context and explicit switching.
+
+The Winky hardware baseline is 18/18 direct cases, 18 successful direct
+presents, zero direct-present failures, and no mapped presentation fallback.
+Preserve that baseline while adding the nonblocking latest-frame queue.

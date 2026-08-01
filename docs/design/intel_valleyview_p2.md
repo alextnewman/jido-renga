@@ -101,6 +101,20 @@ results are never dropped.
 
 P3 begins with EGL and a shareable offscreen/window-surface contract.
 
+## Hardware status
+
+P2A is hardware-proven on Winky: two clients complete bounded round-robin
+bursts, `select()` readiness is deterministic, injected failure retires in
+order, a fresh client recovers, and the queued mode completes the 18-case
+compatibility suite.
+
+The first P2C data path is also hardware-proven. A `BDirectWindow` run completed
+all 18 cases with 18 successful BCS copies from Crocus render BOs to P0's
+framebuffer shadow, zero direct-present failures, and no CPU frontbuffer
+fallback. This is not the complete asynchronous presentation phase:
+`SwapBuffers()` still waits the render fence and issues presentation
+synchronously, and P0 retains its existing shadow-to-scanout worker.
+
 ## First lab image
 
 The P2 lab implements three runtime modes in one driver and renderer:
@@ -137,7 +151,7 @@ high-water marks, enqueue-to-start and start-to-retire latency, context
 switches, resets, dropped presentation frames, CPU/GPU cache transitions, and
 copy paths.
 
-The queued capability is not complete until:
+P2 is not complete until:
 
 - two clients make bounded forward progress without cross-client access;
 - fence waits, timeouts, cancellation, close, and `select()` notification are
