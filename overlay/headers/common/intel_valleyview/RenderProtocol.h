@@ -11,7 +11,7 @@
 namespace valleyview {
 
 constexpr uint32 kRenderProtocolMagic = 0x564c5652;
-constexpr uint16 kRenderProtocolVersion = 10;
+constexpr uint16 kRenderProtocolVersion = 11;
 constexpr uint32 kRenderSubmitMaxObjects = 64;
 constexpr uint32 kRenderMaxQueuedJobsPerClient = 32;
 constexpr uint32 kRenderMaxQueuedJobsPerDevice = 128;
@@ -322,9 +322,16 @@ struct RenderQueueCompletion {
 	uint64			fence;
 	int32			status;
 	RenderSubmitStage stage;
+	uint32			diagnosticFlags;
 	uint32			parserReason;
 	uint32			parsedCommandCount;
 	uint32			primitiveCount;
+	int32			resetStatus;
+	int32			ringRestoreStatus;
+	int32			cacheRestoreStatus;
+	int32			ppgttControlRestoreStatus;
+	int32			forcewakeReleaseStatus;
+	int32			wakeRestoreStatus;
 	uint64			enqueuedUs;
 	uint64			startedUs;
 	uint64			retiredUs;

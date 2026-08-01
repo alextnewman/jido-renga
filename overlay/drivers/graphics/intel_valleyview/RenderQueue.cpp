@@ -74,9 +74,18 @@ AppendCompletionLocked(ValleyViewClient& client,
 	completion->record.fence = job.fence;
 	completion->record.status = status;
 	completion->record.stage = job.submit.stage;
+	completion->record.diagnosticFlags = job.submit.diagnosticFlags;
 	completion->record.parserReason = job.submit.parserReason;
 	completion->record.parsedCommandCount = job.submit.parsedCommandCount;
 	completion->record.primitiveCount = job.submit.primitiveCount;
+	completion->record.resetStatus = job.submit.resetStatus;
+	completion->record.ringRestoreStatus = job.submit.ringRestoreStatus;
+	completion->record.cacheRestoreStatus = job.submit.cacheRestoreStatus;
+	completion->record.ppgttControlRestoreStatus
+		= job.submit.ppgttControlRestoreStatus;
+	completion->record.forcewakeReleaseStatus
+		= job.submit.forcewakeReleaseStatus;
+	completion->record.wakeRestoreStatus = job.submit.wakeRestoreStatus;
 	completion->record.enqueuedUs = job.enqueuedAt;
 	completion->record.startedUs = startedAt;
 	completion->record.retiredUs = retiredAt;
@@ -173,7 +182,7 @@ RenderQueueWorker(void* cookie)
 			device.renderQueuedJobs--;
 		const bool injectFailure = client->failNextSubmission;
 		const bool resetAfterSubmission = client->queueMode
-			== valleyview::kRenderQueueModeAsynchronous;
+			!= valleyview::kRenderQueueModeFailureOnlyReset;
 		client->failNextSubmission = false;
 		if (client->selectPool != NULL)
 			notify_select_event_pool(client->selectPool, B_SELECT_WRITE);
@@ -194,7 +203,6 @@ RenderQueueWorker(void* cookie)
 		ValleyViewRenderJob* cancelled = NULL;
 		uint32 completionSignals = 0;
 		LockQueue(device);
-		client->activeJob = NULL;
 		const uint64 queueLatency = startedAt > job->enqueuedAt
 			? static_cast<uint64>(startedAt - job->enqueuedAt) : 0;
 		const uint64 execution = retiredAt > startedAt
@@ -248,7 +256,6 @@ RenderQueueWorker(void* cookie)
 				}
 			}
 		}
-		const bool closing = client->closing;
 		UnlockQueue(device);
 
 		FreeRenderJob(job);
@@ -260,6 +267,10 @@ RenderQueueWorker(void* cookie)
 		}
 		for (uint32 index = 0; index < completionSignals; index++)
 			NotifyCompletion(*client, status != B_OK);
+		LockQueue(device);
+		client->activeJob = NULL;
+		const bool closing = client->closing;
+		UnlockQueue(device);
 		if (closing)
 			release_sem_etc(client->queueIdleSem, 1, B_DO_NOT_RESCHEDULE);
 	}
@@ -558,6 +569,16 @@ EnqueueRenderCommands(ValleyViewClient& client,
 			job->submit.batchOffset = request.batchOffset;
 			job->submit.batchLength = request.batchLength;
 			job->submit.objectCount = request.objectCount;
+			job->submit.status = B_NO_INIT;
+			job->submit.parserReason = request.parserReason;
+			job->submit.parsedCommandCount = request.parsedCommandCount;
+			job->submit.primitiveCount = request.primitiveCount;
+			job->submit.resetStatus = B_NO_INIT;
+			job->submit.ringRestoreStatus = B_NO_INIT;
+			job->submit.cacheRestoreStatus = B_NO_INIT;
+			job->submit.ppgttControlRestoreStatus = B_NO_INIT;
+			job->submit.forcewakeReleaseStatus = B_NO_INIT;
+			job->submit.wakeRestoreStatus = B_NO_INIT;
 			for (uint32 index = 0; index < request.objectCount; index++) {
 				job->submit.objectHandles[index] = request.objects[index].handle;
 				ValleyViewRenderBuffer* buffer = FindClientRenderBuffer(client,

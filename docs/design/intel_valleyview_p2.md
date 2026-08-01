@@ -108,27 +108,30 @@ The first P2 lab image implements four runtime modes in one driver and renderer:
 - `safe`: the proven synchronous P1 transaction;
 - `queued`: immutable enqueue, timeline fence, fair kernel worker, and Safe GL
   execution on the worker;
+- `direct`: queued Safe execution plus clipped BCS copies from the retired
+  Crocus color BO into P0's framebuffer shadow; and
 - `persistent`: queued execution with healthy-path RCS reset disabled while
-  retaining complete ring, cache, PPGTT, wake, and P0 restoration; and
-- `direct`: the persistent experiment plus clipped BCS copies from the retired
-  Crocus color BO into P0's framebuffer shadow.
+  retaining complete ring, cache, PPGTT, wake, and P0 restoration.
 
 `persistent` is an experiment toward resident contexts, not the final P2B
 architecture. `direct` removes GPU readback, the temporary `BBitmap`, and the
 CPU direct-buffer copy, but P0 still performs its existing framebuffer-to-
 scanout copy and vblank latch.
 
-Run the complete first-flash matrix with:
+Run the complete lab matrix with:
 
 ```sh
 intel_valleyview_gl_suite --p2-lab
 ```
 
-The command first runs a raw two-client queue burst with ordered fault and
-recovery, then executes all 18 GL cases in every mode, followed by an injected
-queue failure and a fresh-client recovery draw. Queue captures report depth,
-high-water marks, submitted/completed/failed/cancelled jobs, no-reset jobs, and
-queue/execution latency.
+The command first initializes RCS and runs a raw two-client queue burst with
+ordered fault and recovery. It then executes all 18 GL cases in Safe, queued,
+and direct modes, proves an injected queue failure and fresh-client recovery,
+and runs one explicit no-reset control draw last. The destructive experiment is
+last so a fail-closed engine quarantine cannot hide independent queue or
+presentation evidence. Queue captures report depth, high-water marks,
+submitted/completed/failed/cancelled jobs, no-reset jobs, queue/execution
+latency, and submission cleanup status.
 
 ## Required evidence
 

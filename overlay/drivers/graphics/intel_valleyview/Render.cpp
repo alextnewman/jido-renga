@@ -921,7 +921,18 @@ SubmitRenderCommands(ValleyViewClient& client,
 	valleyview::RenderSubmit& submit, const void* immutableBatch,
 	bool resetAfterSubmission)
 {
+	const uint32 enqueuedParserReason = submit.parserReason;
+	const uint32 enqueuedCommandCount = submit.parsedCommandCount;
+	const uint32 enqueuedPrimitiveCount = submit.primitiveCount;
 	InitializeRenderSubmitResult(submit);
+	if (immutableBatch != NULL) {
+		submit.diagnosticFlags |= valleyview::kRenderSubmitBatchCopied
+			| valleyview::kRenderSubmitBatchAccepted;
+		submit.stage = valleyview::kRenderSubmitStageBatchParsed;
+		submit.parserReason = enqueuedParserReason;
+		submit.parsedCommandCount = enqueuedCommandCount;
+		submit.primitiveCount = enqueuedPrimitiveCount;
+	}
 	const bigtime_t started = system_time();
 	if (submit.submitFlags != 0
 		|| !valleyview::ValidateRenderSubmitObjectHandles(
@@ -1045,7 +1056,7 @@ SubmitRenderCommands(ValleyViewClient& client,
 		if (workspaceStatus == B_OK) {
 			submit.diagnosticFlags
 				|= valleyview::kRenderSubmitWorkspaceRestored;
-		} else
+		} else if (status == B_OK)
 			status = workspaceStatus;
 	}
 

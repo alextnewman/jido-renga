@@ -903,7 +903,9 @@ RunRenderQueueProbe(int firstDevice)
 	if (clients[1].device < 0)
 		return B_ERROR;
 
-	status_t status = InitializeQueueProbeClient(clients[0]);
+	status_t status = RunRcsProbe(clients[0].device);
+	if (status == B_OK)
+		status = InitializeQueueProbeClient(clients[0]);
 	if (status == B_OK)
 		status = InitializeQueueProbeClient(clients[1]);
 	constexpr uint32 kJobsPerClient = 16;
