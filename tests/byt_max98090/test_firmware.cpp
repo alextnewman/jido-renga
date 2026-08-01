@@ -9,6 +9,7 @@
 #include "Max98090Registers.h"
 #include "ModuleNames.h"
 #include "SstBoot.h"
+#include "SstCapture.h"
 #include "SstPlayback.h"
 #include "SstProtocol.h"
 
@@ -235,6 +236,10 @@ JR_TEST(byt_ipc, packs_mrfld_64_bit_header_fields)
 	JR_CHECK_EQ(kMrfldSetStreamParameters, (uint16_t)0x12);
 	JR_CHECK_EQ(kMrfldSetGain, (uint16_t)0x21);
 	JR_CHECK(kMrfldAllocateStream != 0x20);
+	JR_CHECK(MrfldCommandNeedsCompletion(kMrfldStartStream, false));
+	JR_CHECK(MrfldCommandNeedsCompletion(kMrfldDropStream, false));
+	JR_CHECK(!MrfldCommandNeedsCompletion(kMrfldFreeStream, true));
+	JR_CHECK(!MrfldCommandNeedsCompletion(kMrfldDrainStream, false));
 
 	const MrfldDspHeader allocation = MakeMrfldDspHeader(
 		kMrfldAllocateStream, 0x90, 100);
@@ -341,8 +346,8 @@ JR_TEST(byt_profile, winky_ssp_and_stream_contract_is_explicit)
 	JR_CHECK_EQ(profile.clock.barMask, (uint32_t)0xfffffe00);
 	JR_CHECK_EQ(profile.clock.mapSize, (uint32_t)0x100);
 	JR_CHECK_EQ(profile.clock.registerOffset, (uint32_t)0x60);
-	JR_CHECK_EQ(profile.clock.clearMask, (uint32_t)0x7);
-	JR_CHECK_EQ(profile.clock.setBits, (uint32_t)0x5);
+	JR_CHECK_EQ(profile.clock.clearMask, (uint32_t)0x3);
+	JR_CHECK_EQ(profile.clock.setBits, (uint32_t)0x1);
 	JR_CHECK_EQ(profile.resources.lpeMemoryIndex, (uint32_t)0);
 	JR_CHECK_EQ(profile.resources.imrMemoryIndex, (uint32_t)2);
 	JR_CHECK_EQ(profile.resources.ipcIrqIndex, (uint32_t)5);
@@ -403,6 +408,16 @@ JR_TEST(byt_profile, winky_ssp_and_stream_contract_is_explicit)
 	JR_CHECK_EQ(kGainZeroDb, (int16_t)0);
 	JR_CHECK_EQ(profile.playback.streamId, (uint8_t)1);
 	JR_CHECK_EQ(profile.playback.pipeId, (uint8_t)0x90);
+	JR_CHECK_EQ(profile.capture.sbaTaskId, (uint8_t)1);
+	JR_CHECK_EQ(profile.capture.mediaTaskId, (uint8_t)3);
+	JR_CHECK_EQ(profile.capture.streamId, (uint8_t)3);
+	JR_CHECK_EQ(profile.capture.pipeId, (uint8_t)0x0e);
+	JR_CHECK_EQ(profile.capture.pcm.operation, (uint8_t)1);
+	JR_CHECK_EQ(profile.capture.pcm.channels, (uint8_t)2);
+	JR_CHECK_EQ(profile.capture.pcm.sampleBits, (uint8_t)16);
+	JR_CHECK_EQ(profile.capture.pcm.sampleRate, (uint32_t)48000);
+	JR_CHECK_EQ(MrfldTimestampAddress(profile.capture.mailboxLpeAddress,
+		profile.capture.streamId), (uint32_t)0xff3448e4);
 	JR_CHECK_EQ(kMrfldAllocationSize, (size_t)100);
 	JR_CHECK_EQ(kMrfldTimestampStride, (uint32_t)76);
 	JR_CHECK_EQ(MrfldTimestampOffset(1), (uint32_t)(0x800 + 76));
@@ -420,6 +435,78 @@ JR_TEST(byt_profile, winky_ssp_and_stream_contract_is_explicit)
 	JR_CHECK(FitsSstDmaRange(0xfffff000, 0x1000));
 	JR_CHECK(!FitsSstDmaRange(0xfffff000, 0x1001));
 	JR_CHECK(!FitsSstDmaRange(0x100000000ULL, 1));
+}
+
+
+JR_TEST(byt_capture, codec_images_match_validated_winky_capture)
+{
+	const max98090::CaptureImage internal
+		= max98090::CaptureImageFor(false);
+	JR_CHECK_EQ(internal.digitalMicEnable, (uint8_t)0x53);
+	JR_CHECK_EQ(internal.digitalMicConfig, (uint8_t)0x60);
+	JR_CHECK_EQ(internal.mic2InputLevel, (uint8_t)0x0a);
+	JR_CHECK_EQ(internal.inputEnable, (uint8_t)0x00);
+	JR_CHECK_EQ(internal.filterConfiguration, (uint8_t)0xe0);
+	JR_CHECK_EQ(internal.adcBiquadLevel, (uint8_t)0x0f);
+
+	const max98090::CaptureImage headset
+		= max98090::CaptureImageFor(true);
+	JR_CHECK_EQ(headset.digitalMicEnable, (uint8_t)0x50);
+	JR_CHECK_EQ(headset.digitalMicConfig, (uint8_t)0x60);
+	JR_CHECK_EQ(headset.mic2InputLevel, (uint8_t)0x2a);
+	JR_CHECK_EQ(headset.inputEnable, (uint8_t)0x13);
+	JR_CHECK_EQ(headset.filterConfiguration, (uint8_t)0xe0);
+	JR_CHECK_EQ(headset.adcBiquadLevel, (uint8_t)0x0f);
+	JR_CHECK_EQ(max98090::kIoDuplex, (uint8_t)0x03);
+	JR_CHECK_EQ(max98090::kDigitalMicClockDiv8, (uint8_t)0x50);
+	JR_CHECK_EQ(max98090::kDigitalMicCompensation48k, (uint8_t)0x60);
+	JR_CHECK_EQ(max98090::kAdcBiquadAttenuation15Db, (uint8_t)0x0f);
+	JR_CHECK_EQ(max98090::kAdcMic2, (uint8_t)0x40);
+	JR_CHECK_EQ(max98090::kAdcBoost24DbVolumeMinus1Db, (uint8_t)0x44);
+	JR_CHECK_EQ(max98090::kMicBiasHighPerformance, (uint8_t)0x01);
+	JR_CHECK_EQ(max98090::kAdcDitherHighPerformance, (uint8_t)0x03);
+	JR_CHECK_EQ(max98090::kShutdownAssert, (uint8_t)0x00);
+	JR_CHECK_EQ(max98090::kShutdownRelease, (uint8_t)0x80);
+}
+
+
+JR_TEST(byt_capture, reverse_route_commands_are_exact)
+{
+	const SstDcrCommand dcr = MakeCodecIn0DcrDefaults();
+	JR_CHECK_EQ(sizeof(dcr), (size_t)60);
+	JR_CHECK_EQ(dcr.header.pathId, kPathCodecIn0);
+	JR_CHECK_EQ(dcr.header.moduleId, kModuleDcr);
+	JR_CHECK_EQ(dcr.header.commandId, kCmdSetIir);
+	JR_CHECK_EQ(dcr.header.length, (uint16_t)0);
+	for (uint8_t parameter : dcr.parameters)
+		JR_CHECK_EQ(parameter, (uint8_t)0);
+
+	const SstGainCommand codecGain = MakeCodecIn0Gain0dB();
+	JR_CHECK_EQ(codecGain.header.commandId, kCmdSetGain);
+	JR_CHECK_EQ(codecGain.cells[0].pathId, kPathCodecIn0);
+	JR_CHECK_EQ(codecGain.cells[0].leftGain, kGainZeroDb);
+
+	const SstSwmCommand swm = MakeCodecIn0ToPcm1Swm();
+	JR_CHECK_EQ(swm.header.commandId, kCmdSetSwm);
+	JR_CHECK_EQ(swm.outputPathId, kPathPcm1Out);
+	JR_CHECK_EQ(swm.inputCount, (uint16_t)1);
+	JR_CHECK_EQ(swm.inputs[0].pathId, kPathCodecIn0);
+	JR_CHECK_EQ(static_cast<size_t>(sizeof(SstByteStreamDspHeader)
+		+ swm.header.length), SwmCommandSize(1));
+
+	const SstMediaPathCommand path = MakePcm1OutputEnable();
+	JR_CHECK_EQ(path.header.pathId, kPathPcm1Out);
+	JR_CHECK_EQ(path.header.commandId, kCmdSetMediaPath);
+	JR_CHECK_EQ(path.switchState, kPathOn);
+
+	const SstGainCommand pcmGain = MakePcm1OutputGain0dB();
+	JR_CHECK_EQ(pcmGain.cells[0].pathId, kPathPcm1Out);
+	JR_CHECK_EQ(kCaptureRouteCommandCount, (size_t)6);
+	JR_CHECK_EQ(CaptureBufferCycle(7680, 3840, 4), (uint32_t)2);
+	JR_CHECK_EQ(RecordedFrames(7680, 4), (uint64_t)1920);
+	JR_CHECK(AcceptFixedDuplexChannelMask(0x0f));
+	JR_CHECK(!AcceptFixedDuplexChannelMask(0x03));
+
 }
 
 
@@ -464,6 +551,7 @@ JR_TEST(byt_codec, full_register_playback_program_is_exact)
 {
 	using namespace max98090;
 	JR_CHECK_EQ(kSoftwareReset, (uint8_t)0x00);
+	JR_CHECK_EQ(kDeviceStatus, (uint8_t)0x01);
 	JR_CHECK_EQ(kSystemClock, (uint8_t)0x1b);
 	JR_CHECK_EQ(kClockMode, (uint8_t)0x1c);
 	JR_CHECK_EQ(kClockRatioNiMsb, (uint8_t)0x1d);
@@ -474,6 +562,7 @@ JR_TEST(byt_codec, full_register_playback_program_is_exact)
 	JR_CHECK_EQ(kTdmFormat, (uint8_t)0x24);
 	JR_CHECK_EQ(kIoConfiguration, (uint8_t)0x25);
 	JR_CHECK_EQ(kFilterConfiguration, (uint8_t)0x26);
+	JR_CHECK_EQ(kAdcBiquadLevel, (uint8_t)0x19);
 	JR_CHECK_EQ(kDaiPlaybackLevel, (uint8_t)0x27);
 	JR_CHECK_EQ(kHeadphoneControl, (uint8_t)0x2b);
 	JR_CHECK_EQ(kLeftHeadphoneVolume, (uint8_t)0x2c);
@@ -487,16 +576,17 @@ JR_TEST(byt_codec, full_register_playback_program_is_exact)
 	JR_CHECK_EQ(kDeviceShutdown, (uint8_t)0x45);
 	JR_CHECK_EQ(kRevision, (uint8_t)0xff);
 	JR_CHECK_EQ(kReset, (uint8_t)0x80);
-	JR_CHECK_EQ(kSystemClock19M2, (uint8_t)0x10);
+	JR_CHECK_EQ(kSystemClockLinuxWinky, (uint8_t)0x10);
 	JR_CHECK_EQ(kConsumerClockRatio, (uint8_t)0x00);
 	JR_CHECK_EQ(kMasterModeConsumer, (uint8_t)0x00);
 	JR_CHECK_EQ(kInterfaceI2sS16Normal, (uint8_t)0x04);
 	JR_CHECK_EQ(kTdmDisabled, (uint8_t)0x00);
 	JR_CHECK_EQ(kIoPlayback, (uint8_t)0x01);
+	JR_CHECK_EQ(kIoDuplex, (uint8_t)0x03);
 	JR_CHECK_EQ(kFilterMusicPlaybackDcBlock, (uint8_t)0xa0);
 	JR_CHECK_EQ(kDaiPlaybackUnmutedUnity, (uint8_t)0x00);
 	JR_CHECK(kSystemClock != 0x04);
-	JR_CHECK((kSystemClock19M2 & 0x40) == 0);
+	JR_CHECK((kSystemClockLinuxWinky & 0x40) == 0);
 	JR_CHECK_EQ(kLeftDacToLeftSpeaker, (uint8_t)0x01);
 	JR_CHECK_EQ(kRightDacToRightSpeaker, (uint8_t)0x02);
 	JR_CHECK_EQ(kSpeakerVolumeHardwareMaximum, (uint8_t)39);

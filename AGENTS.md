@@ -70,7 +70,7 @@ cd generated.x86_64
 ../tools/jr-jam -q gpio byt_gpio byt_xhci_filter i2c_guarded iosf_mbi \
   sdhci_embedded cros_ec_keyboard i2c_atmel_mxt byt_max98090 \
   intel_valleyview intel_valleyview.accelerant intel_valleyview_probe \
-  intel_valleyview_crocus_demo
+  intel_valleyview_crocus_demo jr_mic_probe jr_mic_collect
 ../tools/jr-jam -q haiku_devel.hpkg
 cd .. && tools/build-crocus generated.x86_64
 ```

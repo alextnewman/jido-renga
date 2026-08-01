@@ -29,6 +29,15 @@ constexpr uint16_t kMrfldBufferUnderrun = 0x0b;
 constexpr uint16_t kMrfldSetStreamParameters = 0x12;
 constexpr uint16_t kMrfldSetGain = 0x21;
 
+
+constexpr bool
+MrfldCommandNeedsCompletion(uint16_t commandId, bool responseRequired)
+{
+	return !responseRequired
+		&& (commandId == kMrfldStartStream
+			|| commandId == kMrfldDropStream);
+}
+
 #pragma pack(push, 1)
 struct MrfldDspHeader {
 	uint16_t	moduleAndPipe;

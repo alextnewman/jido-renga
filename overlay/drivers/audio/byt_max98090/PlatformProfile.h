@@ -57,6 +57,16 @@ struct SstPlaybackProfile {
 };
 
 
+struct SstCaptureProfile {
+	uint8_t					sbaTaskId;
+	uint8_t					mediaTaskId;
+	uint8_t					streamId;
+	uint8_t					pipeId;
+	uint32_t				mailboxLpeAddress;
+	PcmStreamProfile		pcm;
+};
+
+
 struct JackProfile {
 	uint32_t	headphoneResourceIndex;
 	bool		headphoneActiveLow;
@@ -100,6 +110,7 @@ struct PlatformProfile {
 	PlatformClockProfile	clock;
 	LpeResourceProfile		resources;
 	SstPlaybackProfile		playback;
+	SstCaptureProfile		capture;
 	JackProfile				jack;
 	CodecOutputProfile		output;
 };

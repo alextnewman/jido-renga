@@ -9,6 +9,7 @@
 #include "Ipc.h"
 #include "Max98090Registers.h"
 #include "SstBoot.h"
+#include "SstCapture.h"
 #include "SstPlayback.h"
 #include "SstProtocol.h"
 
@@ -77,8 +78,13 @@ constexpr int32 kMixHeadphoneMuteId = 1012;
 constexpr int32 kMixRouteId = 1020;
 constexpr int32 kMixRouteSpeakerId = 1021;
 constexpr int32 kMixRouteHeadphoneId = 1022;
+constexpr int32 kMixInputRouteId = 1030;
+constexpr int32 kMixInputInternalId = 1031;
+constexpr int32 kMixInputHeadsetId = 1032;
 constexpr uint32 kMixRouteSpeaker = 0;
 constexpr uint32 kMixRouteHeadphone = 1;
+constexpr uint32 kMixInputInternal = 0;
+constexpr uint32 kMixInputHeadset = 1;
 constexpr uint32 kMaximumMemoryResources = 8;
 constexpr uint32 kMaximumIrqResources = 16;
 
@@ -266,6 +272,51 @@ MapRegisters(const char* name, phys_addr_t base, size_t size,
 	return area;
 }
 
+
+status_t
+CreateDmaRing(const char* name, size_t bytes, area_id& area, void*& buffer,
+	phys_addr_t& physical)
+{
+	const size_t areaBytes = (bytes + B_PAGE_SIZE - 1)
+		& ~(B_PAGE_SIZE - 1);
+	virtual_address_restrictions virtualRestrictions = {};
+	virtualRestrictions.address_specification = B_ANY_KERNEL_ADDRESS;
+	physical_address_restrictions physicalRestrictions = {};
+	physicalRestrictions.high_address = kSstDmaAddressSpaceSize;
+	area = vm_create_anonymous_area(B_SYSTEM_TEAM, name, areaBytes,
+		B_CONTIGUOUS, B_READ_AREA | B_WRITE_AREA, 0, 0,
+		&virtualRestrictions, &physicalRestrictions, true, &buffer);
+	if (area < B_OK) {
+		buffer = nullptr;
+		physical = 0;
+		return area;
+	}
+
+	physical_entry entry;
+	const status_t status = get_memory_map(buffer, areaBytes, &entry, 1);
+	if (status != B_OK || !FitsSstDmaRange(entry.address, areaBytes)) {
+		delete_area(area);
+		area = B_BAD_VALUE;
+		buffer = nullptr;
+		physical = 0;
+		return status != B_OK ? status : B_BAD_VALUE;
+	}
+	physical = entry.address;
+	memset(buffer, 0, bytes);
+	return B_OK;
+}
+
+
+void
+DeleteDmaRing(area_id& area, void*& buffer, phys_addr_t& physical)
+{
+	if (area >= B_OK)
+		delete_area(area);
+	area = B_BAD_VALUE;
+	buffer = nullptr;
+	physical = 0;
+}
+
 } // namespace
 
 
@@ -310,15 +361,26 @@ Card::Card()
 	fPlaybackPhysical(0),
 	fPeriodFrames(0),
 	fPeriodCount(0),
+	fCaptureArea(B_BAD_VALUE),
+	fCaptureBuffer(nullptr),
+	fCapturePhysical(0),
+	fCapturePeriodFrames(0),
+	fCapturePeriodCount(0),
 	fStreamState(kStreamIdle),
+	fCaptureStreamState(kStreamIdle),
 	fHardwareConfigured(false),
 	fRouteConfigured(false),
+	fCaptureRouteConfigured(false),
 	fRouteFault(B_OK),
+	fCaptureRouteFault(B_OK),
 	fAllocationFault(B_OK),
+	fCaptureAllocationFault(B_OK),
 	fExchangeWanted(false),
 	fPeriodElapsedCount(0),
 	fPlaybackFault(B_OK),
-	fLastHardwareCounter(0)
+	fCaptureFault(B_OK),
+	fLastHardwareCounter(0),
+	fLastCaptureCounter(0)
 {
 	mutex_init(&fLock, "BYT MAX98090 card");
 	mutex_init(&fCodecLock, "BYT MAX98090 codec");
@@ -504,7 +566,7 @@ Card::Open()
 	fOpenCount++;
 	const int32 openCount = fOpenCount;
 	mutex_unlock(&fLock);
-	TRACE("opened fixed 48 kHz stereo output device (open count %" B_PRId32
+	TRACE("opened fixed 48 kHz stereo duplex device (open count %" B_PRId32
 		")\n", openCount);
 	return B_OK;
 }
@@ -876,8 +938,11 @@ Card::_LoadAndStartFirmware()
 			init.version[0]);
 		fHardwareConfigured = false;
 		fRouteConfigured = false;
+		fCaptureRouteConfigured = false;
 		fRouteFault = B_OK;
+		fCaptureRouteFault = B_OK;
 		fAllocationFault = B_OK;
+		fCaptureAllocationFault = B_OK;
 		return B_OK;
 	}
 
@@ -1057,7 +1122,27 @@ Card::_InitializeCodec()
 		uint8 reg;
 		uint8 value;
 	} settings[] = {
-		{max98090::kSystemClock, max98090::kSystemClock19M2},
+		{max98090::kInputMode, max98090::kMic2In34},
+		{max98090::kMic2InputLevel,
+			max98090::CaptureImageFor(false).mic2InputLevel},
+		{max98090::kDigitalMicEnable,
+			max98090::CaptureImageFor(false).digitalMicEnable},
+		{max98090::kDigitalMicConfig,
+			max98090::CaptureImageFor(false).digitalMicConfig},
+		{max98090::kLeftAdcMixer, max98090::kAdcMic2},
+		{max98090::kRightAdcMixer, max98090::kAdcMic2},
+		{max98090::kLeftAdcLevel,
+			max98090::kAdcBoost24DbVolumeMinus1Db},
+		{max98090::kRightAdcLevel,
+			max98090::kAdcBoost24DbVolumeMinus1Db},
+		{max98090::kBiasControl, max98090::kMicBiasHighPerformance},
+		{max98090::kAdcControl,
+			max98090::kAdcDitherHighPerformance},
+		{max98090::kAdcBiquadLevel,
+			max98090::CaptureImageFor(false).adcBiquadLevel},
+		{max98090::kInputEnable,
+			max98090::CaptureImageFor(false).inputEnable},
+		{max98090::kSystemClock, max98090::kSystemClockLinuxWinky},
 		{max98090::kClockMode, max98090::kConsumerClockRatio},
 		{max98090::kClockRatioNiMsb, max98090::kConsumerClockRatio},
 		{max98090::kClockRatioNiLsb, max98090::kConsumerClockRatio},
@@ -1065,9 +1150,9 @@ Card::_InitializeCodec()
 		{max98090::kInterfaceFormat, max98090::kInterfaceI2sS16Normal},
 		{max98090::kTdmFormat, max98090::kTdmDisabled},
 		{max98090::kTdmControl, max98090::kTdmDisabled},
-		{max98090::kIoConfiguration, max98090::kIoPlayback},
+		{max98090::kIoConfiguration, max98090::kIoDuplex},
 		{max98090::kFilterConfiguration,
-			max98090::kFilterMusicPlaybackDcBlock},
+			max98090::CaptureImageFor(false).filterConfiguration},
 		{max98090::kDaiPlaybackLevel, max98090::kDaiPlaybackUnmutedUnity},
 		{max98090::kHeadphoneControl, 0},
 		{max98090::kLeftHeadphoneVolume,
@@ -1106,6 +1191,8 @@ Card::_InitializeCodec()
 		status = _WriteCodec(max98090::kDeviceShutdown,
 			max98090::kShutdownRelease);
 	}
+	if (status == B_OK)
+		status = _ApplyCaptureSourceLocked(false);
 	if (status != B_OK) {
 		mutex_unlock(&fCodecLock);
 		return status;
@@ -1114,7 +1201,7 @@ Card::_InitializeCodec()
 	fMicrophonePresent = false;
 	mutex_unlock(&fCodecLock);
 
-	TRACE("MAX98090 revision 0x%02x initialized for 48 kHz I2S playback\n",
+	TRACE("MAX98090 revision 0x%02x initialized for 48 kHz I2S duplex\n",
 		fCodecRevision);
 	const status_t jackStatus = _InitializeJackDetection();
 	if (jackStatus != B_OK) {
@@ -1122,6 +1209,83 @@ Card::_InitializeCodec()
 			"when opened\n", strerror(jackStatus));
 	}
 	return B_OK;
+}
+
+
+status_t
+Card::_ApplyCaptureSourceLocked(bool headsetMicrophone)
+{
+	const max98090::CaptureImage image
+		= max98090::CaptureImageFor(headsetMicrophone);
+	status_t status = _WriteCodec(max98090::kInputEnable, 0);
+	if (status == B_OK) {
+		status = _WriteCodec(max98090::kDigitalMicEnable,
+			static_cast<uint8>(image.digitalMicEnable
+				& ~max98090::kDigitalMicChannels));
+	}
+	if (status == B_OK)
+		status = _WriteCodec(max98090::kMic2InputLevel,
+			image.mic2InputLevel);
+	if (status == B_OK)
+		status = _WriteCodec(max98090::kDigitalMicConfig,
+			image.digitalMicConfig);
+	if (status == B_OK)
+		status = _WriteCodec(max98090::kFilterConfiguration,
+			image.filterConfiguration);
+	if (status == B_OK)
+		status = _WriteCodec(max98090::kAdcBiquadLevel,
+			image.adcBiquadLevel);
+	if (status == B_OK)
+		status = _WriteCodec(max98090::kDigitalMicEnable,
+			image.digitalMicEnable);
+	if (status == B_OK)
+		status = _WriteCodec(max98090::kInputEnable, image.inputEnable);
+	if (status == B_OK)
+		status = _WriteCodec(max98090::kDeviceShutdown,
+			max98090::kShutdownAssert);
+	if (status == B_OK) {
+		snooze(40000);
+		status = _WriteCodec(max98090::kDeviceShutdown,
+			max98090::kShutdownRelease);
+	}
+	const struct {
+		uint8 reg;
+		uint8 expected;
+	} readback[] = {
+		{max98090::kDigitalMicEnable, image.digitalMicEnable},
+		{max98090::kDigitalMicConfig, image.digitalMicConfig},
+		{max98090::kMic2InputLevel, image.mic2InputLevel},
+		{max98090::kInputEnable, image.inputEnable},
+		{max98090::kFilterConfiguration, image.filterConfiguration},
+		{max98090::kAdcBiquadLevel, image.adcBiquadLevel},
+		{max98090::kDeviceShutdown, max98090::kShutdownRelease}
+	};
+	for (size_t index = 0; status == B_OK
+			&& index < B_COUNT_OF(readback); index++) {
+		uint8 value = 0;
+		status = _ReadCodec(readback[index].reg, value);
+		if (status == B_OK && value != readback[index].expected) {
+			ERROR("capture codec readback reg 0x%02x: expected 0x%02x, "
+				"got 0x%02x\n", readback[index].reg,
+				readback[index].expected, value);
+			status = B_IO_ERROR;
+		}
+	}
+	uint8 deviceStatus = 0;
+	if (status == B_OK) {
+		snooze(10000);
+		status = _ReadCodec(max98090::kDeviceStatus, deviceStatus);
+	}
+	if (status == B_OK) {
+		TRACE("capture codec source=%s latched dmic=0x%02x input=0x%02x "
+			"filter=0x%02x bq=0x%02x status=0x%02x pll=%s\n",
+			headsetMicrophone ? "headset" : "internal",
+			image.digitalMicEnable, image.inputEnable,
+			image.filterConfiguration, image.adcBiquadLevel, deviceStatus,
+			(deviceStatus & max98090::kPllUnlocked) != 0
+				? "unlocked" : "locked");
+	}
+	return status;
 }
 
 
@@ -1322,16 +1486,20 @@ Card::_ApplyJackState(bool headphonePresent, bool microphonePresent)
 			status = _WriteCodec(max98090::kRightSpeakerVolume, speakerValue);
 	}
 	if (status == B_OK) {
+		status = _ApplyCaptureSourceLocked(microphonePresent);
+	}
+	if (status == B_OK) {
 		fHeadphonePresent = headphonePresent;
 		fMicrophonePresent = microphonePresent;
 	}
 	mutex_unlock(&fCodecLock);
 
 	if (status == B_OK) {
-		EVENT("jack state: headphones %s, microphone %s; routing playback "
-			"to %s\n", headphonePresent ? "present" : "absent",
+		EVENT("jack state: headphones %s, microphone %s; playback=%s "
+			"capture=%s\n", headphonePresent ? "present" : "absent",
 			microphonePresent ? "present" : "absent",
-			headphonePresent ? "headphones" : "speakers");
+			headphonePresent ? "headphones" : "speakers",
+			microphonePresent ? "headset MIC2/IN34" : "internal DMIC");
 	} else {
 		ERROR("failed to apply jack state: %s\n", strerror(status));
 	}
@@ -1380,10 +1548,15 @@ Card::_UnmapLpe()
 	fIram = fDram = fShim = fMailbox = fDdr = nullptr;
 	fDdrSize = 0;
 	fRouteConfigured = false;
+	fCaptureRouteConfigured = false;
 	fStreamState = kStreamIdle;
+	fCaptureStreamState = kStreamIdle;
 	fAllocationFault = B_OK;
+	fCaptureAllocationFault = B_OK;
 	fPlaybackFault = B_OK;
+	fCaptureFault = B_OK;
 	fLastHardwareCounter = 0;
+	fLastCaptureCounter = 0;
 }
 
 
@@ -1393,8 +1566,12 @@ Card::_GetDescription(multi_description* description)
 	static const multi_channel_info channels[] = {
 		{0, B_MULTI_OUTPUT_CHANNEL, B_CHANNEL_LEFT | B_CHANNEL_STEREO_BUS, 0},
 		{1, B_MULTI_OUTPUT_CHANNEL, B_CHANNEL_RIGHT | B_CHANNEL_STEREO_BUS, 0},
-		{2, B_MULTI_OUTPUT_BUS, B_CHANNEL_LEFT | B_CHANNEL_STEREO_BUS, 0},
-		{3, B_MULTI_OUTPUT_BUS, B_CHANNEL_RIGHT | B_CHANNEL_STEREO_BUS, 0}
+		{2, B_MULTI_INPUT_CHANNEL, B_CHANNEL_LEFT | B_CHANNEL_STEREO_BUS, 0},
+		{3, B_MULTI_INPUT_CHANNEL, B_CHANNEL_RIGHT | B_CHANNEL_STEREO_BUS, 0},
+		{4, B_MULTI_OUTPUT_BUS, B_CHANNEL_LEFT | B_CHANNEL_STEREO_BUS, 0},
+		{5, B_MULTI_OUTPUT_BUS, B_CHANNEL_RIGHT | B_CHANNEL_STEREO_BUS, 0},
+		{6, B_MULTI_INPUT_BUS, B_CHANNEL_LEFT | B_CHANNEL_STEREO_BUS, 0},
+		{7, B_MULTI_INPUT_BUS, B_CHANNEL_RIGHT | B_CHANNEL_STEREO_BUS, 0}
 	};
 	description->interface_version = B_CURRENT_INTERFACE_VERSION;
 	description->interface_minimum = B_CURRENT_INTERFACE_VERSION;
@@ -1403,19 +1580,20 @@ Card::_GetDescription(multi_description* description)
 	strlcpy(description->vendor_info, "Intel / Maxim",
 		sizeof(description->vendor_info));
 	description->output_channel_count = 2;
-	description->input_channel_count = 0;
+	description->input_channel_count = 2;
 	description->output_bus_channel_count = 2;
-	description->input_bus_channel_count = 0;
+	description->input_bus_channel_count = 2;
 	description->aux_bus_channel_count = 0;
 	description->output_rates = B_SR_48000;
-	description->input_rates = 0;
+	description->input_rates = B_SR_48000;
 	description->min_cvsr_rate = 0;
 	description->max_cvsr_rate = 0;
 	description->output_formats = B_FMT_16BIT;
-	description->input_formats = 0;
+	description->input_formats = B_FMT_16BIT;
 	description->lock_sources = B_MULTI_LOCK_INTERNAL;
 	description->timecode_sources = 0;
-	description->interface_flags = B_MULTI_INTERFACE_PLAYBACK;
+	description->interface_flags
+		= B_MULTI_INTERFACE_PLAYBACK | B_MULTI_INTERFACE_RECORD;
 	description->start_latency = 0;
 	description->control_panel[0] = '\0';
 	if (description->request_channel_count >= static_cast<int32>(
@@ -1435,7 +1613,7 @@ Card::_GetEnabledChannels(multi_channel_enable* enable)
 	multi_channel_enable result = {};
 	if (user_memcpy(&result, enable, sizeof(result)) != B_OK)
 		return B_BAD_ADDRESS;
-	uint8 bits = kFixedPlaybackChannelMask;
+	uint8 bits = kFixedDuplexChannelMask;
 	if (user_memcpy(result.enable_bits, &bits, sizeof(bits)) != B_OK)
 		return B_BAD_ADDRESS;
 	result.lock_source = B_MULTI_LOCK_INTERNAL;
@@ -1454,7 +1632,7 @@ Card::_SetEnabledChannels(multi_channel_enable* enable)
 	uint8 bits = 0;
 	if (user_memcpy(&bits, request.enable_bits, sizeof(bits)) != B_OK)
 		return B_BAD_ADDRESS;
-	if (!AcceptFixedPlaybackChannelMask(bits)
+	if (!AcceptFixedDuplexChannelMask(bits)
 		|| request.lock_source != B_MULTI_LOCK_INTERNAL) {
 		return B_BAD_VALUE;
 	}
@@ -1469,9 +1647,9 @@ Card::_GetGlobalFormat(multi_format_info* format)
 	format->output.rate = B_SR_48000;
 	format->output.format = B_FMT_16BIT;
 	format->output.cvsr = 48000;
-	format->input.rate = 0;
-	format->input.format = 0;
-	format->input.cvsr = 0;
+	format->input.rate = B_SR_48000;
+	format->input.format = B_FMT_16BIT;
+	format->input.cvsr = 48000;
 	format->output_latency = 0;
 	format->input_latency = 0;
 	format->timecode_kind = B_MULTI_NO_TIMECODE;
@@ -1483,7 +1661,9 @@ status_t
 Card::_SetGlobalFormat(multi_format_info* format)
 {
 	if (format->output.rate != B_SR_48000
-		|| format->output.format != B_FMT_16BIT) {
+		|| format->output.format != B_FMT_16BIT
+		|| format->input.rate != B_SR_48000
+		|| format->input.format != B_FMT_16BIT) {
 		return B_BAD_VALUE;
 	}
 	return B_OK;
@@ -1495,9 +1675,9 @@ Card::_ListMixControls(multi_mix_control_info* controls)
 {
 	if (fProfile == nullptr)
 		return B_NO_INIT;
-	if (controls->control_count < 9)
+	if (controls->control_count < 12)
 		return B_BUFFER_OVERFLOW;
-	multi_mix_control list[9] = {};
+	multi_mix_control list[12] = {};
 	list[0].id = kMixGroupId;
 	list[0].flags = B_MULTI_MIX_GROUP;
 	list[0].string = S_OUTPUT;
@@ -1539,9 +1719,23 @@ Card::_ListMixControls(multi_mix_control_info* controls)
 	list[8].parent = kMixRouteId;
 	list[8].flags = B_MULTI_MIX_MUX_VALUE;
 	strlcpy(list[8].name, "Headphones", sizeof(list[8].name));
+	list[9].id = kMixInputRouteId;
+	list[9].flags = B_MULTI_MIX_MUX;
+	list[9].string = S_INPUT;
+	strlcpy(list[9].name, "Active microphone", sizeof(list[9].name));
+	list[10].id = kMixInputInternalId;
+	list[10].parent = kMixInputRouteId;
+	list[10].flags = B_MULTI_MIX_MUX_VALUE;
+	strlcpy(list[10].name, "Internal microphone",
+		sizeof(list[10].name));
+	list[11].id = kMixInputHeadsetId;
+	list[11].parent = kMixInputRouteId;
+	list[11].flags = B_MULTI_MIX_MUX_VALUE;
+	strlcpy(list[11].name, "Headset microphone",
+		sizeof(list[11].name));
 	if (user_memcpy(controls->controls, list, sizeof(list)) != B_OK)
 		return B_BAD_ADDRESS;
-	controls->control_count = 9;
+	controls->control_count = 12;
 	return B_OK;
 }
 
@@ -1555,6 +1749,7 @@ Card::_GetMix(multi_mix_value_info* values)
 	const uint8 headphoneVolume = fHeadphoneVolume;
 	const bool headphoneMuted = fHeadphoneMuted;
 	const bool headphonePresent = fHeadphonePresent;
+	const bool microphonePresent = fMicrophonePresent;
 	mutex_unlock(&fCodecLock);
 
 	for (int32 i = 0; i < values->item_count; i++) {
@@ -1572,6 +1767,9 @@ Card::_GetMix(multi_mix_value_info* values)
 		else if (value.id == kMixRouteId)
 			value.mux = headphonePresent
 				? kMixRouteHeadphone : kMixRouteSpeaker;
+		else if (value.id == kMixInputRouteId)
+			value.mux = microphonePresent
+				? kMixInputHeadset : kMixInputInternal;
 		else
 			return B_BAD_VALUE;
 		if (user_memcpy(values->values + i, &value, sizeof(value)) != B_OK)
@@ -1592,6 +1790,7 @@ Card::_SetMix(multi_mix_value_info* values)
 	uint8 headphoneVolume = fHeadphoneVolume;
 	bool headphoneMuted = fHeadphoneMuted;
 	const bool headphonePresent = fHeadphonePresent;
+	const bool microphonePresent = fMicrophonePresent;
 	mutex_unlock(&fCodecLock);
 
 	bool setSpeaker = false;
@@ -1625,6 +1824,11 @@ Card::_SetMix(multi_mix_value_info* values)
 				? kMixRouteHeadphone : kMixRouteSpeaker;
 			if (value.mux != activeRoute)
 				return B_NOT_ALLOWED;
+		} else if (value.id == kMixInputRouteId) {
+			const uint32 activeRoute = microphonePresent
+				? kMixInputHeadset : kMixInputInternal;
+			if (value.mux != activeRoute)
+				return B_NOT_ALLOWED;
 		} else {
 			return B_BAD_VALUE;
 		}
@@ -1643,8 +1847,10 @@ Card::_SetMix(multi_mix_value_info* values)
 status_t
 Card::_GetBuffers(multi_buffer_list* buffers)
 {
-	if (buffers->request_playback_channels != 2)
+	if (buffers->request_playback_channels < 2
+		|| buffers->request_record_channels < 2) {
 		return B_BAD_VALUE;
+	}
 
 	status_t status = _ForceStop();
 	if (status != B_OK)
@@ -1654,72 +1860,111 @@ Card::_GetBuffers(multi_buffer_list* buffers)
 	fPeriodCount = NormalizePeriodCount(buffers->request_playback_buffers);
 	fPeriodFrames = NormalizePeriodFrames(
 		buffers->request_playback_buffer_size);
-	const size_t periodBytes = fPeriodFrames * 2 * sizeof(int16);
-	const size_t totalBytes = periodBytes * fPeriodCount;
-	const size_t areaBytes = (totalBytes + B_PAGE_SIZE - 1)
-		& ~(B_PAGE_SIZE - 1);
-	virtual_address_restrictions virtualRestrictions = {};
-	virtualRestrictions.address_specification = B_ANY_KERNEL_ADDRESS;
-	physical_address_restrictions physicalRestrictions = {};
-	physicalRestrictions.high_address = kSstDmaAddressSpaceSize;
-	fPlaybackArea = vm_create_anonymous_area(B_SYSTEM_TEAM,
-		"BYT SST playback ring", areaBytes, B_CONTIGUOUS,
-		B_READ_AREA | B_WRITE_AREA, 0, 0, &virtualRestrictions,
-		&physicalRestrictions, true, &fPlaybackBuffer);
-	if (fPlaybackArea < B_OK) {
-		fPlaybackBuffer = nullptr;
-		fPeriodFrames = 0;
-		fPeriodCount = 0;
-		mutex_unlock(&fStreamLock);
-		return fPlaybackArea;
+	fCapturePeriodCount = fPeriodCount;
+	fCapturePeriodFrames = fPeriodFrames;
+	for (int32 period = 0; period < fPeriodCount; period++) {
+		if (!IS_USER_ADDRESS(buffers->playback_buffers[period])) {
+			fPeriodFrames = 0;
+			fPeriodCount = 0;
+			fCapturePeriodFrames = 0;
+			fCapturePeriodCount = 0;
+			mutex_unlock(&fStreamLock);
+			return B_BAD_ADDRESS;
+		}
+	}
+	for (int32 period = 0; period < fCapturePeriodCount; period++) {
+		if (!IS_USER_ADDRESS(buffers->record_buffers[period])) {
+			fPeriodFrames = 0;
+			fPeriodCount = 0;
+			fCapturePeriodFrames = 0;
+			fCapturePeriodCount = 0;
+			mutex_unlock(&fStreamLock);
+			return B_BAD_ADDRESS;
+		}
 	}
 
-	physical_entry entry;
-	status = get_memory_map(fPlaybackBuffer, areaBytes, &entry, 1);
-	if (status != B_OK || !FitsSstDmaRange(entry.address, areaBytes)) {
-		delete_area(fPlaybackArea);
-		fPlaybackArea = B_BAD_VALUE;
-		fPlaybackBuffer = nullptr;
+	const size_t playbackPeriodBytes = fPeriodFrames * 2 * sizeof(int16);
+	const size_t playbackBytes = playbackPeriodBytes * fPeriodCount;
+	status = CreateDmaRing("BYT SST playback ring", playbackBytes,
+		fPlaybackArea, fPlaybackBuffer, fPlaybackPhysical);
+	if (status != B_OK) {
 		fPeriodFrames = 0;
 		fPeriodCount = 0;
+		fCapturePeriodFrames = 0;
+		fCapturePeriodCount = 0;
 		mutex_unlock(&fStreamLock);
-		return status != B_OK ? status : B_BAD_VALUE;
+		return status;
 	}
-	fPlaybackPhysical = entry.address;
-	memset(fPlaybackBuffer, 0, totalBytes);
 
-	buffers->flags = B_MULTI_BUFFER_PLAYBACK;
+	const size_t capturePeriodBytes
+		= fCapturePeriodFrames * 2 * sizeof(int16);
+	const size_t captureBytes = capturePeriodBytes * fCapturePeriodCount;
+	status = CreateDmaRing("BYT SST capture ring", captureBytes,
+		fCaptureArea, fCaptureBuffer, fCapturePhysical);
+	if (status != B_OK) {
+		DeleteDmaRing(fPlaybackArea, fPlaybackBuffer, fPlaybackPhysical);
+		fPeriodFrames = 0;
+		fPeriodCount = 0;
+		fCapturePeriodFrames = 0;
+		fCapturePeriodCount = 0;
+		mutex_unlock(&fStreamLock);
+		return status;
+	}
+
+	buffers->flags = B_MULTI_BUFFER_PLAYBACK | B_MULTI_BUFFER_RECORD;
 	buffers->return_playback_buffers = fPeriodCount;
 	buffers->return_playback_channels = 2;
 	buffers->return_playback_buffer_size = fPeriodFrames;
-	buffers->return_record_buffers = 0;
-	buffers->return_record_channels = 0;
-	buffers->return_record_buffer_size = 0;
+	buffers->return_record_buffers = fCapturePeriodCount;
+	buffers->return_record_channels = 2;
+	buffers->return_record_buffer_size = fCapturePeriodFrames;
 	for (int32 period = 0; period < fPeriodCount; period++) {
 		uint8* base = static_cast<uint8*>(fPlaybackBuffer)
-			+ period * periodBytes;
+			+ period * playbackPeriodBytes;
 		buffer_desc descriptors[2] = {};
 		descriptors[0].base = reinterpret_cast<char*>(base);
 		descriptors[0].stride = 4;
 		descriptors[1].base = reinterpret_cast<char*>(base + sizeof(int16));
 		descriptors[1].stride = 4;
-		if (!IS_USER_ADDRESS(buffers->playback_buffers[period])
-			|| user_memcpy(buffers->playback_buffers[period], descriptors,
+		if (user_memcpy(buffers->playback_buffers[period], descriptors,
 				sizeof(descriptors)) != B_OK) {
-			delete_area(fPlaybackArea);
-			fPlaybackArea = B_BAD_VALUE;
-			fPlaybackBuffer = nullptr;
-			fPlaybackPhysical = 0;
+			DeleteDmaRing(fPlaybackArea, fPlaybackBuffer, fPlaybackPhysical);
+			DeleteDmaRing(fCaptureArea, fCaptureBuffer, fCapturePhysical);
 			fPeriodFrames = 0;
 			fPeriodCount = 0;
+			fCapturePeriodFrames = 0;
+			fCapturePeriodCount = 0;
+			mutex_unlock(&fStreamLock);
+			return B_BAD_ADDRESS;
+		}
+	}
+	for (int32 period = 0; period < fCapturePeriodCount; period++) {
+		uint8* base = static_cast<uint8*>(fCaptureBuffer)
+			+ period * capturePeriodBytes;
+		buffer_desc descriptors[2] = {};
+		descriptors[0].base = reinterpret_cast<char*>(base);
+		descriptors[0].stride = 4;
+		descriptors[1].base = reinterpret_cast<char*>(base + sizeof(int16));
+		descriptors[1].stride = 4;
+		if (user_memcpy(buffers->record_buffers[period], descriptors,
+				sizeof(descriptors)) != B_OK) {
+			DeleteDmaRing(fPlaybackArea, fPlaybackBuffer, fPlaybackPhysical);
+			DeleteDmaRing(fCaptureArea, fCaptureBuffer, fCapturePhysical);
+			fPeriodFrames = 0;
+			fPeriodCount = 0;
+			fCapturePeriodFrames = 0;
+			fCapturePeriodCount = 0;
 			mutex_unlock(&fStreamLock);
 			return B_BAD_ADDRESS;
 		}
 	}
 	fAllocationFault = B_OK;
+	fCaptureAllocationFault = B_OK;
 	fLastHardwareCounter = 0;
-	TRACE("allocated %" B_PRIuSIZE " byte 32-bit playback ring at "
-		"0x%" B_PRIxPHYSADDR "\n", totalBytes, fPlaybackPhysical);
+	fLastCaptureCounter = 0;
+	TRACE("allocated playback=%" B_PRIuSIZE "@0x%" B_PRIxPHYSADDR
+		" capture=%" B_PRIuSIZE "@0x%" B_PRIxPHYSADDR " byte rings\n",
+		playbackBytes, fPlaybackPhysical, captureBytes, fCapturePhysical);
 	mutex_unlock(&fStreamLock);
 	return B_OK;
 }
@@ -1784,10 +2029,17 @@ Card::_IpcReceive(uint8 expectedMessage, uint8 expectedDriverId,
 			if (command == kMrfldPeriodElapsed
 				&& pipeId == fProfile->playback.pipeId) {
 				atomic_add(&fPeriodElapsedCount, 1);
+			} else if (command == kMrfldPeriodElapsed
+				&& pipeId == fProfile->capture.pipeId) {
+				atomic_add(&fPeriodElapsedCount, 1);
 			} else if (command == kMrfldBufferUnderrun
 				&& pipeId == fProfile->playback.pipeId) {
 				ERROR("DSP reported playback buffer underrun\n");
 				atomic_set(&fPlaybackFault, B_IO_ERROR);
+			} else if (command == kMrfldBufferUnderrun
+				&& pipeId == fProfile->capture.pipeId) {
+				ERROR("DSP reported capture buffer fault\n");
+				atomic_set(&fCaptureFault, B_IO_ERROR);
 			} else {
 				TRACE("acknowledged asynchronous DSP command 0x%04"
 					B_PRIx16 " for pipe 0x%02x\n", command, pipeId);
@@ -1959,9 +2211,44 @@ Card::_IpcSendStreamCommand(uint16 commandId, uint8 taskId, uint8 pipeId,
 	const MrfldDspHeader dspHeader = MakeMrfldDspHeader(commandId, pipeId,
 		payloadLength);
 	memcpy(message, &dspHeader, sizeof(dspHeader));
-	return _IpcSend(kMrfldIpcCommand, taskId, message,
+	const status_t status = _IpcSend(kMrfldIpcCommand, taskId, message,
 		sizeof(dspHeader) + payloadLength, responseRequired, nullptr, 0,
 		nullptr);
+	if (status != B_OK
+		|| !MrfldCommandNeedsCompletion(commandId, responseRequired)) {
+		return status;
+	}
+	return _IpcWaitForCommandCompletion(commandId, pipeId);
+}
+
+
+status_t
+Card::_IpcWaitForCommandCompletion(uint16 commandId, uint8 pipeId)
+{
+	mutex_lock(&fIpcLock);
+	const bigtime_t deadline = system_time() + kIpcTimeout;
+	while (system_time() < deadline) {
+		const uint64 ipcx = Read64(fShim, kShimIpcx);
+		if (IpcDone(ipcx) || !IpcBusy(ipcx)) {
+			_IpcClearHostDone();
+			mutex_unlock(&fIpcLock);
+			TRACE("IPC command 0x%04" B_PRIx16
+				" completed for pipe 0x%02x\n", commandId, pipeId);
+			return B_OK;
+		}
+		bool received = false;
+		const status_t status = _IpcReceive(0xff, 0xff, nullptr, 0, nullptr,
+			&received);
+		if (status != B_OK) {
+			mutex_unlock(&fIpcLock);
+			return status;
+		}
+		snooze(kIpcPollInterval);
+	}
+	ERROR("IPC command 0x%04" B_PRIx16
+		" completion timed out for pipe 0x%02x\n", commandId, pipeId);
+	mutex_unlock(&fIpcLock);
+	return B_TIMED_OUT;
 }
 
 
@@ -2084,6 +2371,72 @@ Card::_FailPlaybackRoute(const char* step, status_t status)
 }
 
 
+status_t
+Card::_ConfigureCaptureRoute()
+{
+	if (fCaptureRouteConfigured)
+		return B_OK;
+	if (fCaptureRouteFault != B_OK)
+		return fCaptureRouteFault;
+	if (!fHardwareConfigured || fCaptureStreamState != kStreamAllocated)
+		return B_NOT_ALLOWED;
+	const SstPlaybackProfile& playback = fProfile->playback;
+	const SstCaptureProfile& capture = fProfile->capture;
+
+	const SstSspSlotMapCommand& slotMap = playback.sspSlotMap;
+	status_t status = _IpcSendByteStream(kIpcSetParams, capture.sbaTaskId,
+		&slotMap, sizeof(slotMap), true);
+	if (status != B_OK)
+		return _FailCaptureRoute("capture SSP slot map", status);
+
+	const SstDcrCommand dcr = MakeCodecIn0DcrDefaults();
+	status = _IpcSendByteStream(kIpcSetParams, capture.sbaTaskId,
+		&dcr, sizeof(dcr), true);
+	if (status != B_OK)
+		return _FailCaptureRoute("codec_in0 DCR defaults", status);
+
+	const SstGainCommand codecGain = MakeCodecIn0Gain0dB();
+	status = _IpcSendByteStream(kIpcSetParams, capture.sbaTaskId,
+		&codecGain, sizeof(codecGain), true);
+	if (status != B_OK)
+		return _FailCaptureRoute("codec_in0 gain", status);
+
+	const SstSwmCommand swm = MakeCodecIn0ToPcm1Swm();
+	const uint16 swmSize = static_cast<uint16>(
+		sizeof(SstByteStreamDspHeader) + swm.header.length);
+	status = _IpcSendByteStream(kIpcCmd, capture.sbaTaskId,
+		&swm, swmSize, true);
+	if (status != B_OK)
+		return _FailCaptureRoute("capture SBA SWM", status);
+
+	const SstMediaPathCommand path = MakePcm1OutputEnable();
+	status = _IpcSendByteStream(kIpcCmd, capture.sbaTaskId,
+		&path, sizeof(path), true);
+	if (status != B_OK)
+		return _FailCaptureRoute("pcm1 output enable", status);
+
+	const SstGainCommand pcmGain = MakePcm1OutputGain0dB();
+	status = _IpcSendByteStream(kIpcSetParams, capture.sbaTaskId,
+		&pcmGain, sizeof(pcmGain), true);
+	if (status != B_OK)
+		return _FailCaptureRoute("pcm1 output gain", status);
+
+	fCaptureRouteConfigured = true;
+	TRACE("SST capture route configured (codec_in0 -> pcm1_out)\n");
+	return B_OK;
+}
+
+
+status_t
+Card::_FailCaptureRoute(const char* step, status_t status)
+{
+	fCaptureRouteFault = status;
+	ERROR("%s failed: %s; capture route retries suppressed until DSP "
+		"reload\n", step, strerror(status));
+	return status;
+}
+
+
 // ---------------------------------------------------------------------------
 // Stream allocation and lifecycle
 // ---------------------------------------------------------------------------
@@ -2171,6 +2524,81 @@ Card::_FailStreamAllocation(status_t status)
 
 
 status_t
+Card::_AllocateCaptureStream()
+{
+	if (fCaptureArea < B_OK || fCaptureBuffer == nullptr)
+		return B_NO_INIT;
+	if (fCaptureAllocationFault != B_OK)
+		return fCaptureAllocationFault;
+	const SstCaptureProfile& capture = fProfile->capture;
+
+	const uint32 periodBytes = fCapturePeriodFrames * 4;
+	const uint32 totalBytes
+		= periodBytes * static_cast<uint32>(fCapturePeriodCount);
+	const uint32 tsAddress = MrfldTimestampAddress(capture.mailboxLpeAddress,
+		capture.streamId);
+	const SstMrfldAllocation allocation = BuildAllocation(capture.pcm,
+		static_cast<uint32>(fCapturePhysical), totalBytes, periodBytes,
+		tsAddress);
+	TRACE("capture allocation: task=%u pipe=0x%02x ring=0x%08" B_PRIx32
+		"+%" B_PRIu32 " fragment=%" B_PRIu32 " timestamp=0x%08"
+		B_PRIx32 "\n", capture.mediaTaskId, capture.pipeId,
+		allocation.ringBuffers[0].address, allocation.ringBuffers[0].size,
+		allocation.fragmentSizeBytes, allocation.timestampAddress);
+	TraceAllocationBody(allocation);
+
+	for (uint32 attempt = 0; attempt < 2; attempt++) {
+		uint8 response[kMailboxChannelSize] = {};
+		uint32 responseSize = 0;
+		status_t status = _IpcSendAllocate(capture.mediaTaskId,
+			capture.pipeId, &allocation, sizeof(allocation), response,
+			sizeof(response), &responseSize);
+		if (status != B_OK)
+			return _FailCaptureAllocation(status);
+
+		uint16 result = 0;
+		if (!ParseAllocationResult(response, responseSize, result)) {
+			ERROR("DSP capture allocation response is malformed (%"
+				B_PRIu32 " bytes)\n", responseSize);
+			return _FailCaptureAllocation(B_BAD_DATA);
+		}
+		if (result == 0)
+			break;
+		if (ShouldRecoverStaleAllocation(result, attempt)) {
+			TRACE("freeing stale capture allocation for pipe 0x%02x\n",
+				capture.pipeId);
+			status = _IpcSendStreamCommand(kMrfldFreeStream,
+				capture.mediaTaskId, capture.pipeId, true);
+			if (status != B_OK)
+				return _FailCaptureAllocation(status);
+			continue;
+		}
+		ERROR("DSP capture alloc result %" B_PRIu16 "\n", result);
+		return _FailCaptureAllocation(B_ERROR);
+	}
+
+	fCaptureStreamState = kStreamAllocated;
+	fCaptureAllocationFault = B_OK;
+	fCaptureFault = B_OK;
+	fLastCaptureCounter = ReadTimestampU64(fMailbox,
+		MrfldTimestampOffset(capture.streamId));
+	TRACE("capture stream allocated: pipe 0x%02x, ts 0x%08" B_PRIx32 "\n",
+		capture.pipeId, tsAddress);
+	return B_OK;
+}
+
+
+status_t
+Card::_FailCaptureAllocation(status_t status)
+{
+	fCaptureAllocationFault = status;
+	ERROR("capture stream allocation failed: %s; retries suppressed until "
+		"buffers are recreated or DSP reload\n", strerror(status));
+	return status;
+}
+
+
+status_t
 Card::_StartStream()
 {
 	if (fStreamState != kStreamAllocated)
@@ -2184,6 +2612,24 @@ Card::_StartStream()
 
 	fStreamState = kStreamRunning;
 	TRACE("playback stream started\n");
+	return B_OK;
+}
+
+
+status_t
+Card::_StartCaptureStream()
+{
+	if (fCaptureStreamState != kStreamAllocated)
+		return B_NOT_ALLOWED;
+
+	const SstCaptureProfile& capture = fProfile->capture;
+	const status_t status = _IpcSendStreamCommand(kMrfldStartStream,
+		capture.mediaTaskId, capture.pipeId, false);
+	if (status != B_OK)
+		return status;
+
+	fCaptureStreamState = kStreamRunning;
+	TRACE("capture stream started\n");
 	return B_OK;
 }
 
@@ -2224,10 +2670,51 @@ Card::_StopStream()
 
 
 status_t
+Card::_StopCaptureStream()
+{
+	if (fCaptureStreamState == kStreamIdle)
+		return B_OK;
+
+	const bool sendDrop = fCaptureStreamState != kStreamStopping;
+	if (sendDrop)
+		fCaptureStreamState = kStreamStopping;
+
+	const SstCaptureProfile& capture = fProfile->capture;
+	status_t dropStatus = B_OK;
+	if (sendDrop) {
+		dropStatus = _IpcSendStreamCommand(kMrfldDropStream,
+			capture.mediaTaskId, capture.pipeId, false);
+		if (dropStatus != B_OK)
+			ERROR("capture stream drop failed: %s\n", strerror(dropStatus));
+	}
+
+	const status_t freeStatus = _IpcSendStreamCommand(kMrfldFreeStream,
+		capture.mediaTaskId, capture.pipeId, true);
+	if (freeStatus != B_OK) {
+		ERROR("capture stream free failed: %s\n", strerror(freeStatus));
+		return freeStatus;
+	}
+
+	fCaptureStreamState = kStreamIdle;
+	fLastCaptureCounter = 0;
+	return dropStatus;
+}
+
+
+status_t
 Card::_FreeStream()
 {
 	if (fStreamState != kStreamIdle)
 		return _StopStream();
+	return B_OK;
+}
+
+
+status_t
+Card::_FreeCaptureStream()
+{
+	if (fCaptureStreamState != kStreamIdle)
+		return _StopCaptureStream();
 	return B_OK;
 }
 
@@ -2240,31 +2727,35 @@ Card::_ForceStop()
 	mutex_unlock(&fLock);
 
 	mutex_lock(&fStreamLock);
-	const status_t stopStatus = _FreeStream();
-	if (stopStatus != B_OK && fStreamState != kStreamIdle) {
+	const status_t captureStatus = _FreeCaptureStream();
+	const status_t playbackStatus = _FreeStream();
+	if (fCaptureStreamState != kStreamIdle || fStreamState != kStreamIdle) {
+		const status_t status = fCaptureStreamState != kStreamIdle
+			? captureStatus : playbackStatus;
 		mutex_unlock(&fStreamLock);
-		return stopStatus;
+		return status;
 	}
-	if (fPlaybackArea >= B_OK)
-		delete_area(fPlaybackArea);
-	fPlaybackArea = B_BAD_VALUE;
-	fPlaybackBuffer = nullptr;
-	fPlaybackPhysical = 0;
+	DeleteDmaRing(fPlaybackArea, fPlaybackBuffer, fPlaybackPhysical);
+	DeleteDmaRing(fCaptureArea, fCaptureBuffer, fCapturePhysical);
 	fPeriodFrames = 0;
 	fPeriodCount = 0;
+	fCapturePeriodFrames = 0;
+	fCapturePeriodCount = 0;
 	fPlaybackFault = B_OK;
+	fCaptureFault = B_OK;
 	fLastHardwareCounter = 0;
+	fLastCaptureCounter = 0;
 	mutex_unlock(&fStreamLock);
-	return stopStatus;
+	return captureStatus != B_OK ? captureStatus : playbackStatus;
 }
 
 
 // ---------------------------------------------------------------------------
 // B_MULTI_BUFFER_EXCHANGE
 //
-// On first exchange: start the virtual bus and configure SSP, allocate the
-// media input stream, configure its dependent route, then start playback.
-// Poll period-elapsed and read the firmware timestamp without holding fLock.
+// On first exchange: configure shared SSP2, allocate and route both DSP
+// streams, then start duplex transfer. Playback uses the SSP hardware counter;
+// capture uses the DDR ring counter so only fully recorded data is exposed.
 // ---------------------------------------------------------------------------
 
 status_t
@@ -2272,24 +2763,32 @@ Card::_BufferExchange(multi_buffer_info* info)
 {
 	mutex_lock(&fStreamLock);
 	if (fPlaybackArea < B_OK || fPlaybackBuffer == nullptr
-		|| fPeriodFrames == 0 || fPeriodCount == 0) {
+		|| fPeriodFrames == 0 || fPeriodCount == 0
+		|| fCaptureArea < B_OK || fCaptureBuffer == nullptr
+		|| fCapturePeriodFrames == 0 || fCapturePeriodCount == 0) {
 		mutex_unlock(&fStreamLock);
 		snooze(kExchangeFailureBackoff);
 		return B_NO_INIT;
 	}
 
-	const uint32 periodBytes = fPeriodFrames * 4;
-	const int32 periodCount = fPeriodCount;
+	const uint32 playbackPeriodBytes = fPeriodFrames * 4;
+	const int32 playbackPeriodCount = fPeriodCount;
+	const uint32 capturePeriodBytes = fCapturePeriodFrames * 4;
+	const int32 capturePeriodCount = fCapturePeriodCount;
 	mutex_lock(&fLock);
 	fExchangeWanted = true;
 	mutex_unlock(&fLock);
 
 	status_t status = B_OK;
 	bigtime_t deadline = 0;
-	uint64 hardwareCounter = fLastHardwareCounter;
-	bool periodAdvanced = false;
-	uint32 cycle = 0;
-	uint64 frames = 0;
+	uint64 playbackCounter = fLastHardwareCounter;
+	uint64 captureCounter = fLastCaptureCounter;
+	bool playbackAdvanced = false;
+	bool captureAdvanced = false;
+	uint32 playbackCycle = 0;
+	uint32 captureCycle = 0;
+	uint64 playedFrames = 0;
+	uint64 recordedFrames = 0;
 	bigtime_t realTime = 0;
 	bool exchangeWanted = false;
 	bool backoff = false;
@@ -2298,8 +2797,17 @@ Card::_BufferExchange(multi_buffer_info* info)
 		status = fRouteFault;
 		goto fail;
 	}
+	if (fCaptureRouteFault != B_OK) {
+		status = fCaptureRouteFault;
+		goto fail;
+	}
 	if (fStreamState == kStreamStopping) {
 		status = _FreeStream();
+		if (status != B_OK)
+			goto fail;
+	}
+	if (fCaptureStreamState == kStreamStopping) {
+		status = _FreeCaptureStream();
 		if (status != B_OK)
 			goto fail;
 	}
@@ -2313,8 +2821,18 @@ Card::_BufferExchange(multi_buffer_info* info)
 		if (status != B_OK)
 			goto fail;
 	}
+	if (fCaptureStreamState == kStreamIdle) {
+		status = _AllocateCaptureStream();
+		if (status != B_OK)
+			goto fail;
+	}
 	if (!fRouteConfigured) {
 		status = _ConfigurePlaybackRoute();
+		if (status != B_OK)
+			goto fail;
+	}
+	if (!fCaptureRouteConfigured) {
+		status = _ConfigureCaptureRoute();
 		if (status != B_OK)
 			goto fail;
 	}
@@ -2329,13 +2847,19 @@ Card::_BufferExchange(multi_buffer_info* info)
 			goto fail;
 		}
 	}
+	if (fCaptureStreamState == kStreamAllocated) {
+		status = _StartCaptureStream();
+		if (status != B_OK)
+			goto fail;
+	}
 
 	deadline = system_time() + kExchangeTimeout;
 	while (system_time() < deadline) {
 		mutex_lock(&fLock);
 		exchangeWanted = fExchangeWanted;
 		mutex_unlock(&fLock);
-		if (!exchangeWanted || fStreamState != kStreamRunning) {
+		if (!exchangeWanted || fStreamState != kStreamRunning
+			|| fCaptureStreamState != kStreamRunning) {
 			status = B_INTERRUPTED;
 			goto done;
 		}
@@ -2346,26 +2870,43 @@ Card::_BufferExchange(multi_buffer_info* info)
 		status = atomic_get(&fPlaybackFault);
 		if (status != B_OK)
 			goto fail;
+		status = atomic_get(&fCaptureFault);
+		if (status != B_OK)
+			goto fail;
 
-		hardwareCounter = ReadTimestampU64(fMailbox,
+		playbackCounter = ReadTimestampU64(fMailbox,
 			MrfldTimestampOffset(fProfile->playback.streamId) + 8);
-		if (hardwareCounter < fLastHardwareCounter) {
+		if (playbackCounter < fLastHardwareCounter) {
 			ERROR("DSP hardware counter regressed from 0x%016"
 				B_PRIx64 " to 0x%016" B_PRIx64 "\n",
-				fLastHardwareCounter, hardwareCounter);
+				fLastHardwareCounter, playbackCounter);
 			status = B_BAD_DATA;
 			goto fail;
 		}
-		if (hardwareCounter / periodBytes
-				> fLastHardwareCounter / periodBytes) {
-			periodAdvanced = true;
-			break;
+		captureCounter = ReadTimestampU64(fMailbox,
+			MrfldTimestampOffset(fProfile->capture.streamId));
+		if (captureCounter < fLastCaptureCounter) {
+			ERROR("DSP capture ring counter regressed from 0x%016"
+				B_PRIx64 " to 0x%016" B_PRIx64 "\n",
+				fLastCaptureCounter, captureCounter);
+			status = B_BAD_DATA;
+			goto fail;
 		}
+		playbackAdvanced = playbackCounter / playbackPeriodBytes
+			> fLastHardwareCounter / playbackPeriodBytes;
+		captureAdvanced = captureCounter / capturePeriodBytes
+			> fLastCaptureCounter / capturePeriodBytes;
+		if (playbackAdvanced && captureAdvanced)
+			break;
 
 		snooze(kIpcPollInterval);
 	}
-	if (!periodAdvanced) {
-		ERROR("timed out waiting for a playback period\n");
+	if (!playbackAdvanced || !captureAdvanced) {
+		ERROR("timed out waiting for duplex period: playback=%s "
+			"capture=%s counters=0x%016" B_PRIx64 "/0x%016"
+			B_PRIx64 "\n", playbackAdvanced ? "ready" : "pending",
+			captureAdvanced ? "ready" : "pending", playbackCounter,
+			captureCounter);
 		status = B_TIMED_OUT;
 		goto fail;
 	}
@@ -2373,27 +2914,34 @@ Card::_BufferExchange(multi_buffer_info* info)
 	mutex_lock(&fLock);
 	exchangeWanted = fExchangeWanted;
 	mutex_unlock(&fLock);
-	if (!exchangeWanted || fStreamState != kStreamRunning) {
+	if (!exchangeWanted || fStreamState != kStreamRunning
+		|| fCaptureStreamState != kStreamRunning) {
 		status = B_INTERRUPTED;
 		goto done;
 	}
 
-	cycle = PlaybackBufferCycle(hardwareCounter, periodBytes, periodCount);
-	frames = PlayedFrames(hardwareCounter, 4);
+	playbackCycle = PlaybackBufferCycle(playbackCounter, playbackPeriodBytes,
+		playbackPeriodCount);
+	captureCycle = CaptureBufferCycle(captureCounter, capturePeriodBytes,
+		capturePeriodCount);
+	playedFrames = PlayedFrames(playbackCounter, 4);
+	recordedFrames = RecordedFrames(captureCounter, 4);
 	realTime = system_time();
 
-	result.playback_buffer_cycle = cycle;
+	result.playback_buffer_cycle = playbackCycle;
 	result.played_real_time = realTime;
-	result.played_frames_count = frames;
-	result.record_buffer_cycle = 0;
-	result.recorded_real_time = 0;
-	result.recorded_frames_count = 0;
-	result.flags = B_MULTI_BUFFER_PLAYBACK;
+	result.played_frames_count = playedFrames;
+	result.record_buffer_cycle = captureCycle;
+	result.recorded_real_time = realTime;
+	result.recorded_frames_count = recordedFrames;
+	result.flags = B_MULTI_BUFFER_PLAYBACK | B_MULTI_BUFFER_RECORD;
 
 	if (user_memcpy(info, &result, sizeof(result)) != B_OK)
 		status = B_BAD_ADDRESS;
-	else
-		fLastHardwareCounter = hardwareCounter;
+	else {
+		fLastHardwareCounter = playbackCounter;
+		fLastCaptureCounter = captureCounter;
+	}
 
 done:
 	backoff = status != B_OK && status != B_INTERRUPTED;
@@ -2406,12 +2954,15 @@ fail:
 	mutex_lock(&fLock);
 	fExchangeWanted = false;
 	mutex_unlock(&fLock);
+	if (fCaptureStreamState != kStreamIdle) {
+		const status_t cleanupStatus = _FreeCaptureStream();
+		if (cleanupStatus != B_OK)
+			ERROR("capture cleanup failed: %s\n", strerror(cleanupStatus));
+	}
 	if (fStreamState != kStreamIdle) {
 		const status_t cleanupStatus = _FreeStream();
-		if (cleanupStatus != B_OK) {
-			ERROR("stream cleanup after exchange failure failed: %s\n",
-				strerror(cleanupStatus));
-		}
+		if (cleanupStatus != B_OK)
+			ERROR("playback cleanup failed: %s\n", strerror(cleanupStatus));
 	}
 	goto done;
 }

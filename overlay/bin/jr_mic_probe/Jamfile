@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 The Jidō Renga Authors
+# SPDX-License-Identifier: MIT
+# SPDX-FileContributor: Generated with GitHub Copilot (GPT-5.6 Sol)
+
+SubDir JIDO_RENGA_TOP overlay bin jr_mic_probe ;
+
+UsePrivateHeaders media ;
+
+Application jr_mic_probe :
+	Probe.cpp
+	:
+	be
+	media
+	;
+
+File jr_mic_collect : jr_mic_collect.sh ;
+MODE on jr_mic_collect = 755 ;

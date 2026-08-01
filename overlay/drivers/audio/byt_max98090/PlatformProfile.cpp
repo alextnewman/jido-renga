@@ -66,9 +66,9 @@ const PlatformProfile kWinkyProfile = {
 		0xfffffe00,
 		0x100,
 		0x60,
-		0x7,
-		0x5,
-		"PLT_CLK_0 at 19.2 MHz"
+		0x3,
+		0x1,
+		"firmware PLT_CLK_0 forced on"
 	},
 	{
 		0,
@@ -114,6 +114,21 @@ const PlatformProfile kWinkyProfile = {
 			16,
 			48000,
 			{0, 1, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+		}
+	},
+	{
+		1,
+		3,
+		3,
+		0x0e,
+		0xff344000,
+		{
+			1,
+			1,
+			2,
+			16,
+			48000,
+			{0, 0, 0, 0, 0, 0, 0, 0}
 		}
 	},
 	{

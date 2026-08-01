@@ -48,6 +48,7 @@ private:
 	status_t _SetSpeakerTuningEnabled(bool enabled);
 	status_t _SetCodecVolume(uint8 volume, bool muted);
 	status_t _SetHeadphoneVolume(uint8 volume, bool muted);
+	status_t _ApplyCaptureSourceLocked(bool headsetMicrophone);
 	status_t _InitializeJackDetection();
 	void _TeardownJackDetection();
 	status_t _ApplyJackState(bool headphonePresent, bool microphonePresent);
@@ -78,6 +79,7 @@ private:
 				uint32* responseSize);
 	status_t _IpcSendStreamCommand(uint16 commandId, uint8 taskId,
 				uint8 pipeId, bool responseRequired);
+	status_t _IpcWaitForCommandCompletion(uint16 commandId, uint8 pipeId);
 	status_t _IpcPollService();
 	status_t _IpcReceive(uint8 expectedMessage, uint8 expectedDriverId,
 				void* response, uint32 responseCapacity,
@@ -94,6 +96,13 @@ private:
 	status_t _StartStream();
 	status_t _StopStream();
 	status_t _FreeStream();
+	status_t _ConfigureCaptureRoute();
+	status_t _FailCaptureRoute(const char* step, status_t status);
+	status_t _AllocateCaptureStream();
+	status_t _FailCaptureAllocation(status_t status);
+	status_t _StartCaptureStream();
+	status_t _StopCaptureStream();
+	status_t _FreeCaptureStream();
 
 	mutex					fLock;
 	mutex					fCodecLock;
@@ -143,6 +152,11 @@ private:
 	phys_addr_t				fPlaybackPhysical;
 	uint32					fPeriodFrames;
 	int32					fPeriodCount;
+	area_id					fCaptureArea;
+	void*					fCaptureBuffer;
+	phys_addr_t				fCapturePhysical;
+	uint32					fCapturePeriodFrames;
+	int32					fCapturePeriodCount;
 
 	// Stream state
 	enum StreamState {
@@ -152,14 +166,20 @@ private:
 		kStreamStopping
 	};
 	StreamState				fStreamState;
+	StreamState				fCaptureStreamState;
 	bool					fHardwareConfigured;
 	bool					fRouteConfigured;
+	bool					fCaptureRouteConfigured;
 	status_t				fRouteFault;
+	status_t				fCaptureRouteFault;
 	status_t				fAllocationFault;
+	status_t				fCaptureAllocationFault;
 	bool					fExchangeWanted;
 	int32					fPeriodElapsedCount;
 	int32					fPlaybackFault;
+	int32					fCaptureFault;
 	uint64					fLastHardwareCounter;
+	uint64					fLastCaptureCounter;
 };
 
 extern Card* gCard;
