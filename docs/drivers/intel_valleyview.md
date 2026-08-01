@@ -384,11 +384,12 @@ BO access, 64-bit timeline waits, completion dequeue, `select()` readiness,
 bounded per-client/device depth, a round-robin kernel worker, and complete
 submission-cleanup status in each completion record. Failed retired fences are
 terminal: Mesa poisons affected BOs instead of polling them as perpetually busy.
-The initial worker calls the proven Safe GL executor. The no-reset experiment
-restores all engine state without a healthy reset, while direct mode
-independently proves clipped BCS presentation into P0's framebuffer shadow
-using the reset-safe executor. These capabilities remain runtime-selected and
-are not advertised as final P2 services before the lab gate passes.
+The worker calls the proven Safe GL executor. Direct mode independently proves
+clipped BCS presentation into P0's framebuffer shadow using that reset-safe
+executor. Failure-only reset is reserved but rejected: the current transaction
+changes hardware-context state that cannot be restored by MMIO ring cleanup
+alone. A future persistent mode must own and switch resident context state
+rather than omit reset from the Safe executor.
 
 `intel_valleyview_probe --render-memory-test` creates two client-owned buffers,
 clones both into the process, writes coordinate-dependent source and destination

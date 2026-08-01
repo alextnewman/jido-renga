@@ -103,20 +103,20 @@ P3 begins with EGL and a shareable offscreen/window-surface contract.
 
 ## First lab image
 
-The first P2 lab image implements four runtime modes in one driver and renderer:
+The P2 lab implements three runtime modes in one driver and renderer:
 
 - `safe`: the proven synchronous P1 transaction;
 - `queued`: immutable enqueue, timeline fence, fair kernel worker, and Safe GL
   execution on the worker;
 - `direct`: queued Safe execution plus clipped BCS copies from the retired
-  Crocus color BO into P0's framebuffer shadow; and
-- `persistent`: queued execution with healthy-path RCS reset disabled while
-  retaining complete ring, cache, PPGTT, wake, and P0 restoration.
+  Crocus color BO into P0's framebuffer shadow.
 
-`persistent` is an experiment toward resident contexts, not the final P2B
-architecture. `direct` removes GPU readback, the temporary `BBitmap`, and the
-CPU direct-buffer copy, but P0 still performs its existing framebuffer-to-
-scanout copy and vblank latch.
+The failure-only-reset ABI value is reserved but not accepted or advertised.
+Merely omitting reset cannot restore the context state changed by
+`MI_SET_CONTEXT`; P2B must retain a kernel-owned hardware context and switch it
+explicitly. `direct` removes GPU readback, the temporary `BBitmap`, and the CPU
+direct-buffer copy, but P0 still performs its existing framebuffer-to-scanout
+copy and vblank latch.
 
 Run the complete lab matrix with:
 
@@ -126,12 +126,10 @@ intel_valleyview_gl_suite --p2-lab
 
 The command first initializes RCS and runs a raw two-client queue burst with
 ordered fault and recovery. It then executes all 18 GL cases in Safe, queued,
-and direct modes, proves an injected queue failure and fresh-client recovery,
-and runs one explicit no-reset control draw last. The destructive experiment is
-last so a fail-closed engine quarantine cannot hide independent queue or
-presentation evidence. Queue captures report depth, high-water marks,
-submitted/completed/failed/cancelled jobs, no-reset jobs, queue/execution
-latency, and submission cleanup status.
+and direct modes from a `BDirectWindow`, followed by an injected queue failure
+and fresh-client recovery. Queue captures report depth, high-water marks,
+submitted/completed/failed/cancelled jobs, queue/execution latency, direct
+presentation results, and submission cleanup status.
 
 ## Required evidence
 

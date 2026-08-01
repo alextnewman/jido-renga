@@ -16,6 +16,6 @@ Includes [ FGristFiles $(sources) ]
 Application intel_valleyview_gl_suite :
 	$(sources)
 	:
-	be [ TargetLibsupc++ ]
+	be game [ TargetLibsupc++ ]
 	[ BuildFeatureAttribute mesa : library ]
 ;

@@ -447,9 +447,12 @@ ConfigureRenderQueue(ValleyViewClient& client,
 	valleyview::RenderQueueConfigure& request)
 {
 	request.status = B_NO_INIT;
+	if (request.mode == valleyview::kRenderQueueModeFailureOnlyReset) {
+		request.status = B_NOT_SUPPORTED;
+		return request.status;
+	}
 	if (request.mode != valleyview::kRenderQueueModeSafe
 		&& request.mode != valleyview::kRenderQueueModeAsynchronous
-		&& request.mode != valleyview::kRenderQueueModeFailureOnlyReset
 		&& request.mode != valleyview::kRenderQueueModeDirectPresent) {
 		request.status = B_BAD_VALUE;
 		return request.status;
@@ -706,7 +709,6 @@ GetRenderQueueInfo(ValleyViewClient& client, valleyview::RenderQueueInfo& info)
 	if (device.renderQueueReady)
 		info.supportedModes
 			|= 1u << valleyview::kRenderQueueModeAsynchronous
-				| 1u << valleyview::kRenderQueueModeFailureOnlyReset
 				| 1u << valleyview::kRenderQueueModeDirectPresent;
 	info.queuedJobs = client.queueState.queuedJobs
 		+ (client.activeJob != NULL ? 1 : 0);

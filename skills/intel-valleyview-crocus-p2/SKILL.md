@@ -86,9 +86,9 @@ proven shareable surface contract.
 
 1. Host-test queue, timeline, access, fairness, cancellation, and wrap policy.
 2. Prove queued Safe execution with two clients and deterministic waits.
-3. Prove direct BCS presentation independently with the reset-safe executor.
-4. Run no-reset or resident-context experiments last because an unsafe
-   restoration must quarantine RCS.
+3. Prove direct BCS presentation independently with the reset-safe executor and
+   a `BDirectWindow` that supplies real clipping rectangles.
+4. Implement resident-context ownership before enabling failure-only reset.
 5. Expand residency and resource formats.
 6. Run broad conformance only after the engine metrics and recovery gates pass.
 
@@ -101,8 +101,7 @@ intel_valleyview_gl_suite --p2-lab
 ```
 
 It owns the Safe/queued/direct compatibility matrix, two-client queue burst,
-failure injection, recovery, and a final explicit no-reset control draw. Do not
-request separate flashes for those stages. Treat the current `persistent` mode
-as a destructive healthy no-reset experiment and `direct` as reset-safe
-BCS-to-P0-shadow presentation; neither is the final resident-context or
-app_server-sharing design.
+failure injection, and recovery. Do not request separate flashes for those
+stages. `direct` is reset-safe BCS-to-P0-shadow presentation; it is not the
+final app_server-sharing design. Do not revive the reset-omission experiment:
+P2B requires a kernel-owned resident hardware context and explicit switching.

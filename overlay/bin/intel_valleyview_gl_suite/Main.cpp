@@ -3,6 +3,7 @@
 // SPDX-FileContributor: Generated with GitHub Copilot
 
 #include <Application.h>
+#include <DirectWindow.h>
 #include <GLView.h>
 #include <OS.h>
 #include <Window.h>
@@ -391,15 +392,29 @@ private:
 };
 
 
-class SuiteWindow : public BWindow {
+class SuiteWindow : public BDirectWindow {
 public:
 	SuiteWindow(unsigned selectedCase)
 		:
-		BWindow(BRect(80, 80, 720, 560), "ValleyView GL compatibility suite",
-			B_TITLED_WINDOW, B_QUIT_ON_WINDOW_CLOSE)
+		BDirectWindow(BRect(80, 80, 720, 560),
+			"ValleyView GL compatibility suite", B_TITLED_WINDOW,
+			B_QUIT_ON_WINDOW_CLOSE),
+		fView(new SuiteView(Bounds(), selectedCase))
 	{
-		AddChild(new SuiteView(Bounds(), selectedCase));
+		AddChild(fView);
 	}
+
+	virtual void DirectConnected(direct_buffer_info* info)
+	{
+		if (fView == NULL)
+			return;
+		fView->DirectConnected(info);
+		fView->EnableDirectMode(info != NULL
+			&& (info->buffer_state & B_DIRECT_MODE_MASK) != B_DIRECT_STOP);
+	}
+
+private:
+	SuiteView* fView;
 };
 
 
@@ -444,8 +459,8 @@ main(int argc, char** argv)
 	if (argc != 1 && !p2Lab)
 		return 2;
 
-	const char* modes[] = {"safe", "queued", "direct", "persistent"};
-	const unsigned modeCount = p2Lab ? 4 : 1;
+	const char* modes[] = {"safe", "queued", "direct"};
+	const unsigned modeCount = p2Lab ? 3 : 1;
 	printf("jr_gl_suite begin cases=%u modes=%u\n", kCaseCount, modeCount);
 	unsigned launchFailures = 0;
 	if (p2Lab) {
@@ -466,43 +481,10 @@ main(int argc, char** argv)
 			queueStatus);
 	}
 	for (unsigned modeIndex = 0; modeIndex < modeCount; modeIndex++) {
-		if (p2Lab && strcmp(modes[modeIndex], "persistent") == 0) {
-			setenv("VALLEYVIEW_GPU_MODE", "queued", 1);
-			setenv("VALLEYVIEW_GPU_FAULT", "next", 1);
-			char caseNumber[] = "1";
-			char* faultArguments[] = {
-				argv[0], const_cast<char*>("--case"), caseNumber, NULL
-			};
-			pid_t child;
-			const int spawnStatus = posix_spawnp(&child, argv[0], NULL, NULL,
-				faultArguments, environ);
-			int childStatus = 0;
-			if (spawnStatus == 0)
-				waitpid(child, &childStatus, 0);
-			else
-				launchFailures++;
-			printf("jr_p2_fault injected spawn=%d status=%#x\n", spawnStatus,
-				childStatus);
-
-			unsetenv("VALLEYVIEW_GPU_FAULT");
-			const int recoverySpawn = posix_spawnp(&child, argv[0], NULL, NULL,
-				faultArguments, environ);
-			childStatus = 0;
-			if (recoverySpawn == 0)
-				waitpid(child, &childStatus, 0);
-			else
-				launchFailures++;
-			printf("jr_p2_recovery spawn=%d status=%#x\n", recoverySpawn,
-				childStatus);
-		}
 		setenv("VALLEYVIEW_GPU_MODE", modes[modeIndex], 1);
 		unsetenv("VALLEYVIEW_GPU_FAULT");
 		printf("jr_p2_stage begin mode=%s\n", modes[modeIndex]);
-		const unsigned firstCase = strcmp(modes[modeIndex], "persistent") == 0
-			? 1 : 0;
-		const unsigned endCase = strcmp(modes[modeIndex], "persistent") == 0
-			? 2 : kCaseCount;
-		for (unsigned index = firstCase; index < endCase; index++) {
+		for (unsigned index = 0; index < kCaseCount; index++) {
 			char caseNumber[16];
 			snprintf(caseNumber, sizeof(caseNumber), "%u", index);
 			char* childArguments[] = {
@@ -528,6 +510,36 @@ main(int argc, char** argv)
 				childStatus);
 		}
 		printf("jr_p2_stage end mode=%s\n", modes[modeIndex]);
+	}
+
+	if (p2Lab) {
+		setenv("VALLEYVIEW_GPU_MODE", "queued", 1);
+		setenv("VALLEYVIEW_GPU_FAULT", "next", 1);
+		char caseNumber[] = "1";
+		char* faultArguments[] = {
+			argv[0], const_cast<char*>("--case"), caseNumber, NULL
+		};
+		pid_t child;
+		const int spawnStatus = posix_spawnp(&child, argv[0], NULL, NULL,
+			faultArguments, environ);
+		int childStatus = 0;
+		if (spawnStatus == 0)
+			waitpid(child, &childStatus, 0);
+		else
+			launchFailures++;
+		printf("jr_p2_fault injected spawn=%d status=%#x\n", spawnStatus,
+			childStatus);
+
+		unsetenv("VALLEYVIEW_GPU_FAULT");
+		const int recoverySpawn = posix_spawnp(&child, argv[0], NULL, NULL,
+			faultArguments, environ);
+		childStatus = 0;
+		if (recoverySpawn == 0)
+			waitpid(child, &childStatus, 0);
+		else
+			launchFailures++;
+		printf("jr_p2_recovery spawn=%d status=%#x\n", recoverySpawn,
+			childStatus);
 	}
 
 	printf("jr_gl_suite end cases=%u modes=%u launch_failures=%u\n",
