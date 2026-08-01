@@ -373,18 +373,16 @@ private:
 			glFinish();
 		const GLenum drawError = _DrainErrors();
 		if (asyncDirect && index == 0) {
+			constexpr unsigned kPresentBurstRequests = 8;
+			char burstCount[16];
+			snprintf(burstCount, sizeof(burstCount), "%u",
+				kPresentBurstRequests);
+			setenv("VALLEYVIEW_GPU_PRESENT_BURST", burstCount, 1);
 			const bigtime_t burstStarted = system_time();
-			constexpr unsigned kPresentBurstFrames = 8;
-			for (unsigned frame = 0; frame < kPresentBurstFrames; frame++) {
-				if (frame != 0) {
-					glClearColor(0.02f * frame, 0.01f * frame,
-						0.03f * frame, 1.0f);
-					glClear(GL_COLOR_BUFFER_BIT);
-				}
-				SwapBuffers();
-			}
-			printf("jr_p2_present_burst frames=%u enqueue_us=%"
-				B_PRIdBIGTIME "\n", kPresentBurstFrames,
+			SwapBuffers();
+			unsetenv("VALLEYVIEW_GPU_PRESENT_BURST");
+			printf("jr_p2_present_burst requests=%u swap_us=%"
+				B_PRIdBIGTIME "\n", kPresentBurstRequests,
 				system_time() - burstStarted);
 		} else
 			SwapBuffers();

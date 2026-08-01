@@ -151,9 +151,11 @@ After the queue gate has passed, the command runs one explicit Safe control,
 one queued control, and all 18 direct cases from a `BDirectWindow`. It does not
 repeat the raw queue burst, failure injection, or complete Safe/queued matrices.
 Queue captures report queue/execution latency, direct presentation results, and
-submission cleanup status. The first direct case also enqueues an eight-frame
-burst without `glFinish()`; require multiple queued presents, at least one
-dropped present, ordered fence retirement, and bounded enqueue time.
+submission cleanup status. The first direct case also submits eight presentation
+requests against one retired render BO in a single swap. This bypasses normal
+render-buffer backpressure and deterministically exercises coalescing; require
+multiple queued presents, at least one dropped present, ordered fence
+retirement, and bounded enqueue time.
 
 ## Required evidence
 

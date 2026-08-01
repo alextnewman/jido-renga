@@ -111,6 +111,7 @@ The Winky hardware baseline is 18/18 direct cases, 18 successful direct
 presents, zero direct-present failures, and no mapped presentation fallback.
 Preserve that baseline while adding the nonblocking latest-frame queue.
 
-For the version 12 candidate, require the first direct case's eight-frame burst
-to report more than one queued present, at least one same-stream dropped
-present, bounded enqueue time, ordered successful completion, and no fallback.
+For the version 12 candidate, require the first direct case's eight-request
+single-BO burst to report more than one queued present, at least one same-stream
+dropped present, bounded enqueue time, ordered successful completion, and no
+fallback.
