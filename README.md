@@ -24,126 +24,52 @@
 **Out-of-tree device drivers for [Haiku](https://www.haiku-os.org/), developed
 by humans and AI together.**
 
-Jidō Renga is a Haiku-based driver project, not a broad fork of Haiku. It keeps
-Haiku and its buildtools as pinned, unmodified submodules, grafts project-owned
-kernel add-ons into Haiku's build at composition time, and maintains the Mesa
-fork used by its hardware OpenGL renderer.
+Jidō Renga builds machine-specific Haiku support without maintaining a parallel
+Haiku fork. Haiku and its buildtools remain pinned, unmodified submodules;
+project-owned drivers are grafted into the build through an overlay, and a
+maintained Mesa fork supplies the hardware OpenGL renderer.
 
 The name means "automatic linked verse." Each supported machine is one verse:
-a focused board-support package (BSP) with the drivers and image policy needed
-to make that hardware useful.
+a focused board-support package (BSP) containing the drivers and image policy
+needed to make that hardware useful.
 
-> Contributors and coding agents should read [`AGENTS.md`](AGENTS.md) and the
-> [overlay build skill](skills/jido-renga-overlay-build/SKILL.md) first.
-
-## Current platform
+## Winky board support
 
 The first BSP targets the Samsung Chromebook 2 `XE500C12`, ChromeOS board
 `winky`, built around Intel Bay Trail-M.
 
-| Module | Purpose | Hardware |
+| Area | Components | Purpose |
 |---|---|---|
-| `gpio` | Typed GPIO ownership and ACPI connection service | Firmware-described GPIO consumers |
-| `byt_gpio` | Interrupt-driven GPIO controller | Bay Trail `INT33FC`/`INT33B2` |
-| `iosf_mbi` | Shared IOSF sideband access | Bay Trail transaction router |
-| `sdhci_embedded` | eMMC and removable-SD host controller | ACPI `80860F14`, `80860F16` |
-| `intel_valleyview` | Native P0 graphics and isolated RCS render service | ValleyView `8086:0f31`, eDP on DP_C |
-| `Crocus` | Hardware OpenGL renderer with Software Pipe fallback | Mesa Gallium on ValleyView Gen7 |
-| `byt_xhci_filter` | PCI policy filter delegating to stock xHCI | PCI `8086:0f35` |
-| `jr_uvc_probe` | Userspace UVC enumeration and capture fitness sweep | Internal camera `2232:1068` |
-| `jr_uvc_collect` | One-command UVC evidence collection and archive | `jr_uvc_probe` output |
-| `cros_ec_keyboard` | 8042-compatible EC keyboard | ACPI `GOOG000A` |
-| `i2c_atmel_mxt` | Atmel maXTouch touchpad | ACPI `ATML0000` |
-| `byt_max98090` | Internal audio (SST + MAX98090) | SST `80860F28`, I2C `193C9890` |
+| Storage | `sdhci_embedded` | eMMC and removable SD |
+| Graphics | `intel_valleyview`, Crocus | Native display, isolated GPU rendering, and hardware OpenGL |
+| Input | `cros_ec_keyboard`, `i2c_atmel_mxt` | Chromebook keyboard and Atmel maXTouch clickpad |
+| Audio | `byt_max98090` | Intel SST and MAX98090 internal audio |
+| USB | `byt_xhci_filter`, stock Haiku xHCI | Preserve firmware-owned Bay Trail USB routing |
+| Platform services | `gpio`, `byt_gpio`, `i2c_guarded`, `iosf_mbi` | Shared GPIO, I2C, and sideband infrastructure |
 
-Winky boots Haiku from removable SD, identifies and uses its eMMC, supports
-installation to eMMC, and provides working keyboard and touchpad input. SD hot
-insertion, automatic mounting, repeated removal/reinsertion, and logical eject
-are hardware-validated.
+The BSP composes these pieces into Haiku's normal package and runtime layout.
+Drivers install at canonical Haiku paths and contain no Jidō Renga runtime
+dependency.
 
-The `intel_valleyview` driver provides a native 1366x768 desktop on Winky. It
-hands app_server a cached shadow framebuffer, copies complete frames with BCS
-into alternating write-combined scanouts, and latches each finished surface at
-vblank. The display never scans the buffer being drawn or copied. A 64x64 ARGB
-hardware cursor, PWM brightness, and soft DPMS complete the P0 path. This
-architecture is hardware-validated for fast, smooth window, text, and cursor
-motion without the transient block shimmer of direct live-framebuffer updates.
+Detailed hardware contracts and limitations live in [`docs/`](docs/).
 
-The graphics stack also provides hardware-accelerated OpenGL through Crocus.
-The kernel render boundary gives each client a scratch-backed 2 GiB Gen7 PPGTT,
-stable private GPU addresses, immutable kernel-owned batch shadows, strict
-command parsing, trusted completion, and mandatory RCS reset and restoration.
-The renderer is built reproducibly from the maintained
-[`alextnewman/mesa`](https://github.com/alextnewman/mesa) fork and installed in
-Haiku's higher-priority non-packaged OpenGL path. If hardware discovery or
-screen creation fails, it delegates to Haiku's packaged Software Pipe renderer
-rather than exposing a partial hardware path.
+## Why an overlay?
 
-Both modern and compatibility rendering are hardware-proven on Winky. The
-validation includes an exact Crocus color/coverage/interpolation corpus and an
-18-stage, process-isolated OpenGL suite covering explicit GLSL/VBO drawing,
-client arrays, immediate mode, display lists, indexed draws, depth, lighting,
-textures, lines, and post-failure recovery. GLTeapot renders through Crocus as
-a real legacy application. The current path favors correctness and isolation
-over throughput: submission is synchronous, RCS is reset after each batch, and
-presentation reads back a linear color buffer through a Haiku `BBitmap`.
+Machine-specific work can move quickly here while general Haiku fixes continue
+to belong upstream. The overlay keeps that boundary explicit:
 
-The audio driver implements the complete legacy Intel SST/MRFLD playback path:
-firmware loading, codec initialization, 10-command route configuration, stream
-allocation/start/stop/free, and `B_MULTI_BUFFER_EXCHANGE` with period-elapsed
-polling and firmware timestamp reading. IPC/period servicing is currently
-polling-based; IRQ-driven handling is a future refinement. Internal-speaker
-playback is validated on Winky hardware. Headphone-jack detection and routing
-now use SCORE GPIO interrupts with 200 ms debounce and automatic MAX98090
-speaker/headphone switching; insertion and removal are hardware-validated and
-reliable. Board assumptions are selected at load time from immutable
-`byt_max98090` profiles, with Winky currently the sole configured profile.
-The Winky image also places `byt_xhci_filter` ahead of unchanged stock xHCI.
-The filter preserves coreboot's Bay Trail USB port routing through a delegated
-PCI interface. External USB insertion and internal-camera enumeration are
-hardware-validated. Camera controls and all 41 standard mode negotiations work,
-but video streaming is blocked by stock Haiku xHCI's high-bandwidth
-isochronous-endpoint handling; the single-transaction fallback receives only
-UVC headers. No camera Media Kit add-on is shipped.
-Winky's profile follows the historical UCM hardware policy: speaker volume is
-capped at 0 dB with -6 dB at the speaker mixer, while headphones remain capped
-at -9 dB. The separate ChromeOS -5 dB speaker curve was software gain for its
-DSP pipeline and is not imposed on Haiku's codec control. The original
-seven-band speaker voicing is enabled with direct Q4.20 MAX98090 coefficients
-and 4 dB preattenuation; this configuration is hardware-validated. DRC remains
-disabled after the combined EQ/DRC configuration silenced playback.
+- `haiku/` and `buildtools/` are immutable captive submodules;
+- `mesa/` is the maintained project fork used for Crocus;
+- `tools/weave` writes only `<build-dir>/UserBuildConfig`;
+- `overlay/` mirrors Haiku's add-on classes;
+- Haiku's own Jam rules and cross-toolchain build the final package and image.
 
-The Winky BSP is intentionally exclusive where controllers cannot safely have
-two owners. Its image omits Haiku's generic SDHCI add-on in favor of
-`sdhci_embedded`. It preserves Haiku's HDA driver for the separate PCI
-`8086:0f04` HDMI-audio controller while `byt_max98090` owns only the ACPI
-`80860F28` SST/LPE path for internal speakers. Other Haiku image composition is
-left alone.
+Only build-time composition is project-specific. The resulting system remains
+a Haiku installation using ordinary Haiku add-on paths.
 
-## Relationship with Haiku
+## Build and boot
 
-Jidō Renga is proudly based on Haiku and uses Haiku's driver APIs, build system,
-package format, and runtime layout. Project add-ons install at canonical Haiku
-paths and do not know that they were built from an overlay.
-
-The project does not maintain a parallel copy of Haiku. General fixes and
-human-authored improvements that belong in Haiku should be contributed
-upstream. Jidō Renga provides a separate home for its machine-specific and
-AI-assisted driver work while respecting Haiku's contribution policies.
-
-At build time:
-
-- `haiku/` and `buildtools/` remain pristine captive submodules.
-- `mesa/` is the maintained project fork used to build the Crocus renderer.
-- `tools/weave` writes only `<build-dir>/UserBuildConfig`.
-- `overlay/` mirrors Haiku's kernel add-on classes.
-- Jam builds the add-ons with Haiku's own cross-toolchain and package rules.
-
-At runtime, only the normal Haiku add-on paths remain.
-
-## Build
-
-The standard x86_64 setup is:
+Initialize the submodules and configure an x86_64 build:
 
 ```sh
 git submodule update --init
@@ -154,18 +80,13 @@ cd generated.x86_64
   --build-cross-tools x86_64
 cd ..
 tools/weave generated.x86_64
-cd generated.x86_64
-../tools/jr-jam -q gpio byt_gpio byt_xhci_filter i2c_guarded iosf_mbi \
-  sdhci_embedded cros_ec_keyboard i2c_atmel_mxt byt_max98090 \
-  intel_valleyview intel_valleyview.accelerant intel_valleyview_probe \
-  intel_valleyview_crocus_demo intel_valleyview_gl_suite jr_uvc_probe \
-  jr_uvc_collect
 ```
 
-Build the reproducible Mesa 22.0.5 Crocus add-on after the Haiku development
-package has populated the cross sysroot, then build a bootable desktop image:
+Build the Haiku development package, the maintained Crocus renderer, and the
+composed boot image:
 
 ```sh
+cd generated.x86_64
 ../tools/jr-jam -q haiku_devel.hpkg
 cd ..
 tools/build-crocus generated.x86_64
@@ -173,94 +94,51 @@ cd generated.x86_64
 ../tools/jr-jam -q @nightly-anyboot
 ```
 
-Build only the composed system package or its narrow local repository with:
+The bootable image is written to
+`generated.x86_64/haiku-nightly-anyboot.iso`. Flash it with the image-writing
+tool of your choice and boot the Winky from that media.
+
+To build only the composed system package or its local repository:
 
 ```sh
 ../tools/jr-jam -q haiku.hpkg
 ../tools/jr-jam -q jido-renga-repository
 ```
 
-`generated*/` directories, including `generated.crocus/`, are disposable build
-output and are never committed.
+`generated*/` directories are disposable build output and are never committed.
 The first image build is a full Haiku build and may download HaikuPorts
 packages; later builds are incremental.
-
-The complete build, extension, and validation procedure is in
-[`skills/jido-renga-overlay-build/SKILL.md`](skills/jido-renga-overlay-build/SKILL.md).
-The Winky UVC fitness tool is documented in
-[`docs/drivers/jr_uvc_probe.md`](docs/drivers/jr_uvc_probe.md).
-
-## Image composition
-
-Loose non-packaged drivers are useful for development, but they are not enough
-for boot-media controllers. Haiku's stage-two loader exposes the root system
-package before ordinary device discovery, so boot-critical JR modules and their
-boot links must be composed into `haiku.hpkg`.
-
-That package keeps Haiku's technical package identity because the loader and
-package daemon depend on it. Its metadata identifies Jidō Renga as the
-derivative vendor while preserving Haiku's package name, provides, licenses,
-and dependencies. The optional `JidoRenga` repository contains only this system
-package and is not enabled automatically in composed images. Applications such
-as WebPositive remain separate packages; JR does not rebuild or rebrand the
-Haiku desktop catalog.
-
-For Winky, the package also carries the unmodified Intel SST firmware at
-`data/firmware/byt_max98090/fw_sst_0f28.bin` and its separately licensed Intel
-redistribution terms.
-
-Kernel diagnostics share `<common/Trace.h>`: cyan trace/status labels, yellow
-warnings, red errors, and magenta event streams, all rendered as `[component]`.
-Each driver still owns its compile-time trace gates, so presentation is common
-without forcing verbose data-path logging.
-
-Set `JIDO_RENGA_BSP = none` in `UserBuildConfig` before the overlay walk to
-build the add-ons without applying a BSP image policy. Set
-`JIDO_RENGA_INSTALL_IN_IMAGE = 0` to keep them as loose build outputs only.
 
 ## Repository layout
 
 ```text
-overlay/    project-owned kernel add-ons and public headers
-mesa/       maintained Mesa fork used by the Crocus renderer build
-config/     graft template, BSP manifests, and revision configuration
-firmware/   separately licensed firmware vendored unchanged for BSP packages
-tools/      weave, revision, Jam wrapper, and terminal banner
+overlay/    project-owned drivers and public headers
+mesa/       maintained Mesa fork used by Crocus
+config/     overlay template, BSP manifests, and revisions
+firmware/   separately licensed firmware packaged unchanged
+tools/      build composition and wrapper tools
 tests/      host-side policy, parser, and concurrency tests
 skills/     operational guidance for coding agents
-docs/       current architecture, hardware contracts, and driver references
+docs/       architecture, hardware contracts, and driver references
 LICENSES/   REUSE license texts
 ```
 
-Useful references:
+Useful starting points:
 
-- [`docs/drivers/intel_valleyview.md`](docs/drivers/intel_valleyview.md)
-- [`docs/drivers/cros_ec_keyboard.md`](docs/drivers/cros_ec_keyboard.md)
-- [`docs/drivers/i2c_atmel_mxt.md`](docs/drivers/i2c_atmel_mxt.md)
-- [`docs/drivers/byt_max98090.md`](docs/drivers/byt_max98090.md)
-- [`docs/design/gpio.md`](docs/design/gpio.md)
-- [`docs/design/sdhci_embedded.md`](docs/design/sdhci_embedded.md)
-- [`docs/hardware/winky-bay-trail-sdhci.md`](docs/hardware/winky-bay-trail-sdhci.md)
+- [`AGENTS.md`](AGENTS.md) for repository invariants;
+- [`skills/jido-renga-overlay-build/SKILL.md`](skills/jido-renga-overlay-build/SKILL.md)
+  for the complete build and extension workflow;
+- [`docs/drivers/`](docs/drivers/) for driver architecture;
+- [`docs/design/`](docs/design/) for shared subsystem design.
 
-## Engineering approach
+## Engineering and licensing
 
-The drivers use Haiku's conventions and modern C++ without exceptions or RTTI.
-Hardware-independent policy is separated where practical so it can be tested
-on the host. Hardware contracts, concurrency invariants, and current
-limitations are documented; investigation transcripts and temporary build
-evidence are not part of the repository documentation.
+The drivers follow Haiku conventions and use modern C++ without exceptions or
+RTTI. Hardware-independent policy is separated where practical for host-side
+testing. Current implementation details, limitations, and hardware rationale
+belong in the focused documents under `docs/`, not in this landing page.
 
-AI does substantial implementation work here, but human direction and review
-remain part of the design. Generated code is expected to meet the same
-correctness, licensing, and maintenance standards as any other kernel code.
-
-## Status and license
-
-Jidō Renga is experimental board-support software. The Winky BSP is usable with
-native P0 desktop graphics and hardware Crocus OpenGL, but interfaces and
-implementation details may change as hardware support expands.
-
-The project is MIT-licensed. See [`LICENSE`](LICENSE). Licensing metadata follows
-the [REUSE](https://reuse.software/) specification through per-file SPDX tags,
-`REUSE.toml`, and `LICENSES/`. The vendored Intel SST firmware remains under
-Intel's separate unmodified-binary redistribution terms.
+The project is MIT-licensed and is not part of Haiku. See [`LICENSE`](LICENSE).
+Licensing metadata follows the
+[REUSE](https://reuse.software/) specification. Vendored Intel SST firmware
+retains its separate unmodified-binary redistribution terms.
