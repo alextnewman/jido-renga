@@ -525,8 +525,15 @@ Control(void* cookie, uint32 operation, void* buffer, size_t length)
 				}
 			}
 			mutex_lock(&device->bcsLock);
-			if (device->bcsReady)
+			if (device->bcsReady) {
 				info.provenEngines |= valleyview::kRenderEngineBcs;
+				if (device->nativeActive && device->renderQueueReady
+					&& (info.capabilities
+						& valleyview::kRenderCapabilityQueuedSubmission) != 0) {
+					info.capabilities
+						|= valleyview::kRenderCapabilityDirectGpuPresent;
+				}
+			}
 			if (device->rcsReady)
 				info.provenEngines |= valleyview::kRenderEngineRcs;
 			mutex_unlock(&device->bcsLock);
@@ -736,7 +743,11 @@ Control(void* cookie, uint32 operation, void* buffer, size_t length)
 					sizeof(request))) {
 				return B_BAD_VALUE;
 			}
-			status = SubmitRenderDirectPresent(*client, request);
+			if ((request.flags
+					& valleyview::kRenderDirectPresentAsynchronous) != 0) {
+				status = EnqueueRenderDirectPresent(*client, request);
+			} else
+				status = SubmitRenderDirectPresent(*client, request);
 			status_t copyStatus = user_memcpy(buffer, &request,
 				sizeof(request));
 			return copyStatus == B_OK ? status : copyStatus;

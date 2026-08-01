@@ -379,7 +379,7 @@ keeps this Safe GL path as a separately selectable recovery mode while moving
 healthy work to queued timelines, persistent contexts, and fence-aware direct
 presentation. EGL remains outside that phase.
 
-Render protocol version 11 carries the P2 lab queue: immutable enqueue, explicit
+Render protocol version 12 carries the P2 lab queue: immutable enqueue, explicit
 BO access, 64-bit timeline waits, completion dequeue, `select()` readiness,
 bounded per-client/device depth, a round-robin kernel worker, and complete
 submission-cleanup status in each completion record. Failed retired fences are
@@ -398,6 +398,12 @@ No direct case entered the mapped `BBitmap` fallback. BCS direct-copy ioctl
 latency ranged from 881 to 4,245 us, averaging 2,087 us. This proves the
 render-BO-to-P0-shadow path; a latest-frame presentation queue and nonblocking
 `SwapBuffers()` remain separate P2C work.
+
+The version 12 hardware candidate moves direct presents onto the render
+timeline and returns their fences from `SwapBuffers()` without waiting for RCS
+or BCS. It preserves BO lifetime through BCS completion and coalesces obsolete
+queued frames per window. This candidate remains experimental until the direct
+burst gate proves bounded enqueue, ordered retirement, and actual frame drops.
 
 `intel_valleyview_probe --render-memory-test` creates two client-owned buffers,
 clones both into the process, writes coordinate-dependent source and destination

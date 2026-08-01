@@ -129,3 +129,44 @@ JR_TEST(intel_valleyview_render_queue, fails_and_cancels_fences_in_order)
 	JR_CHECK(StartRenderJob(state, nextFence));
 	JR_CHECK(CompleteRenderJob(state, nextFence));
 }
+
+
+JR_TEST(intel_valleyview_render_queue, drops_only_older_queued_presentations)
+{
+	JR_CHECK(ShouldDropQueuedPresentation(4, 9, 6, 9));
+	JR_CHECK(!ShouldDropQueuedPresentation(4, 8, 6, 9));
+	JR_CHECK(!ShouldDropQueuedPresentation(6, 9, 4, 9));
+	JR_CHECK(!ShouldDropQueuedPresentation(6, 9, 6, 9));
+	JR_CHECK(!ShouldDropQueuedPresentation(kInvalidRenderFence, 9, 6, 9));
+	JR_CHECK(!ShouldDropQueuedPresentation(6, 9, kInvalidRenderFence, 9));
+	JR_CHECK(!ShouldDropQueuedPresentation(4, 0, 6, 0));
+}
+
+
+JR_TEST(intel_valleyview_render_queue, validates_direct_present_geometry)
+{
+	RenderDirectPresent request = {};
+	request.sourceHandle = 7;
+	request.sourceStride = 640 * sizeof(uint32);
+	request.sourceWidth = 640;
+	request.sourceHeight = 480;
+	request.rectCount = 1;
+	request.rects[0].sourceLeft = 10;
+	request.rects[0].sourceTop = 20;
+	request.rects[0].destinationLeft = 100;
+	request.rects[0].destinationTop = 120;
+	request.rects[0].width = 199;
+	request.rects[0].height = 99;
+	JR_CHECK(ValidateRenderDirectPresentGeometry(request));
+	JR_CHECK_EQ(RenderDirectPresentSourceBytes(request),
+		(uint64)request.sourceStride * request.sourceHeight);
+
+	request.rects[0].sourceLeft = 500;
+	JR_CHECK(!ValidateRenderDirectPresentGeometry(request));
+	request.rects[0].sourceLeft = 10;
+	request.rects[0].destinationTop = kP0Height - 50;
+	JR_CHECK(!ValidateRenderDirectPresentGeometry(request));
+	request.rects[0].destinationTop = 120;
+	request.sourceStride--;
+	JR_CHECK(!ValidateRenderDirectPresentGeometry(request));
+}

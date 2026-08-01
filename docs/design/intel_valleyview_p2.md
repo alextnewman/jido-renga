@@ -115,6 +115,15 @@ fallback. This is not the complete asynchronous presentation phase:
 `SwapBuffers()` still waits the render fence and issues presentation
 synchronously, and P0 retains its existing shadow-to-scanout worker.
 
+Render protocol version 12 is the next P2C hardware candidate. Render and
+presentation jobs share one ordered per-client timeline; `SwapBuffers()`
+enqueues a copied clipping snapshot and returns its fence without waiting for
+RCS or BCS. BO mapping, reuse, close, and teardown honor that presentation
+fence. Older queued frames are dropped only within the same presentation
+stream, while their timeline records still retire in order. Queue-pressure
+fallback drains the timeline before CPU presentation so an older BCS copy
+cannot overwrite the fallback frame.
+
 ## First lab image
 
 The P2 lab implements three runtime modes in one driver and renderer:
@@ -142,7 +151,9 @@ After the queue gate has passed, the command runs one explicit Safe control,
 one queued control, and all 18 direct cases from a `BDirectWindow`. It does not
 repeat the raw queue burst, failure injection, or complete Safe/queued matrices.
 Queue captures report queue/execution latency, direct presentation results, and
-submission cleanup status.
+submission cleanup status. The first direct case also enqueues an eight-frame
+burst without `glFinish()`; require multiple queued presents, at least one
+dropped present, ordered fence retirement, and bounded enqueue time.
 
 ## Required evidence
 

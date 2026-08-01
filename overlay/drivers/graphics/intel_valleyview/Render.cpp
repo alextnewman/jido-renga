@@ -1292,41 +1292,19 @@ SetRenderBufferDomain(ValleyViewClient& client,
 
 status_t
 SubmitRenderDirectPresent(ValleyViewClient& client,
-	valleyview::RenderDirectPresent& request)
+	valleyview::RenderDirectPresent& request, bool queued)
 {
 	request.status = B_NO_INIT;
 	request.elapsedUs = 0;
-	if (request.flags != 0 || request.reserved != 0
-		|| request.sourceHandle == 0 || request.sourceWidth == 0
-		|| request.sourceHeight == 0 || request.sourceWidth > UINT16_MAX
-		|| request.sourceHeight > UINT16_MAX
-		|| static_cast<uint64>(request.sourceStride)
-			< static_cast<uint64>(request.sourceWidth) * sizeof(uint32)
-		|| request.sourceStride > UINT16_MAX
-		|| (request.sourceOffset & (sizeof(uint32) - 1)) != 0
-		|| request.rectCount == 0
-		|| request.rectCount > valleyview::kRenderMaxPresentRects) {
+	const uint32 expectedFlags = queued
+		? valleyview::kRenderDirectPresentAsynchronous : 0;
+	if (request.flags != expectedFlags
+		|| !valleyview::ValidateRenderDirectPresentGeometry(request)) {
 		request.status = B_BAD_VALUE;
 		return request.status;
 	}
 	const uint64 sourceBytes
-		= static_cast<uint64>(request.sourceStride)
-			* (request.sourceHeight - 1)
-		+ static_cast<uint64>(request.sourceWidth) * sizeof(uint32);
-	for (uint32 index = 0; index < request.rectCount; index++) {
-		const valleyview::RenderPresentRect& rect = request.rects[index];
-		if (static_cast<uint32>(rect.sourceLeft) + rect.width
-				>= request.sourceWidth
-			|| static_cast<uint32>(rect.sourceTop) + rect.height
-				>= request.sourceHeight
-			|| static_cast<uint32>(rect.destinationLeft) + rect.width
-				>= valleyview::kP0Width
-			|| static_cast<uint32>(rect.destinationTop) + rect.height
-				>= valleyview::kP0Height) {
-			request.status = B_BAD_VALUE;
-			return request.status;
-		}
-	}
+		= valleyview::RenderDirectPresentSourceBytes(request);
 
 	const bigtime_t started = system_time();
 	ValleyViewDevice& device = *client.device;
@@ -1335,8 +1313,9 @@ SubmitRenderDirectPresent(ValleyViewClient& client,
 	ValleyViewRenderBuffer* buffer = FindRenderBuffer(client,
 		request.sourceHandle);
 	status_t status = B_OK;
-	if (buffer == NULL || buffer->quarantined || buffer->closePending
-		|| buffer->queuedReferenceCount != 0
+	if (buffer == NULL || buffer->quarantined
+		|| (buffer->closePending && !queued)
+		|| (!queued && buffer->queuedReferenceCount != 0)
 		|| buffer->domain != valleyview::kRenderDomainCpu
 		|| buffer->ggttOffset == valleyview::kInvalidRenderGgttOffset
 		|| request.sourceOffset > buffer->size

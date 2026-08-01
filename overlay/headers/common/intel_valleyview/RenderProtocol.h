@@ -11,7 +11,7 @@
 namespace valleyview {
 
 constexpr uint32 kRenderProtocolMagic = 0x564c5652;
-constexpr uint16 kRenderProtocolVersion = 11;
+constexpr uint16 kRenderProtocolVersion = 12;
 constexpr uint32 kRenderSubmitMaxObjects = 64;
 constexpr uint32 kRenderMaxQueuedJobsPerClient = 32;
 constexpr uint32 kRenderMaxQueuedJobsPerDevice = 128;
@@ -72,6 +72,15 @@ enum RenderQueueMode : uint32 {
 
 enum RenderQueueConfigureFlag : uint32 {
 	kRenderQueueFailNextSubmission = 1u << 0
+};
+
+enum RenderDirectPresentFlag : uint32 {
+	kRenderDirectPresentAsynchronous = 1u << 0
+};
+
+enum RenderQueueCompletionFlag : uint32 {
+	kRenderQueueCompletionDirectPresent = 1u << 0,
+	kRenderQueueCompletionPresentDropped = 1u << 1
 };
 
 enum RenderObjectAccess : uint32 {
@@ -357,6 +366,8 @@ struct RenderQueueInfo {
 	uint64			noResetJobs;
 	uint64			directPresents;
 	uint64			directPresentFailures;
+	uint64			directPresentsQueued;
+	uint64			directPresentsDropped;
 	uint64			totalQueueLatencyUs;
 	uint64			maxQueueLatencyUs;
 	uint64			totalExecutionUs;
@@ -382,9 +393,11 @@ struct RenderDirectPresent {
 	uint32			sourceHeight;
 	uint32			rectCount;
 	RenderPresentRect rects[kRenderMaxPresentRects];
+	uint64			streamId;
 	int32			status;
 	uint32			reserved;
 	uint64			elapsedUs;
+	uint64			fence;
 };
 
 

@@ -62,12 +62,20 @@ struct ValleyViewPpgttState {
 };
 
 struct ValleyViewRenderJob {
+	enum Kind {
+		kCommands,
+		kDirectPresent
+	};
+
 	ValleyViewRenderJob*	next;
 	struct ValleyViewClient* client;
 	valleyview::RenderSubmit submit;
+	valleyview::RenderDirectPresent present;
 	uint8*					batch;
 	uint64					fence;
 	bigtime_t				enqueuedAt;
+	Kind					kind;
+	bool					dropPresent;
 };
 
 struct ValleyViewRenderCompletion {
@@ -216,6 +224,8 @@ struct ValleyViewDevice {
 	uint64						rcsSubmissionFailures;
 	uint64						renderDirectPresents;
 	uint64						renderDirectPresentFailures;
+	uint64						renderDirectPresentsQueued;
+	uint64						renderDirectPresentsDropped;
 	sem_id						renderQueueSem;
 	thread_id					renderQueueThread;
 	ValleyViewClient*		renderClients;
@@ -285,6 +295,8 @@ status_t ConfigureRenderQueue(ValleyViewClient& client,
 	valleyview::RenderQueueConfigure& request);
 status_t EnqueueRenderCommands(ValleyViewClient& client,
 	valleyview::RenderQueueSubmit& request);
+status_t EnqueueRenderDirectPresent(ValleyViewClient& client,
+	valleyview::RenderDirectPresent& request);
 status_t WaitRenderQueueFence(ValleyViewClient& client,
 	valleyview::RenderQueueWait& request);
 status_t DequeueRenderCompletion(ValleyViewClient& client,
@@ -292,7 +304,7 @@ status_t DequeueRenderCompletion(ValleyViewClient& client,
 status_t GetRenderQueueInfo(ValleyViewClient& client,
 	valleyview::RenderQueueInfo& info);
 status_t SubmitRenderDirectPresent(ValleyViewClient& client,
-	valleyview::RenderDirectPresent& request);
+	valleyview::RenderDirectPresent& request, bool queued = false);
 status_t SelectRenderQueue(ValleyViewClient& client, uint8 event,
 	selectsync* sync);
 status_t DeselectRenderQueue(ValleyViewClient& client, uint8 event,

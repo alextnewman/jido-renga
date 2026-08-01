@@ -73,6 +73,14 @@ AppendCompletionLocked(ValleyViewClient& client,
 	completion->record.result = result;
 	completion->record.fence = job.fence;
 	completion->record.status = status;
+	if (job.kind == ValleyViewRenderJob::kDirectPresent) {
+		completion->record.flags
+			|= valleyview::kRenderQueueCompletionDirectPresent;
+		if (job.dropPresent) {
+			completion->record.flags
+				|= valleyview::kRenderQueueCompletionPresentDropped;
+		}
+	}
 	completion->record.stage = job.submit.stage;
 	completion->record.diagnosticFlags = job.submit.diagnosticFlags;
 	completion->record.parserReason = job.submit.parserReason;
@@ -141,8 +149,13 @@ SelectReadyClientLocked(ValleyViewDevice& device)
 void
 ReleaseJobReferences(ValleyViewRenderJob& job)
 {
-	ReleaseRenderQueueReferences(*job.client, job.submit.objectHandles,
-		job.submit.objectCount);
+	if (job.kind == ValleyViewRenderJob::kDirectPresent) {
+		ReleaseRenderQueueReferences(*job.client,
+			&job.present.sourceHandle, 1);
+	} else {
+		ReleaseRenderQueueReferences(*job.client, job.submit.objectHandles,
+			job.submit.objectCount);
+	}
 }
 
 
@@ -181,8 +194,10 @@ RenderQueueWorker(void* cookie)
 		if (device.renderQueuedJobs > 0)
 			device.renderQueuedJobs--;
 		const bool injectFailure = client->failNextSubmission;
-		const bool resetAfterSubmission = client->queueMode
-			!= valleyview::kRenderQueueModeFailureOnlyReset;
+		const bool commandJob = job->kind == ValleyViewRenderJob::kCommands;
+		const bool resetAfterSubmission = commandJob
+			&& client->queueMode
+				!= valleyview::kRenderQueueModeFailureOnlyReset;
 		client->failNextSubmission = false;
 		if (client->selectPool != NULL)
 			notify_select_event_pool(client->selectPool, B_SELECT_WRITE);
@@ -193,6 +208,10 @@ RenderQueueWorker(void* cookie)
 		if (injectFailure) {
 			status = B_TIMED_OUT;
 			job->submit.status = status;
+		} else if (job->kind == ValleyViewRenderJob::kDirectPresent) {
+			status = job->dropPresent
+				? B_OK
+				: SubmitRenderDirectPresent(*client, job->present, true);
 		} else {
 			status = SubmitRenderCommands(*client, job->submit, job->batch,
 				resetAfterSubmission);
@@ -220,8 +239,12 @@ RenderQueueWorker(void* cookie)
 		}
 		if (status == B_OK) {
 			client->completedJobs++;
-			if (!resetAfterSubmission)
+			if (commandJob && !resetAfterSubmission)
 				client->noResetJobs++;
+			if (job->kind == ValleyViewRenderJob::kDirectPresent
+				&& job->dropPresent) {
+				device.renderDirectPresentsDropped++;
+			}
 			if (AppendCompletionLocked(*client, *job,
 					valleyview::kRenderFenceComplete, B_OK, startedAt,
 					retiredAt)) {
@@ -469,6 +492,11 @@ ConfigureRenderQueue(ValleyViewClient& client,
 	} else if (request.mode != valleyview::kRenderQueueModeSafe
 		&& !device.renderQueueReady) {
 		request.status = B_NOT_SUPPORTED;
+	} else if (request.mode == valleyview::kRenderQueueModeDirectPresent
+		&& (!device.nativeActive || !device.bcsReady || device.gpuFaulted
+			|| device.p0MemoryQuarantined
+			|| device.renderMemoryQuarantined)) {
+		request.status = B_NOT_SUPPORTED;
 	} else {
 		client.queueMode
 			= static_cast<valleyview::RenderQueueMode>(request.mode);
@@ -517,7 +545,6 @@ EnqueueRenderCommands(ValleyViewClient& client,
 	}
 
 	ValleyViewDevice& device = *client.device;
-	mutex_lock(&device.lock);
 	mutex_lock(&device.renderLock);
 	status_t status = B_OK;
 	ValleyViewRenderBuffer* batchBuffer = NULL;
@@ -525,8 +552,15 @@ EnqueueRenderCommands(ValleyViewClient& client,
 			index++) {
 		ValleyViewRenderBuffer* buffer = FindClientRenderBuffer(client,
 			request.objects[index].handle);
+		const bool orderedDomain = buffer != NULL
+			&& (buffer->domain == valleyview::kRenderDomainCpu
+				|| (buffer->queuedReferenceCount != 0
+					&& (buffer->domain == valleyview::kRenderDomainRcs
+						|| buffer->domain == valleyview::kRenderDomainBcs)));
 		if (buffer == NULL || buffer->quarantined || buffer->closePending
-			|| buffer->domain != valleyview::kRenderDomainCpu
+			|| !orderedDomain
+			|| (buffer->handle == request.batchHandle
+				&& buffer->domain != valleyview::kRenderDomainCpu)
 			|| buffer->ppgttOffset
 				== valleyview::kInvalidRenderPpgttOffset) {
 			status = B_BAD_VALUE;
@@ -605,8 +639,113 @@ EnqueueRenderCommands(ValleyViewClient& client,
 		UnlockQueue(device);
 	}
 	mutex_unlock(&device.renderLock);
-	mutex_unlock(&device.lock);
 
+	if (status != B_OK) {
+		FreeRenderJob(job);
+		request.status = status;
+		return status;
+	}
+	release_sem(device.renderQueueSem);
+	return B_OK;
+}
+
+status_t
+EnqueueRenderDirectPresent(ValleyViewClient& client,
+	valleyview::RenderDirectPresent& request)
+{
+	request.fence = valleyview::kInvalidRenderFence;
+	request.status = B_NO_INIT;
+	request.elapsedUs = 0;
+	if (request.flags != valleyview::kRenderDirectPresentAsynchronous
+		|| request.streamId == 0
+		|| !valleyview::ValidateRenderDirectPresentGeometry(request)) {
+		request.status = B_BAD_VALUE;
+		return request.status;
+	}
+
+	ValleyViewRenderJob* job = static_cast<ValleyViewRenderJob*>(
+		calloc(1, sizeof(ValleyViewRenderJob)));
+	if (job == NULL) {
+		request.status = B_NO_MEMORY;
+		return request.status;
+	}
+	job->kind = ValleyViewRenderJob::kDirectPresent;
+	job->present = request;
+	job->submit.resetStatus = B_NO_INIT;
+	job->submit.ringRestoreStatus = B_NO_INIT;
+	job->submit.cacheRestoreStatus = B_NO_INIT;
+	job->submit.ppgttControlRestoreStatus = B_NO_INIT;
+	job->submit.forcewakeReleaseStatus = B_NO_INIT;
+	job->submit.wakeRestoreStatus = B_NO_INIT;
+
+	const bigtime_t started = system_time();
+	ValleyViewDevice& device = *client.device;
+	mutex_lock(&device.renderLock);
+	ValleyViewRenderBuffer* buffer = FindClientRenderBuffer(client,
+		request.sourceHandle);
+	const uint64 sourceBytes
+		= valleyview::RenderDirectPresentSourceBytes(request);
+	status_t status = !device.nativeActive || !device.bcsReady
+			|| device.gpuFaulted || device.p0MemoryQuarantined
+			|| device.renderMemoryQuarantined
+		? B_NOT_SUPPORTED : B_OK;
+	const bool orderedDomain = buffer != NULL
+		&& (buffer->domain == valleyview::kRenderDomainCpu
+			|| (buffer->queuedReferenceCount != 0
+				&& (buffer->domain == valleyview::kRenderDomainRcs
+					|| buffer->domain == valleyview::kRenderDomainBcs)));
+	if (buffer == NULL || buffer->quarantined || buffer->closePending
+		|| !orderedDomain
+		|| buffer->ggttOffset == valleyview::kInvalidRenderGgttOffset
+		|| request.sourceOffset > buffer->size
+		|| sourceBytes > buffer->size - request.sourceOffset) {
+		status = B_BAD_VALUE;
+	}
+
+	if (status == B_OK) {
+		LockQueue(device);
+		if (!device.renderQueueReady || client.closing || client.queueLost
+			|| client.queueMode
+				!= valleyview::kRenderQueueModeDirectPresent) {
+			status = B_NOT_ALLOWED;
+		} else if (!valleyview::QueueRenderJob(client.queueState,
+				device.renderQueuedJobs, job->fence)) {
+			status = B_WOULD_BLOCK;
+		} else {
+			job->client = &client;
+			job->enqueuedAt = started;
+			job->present.fence = job->fence;
+			for (ValleyViewRenderJob* item = client.queueHead;
+					item != NULL; item = item->next) {
+				if (item->kind == ValleyViewRenderJob::kDirectPresent
+					&& valleyview::ShouldDropQueuedPresentation(
+						item->fence, item->present.streamId,
+						job->fence, job->present.streamId)) {
+					item->dropPresent = true;
+				}
+			}
+			buffer->queuedReferenceCount++;
+			if (client.queueTail != NULL)
+				client.queueTail->next = job;
+			else
+				client.queueHead = job;
+			client.queueTail = job;
+			device.renderQueuedJobs++;
+			if (device.renderQueuedJobs > device.renderQueueHighWater)
+				device.renderQueueHighWater = device.renderQueuedJobs;
+			if (client.queueState.queuedJobs > client.queueHighWater)
+				client.queueHighWater = client.queueState.queuedJobs;
+			client.submittedJobs++;
+			device.renderDirectPresentsQueued++;
+			request.fence = job->fence;
+			request.status = B_OK;
+		}
+		UnlockQueue(device);
+	}
+	mutex_unlock(&device.renderLock);
+
+	const bigtime_t elapsed = system_time() - started;
+	request.elapsedUs = elapsed > 0 ? static_cast<uint64>(elapsed) : 0;
 	if (status != B_OK) {
 		FreeRenderJob(job);
 		request.status = status;
@@ -708,8 +847,13 @@ GetRenderQueueInfo(ValleyViewClient& client, valleyview::RenderQueueInfo& info)
 	info.supportedModes = 1u << valleyview::kRenderQueueModeSafe;
 	if (device.renderQueueReady)
 		info.supportedModes
-			|= 1u << valleyview::kRenderQueueModeAsynchronous
-				| 1u << valleyview::kRenderQueueModeDirectPresent;
+			|= 1u << valleyview::kRenderQueueModeAsynchronous;
+	if (device.renderQueueReady && device.nativeActive && device.bcsReady
+		&& !device.gpuFaulted && !device.p0MemoryQuarantined
+		&& !device.renderMemoryQuarantined) {
+		info.supportedModes
+			|= 1u << valleyview::kRenderQueueModeDirectPresent;
+	}
 	info.queuedJobs = client.queueState.queuedJobs
 		+ (client.activeJob != NULL ? 1 : 0);
 	info.completionCount = client.completionCount;
@@ -726,6 +870,8 @@ GetRenderQueueInfo(ValleyViewClient& client, valleyview::RenderQueueInfo& info)
 	info.noResetJobs = client.noResetJobs;
 	info.directPresents = device.renderDirectPresents;
 	info.directPresentFailures = device.renderDirectPresentFailures;
+	info.directPresentsQueued = device.renderDirectPresentsQueued;
+	info.directPresentsDropped = device.renderDirectPresentsDropped;
 	info.totalQueueLatencyUs = client.totalQueueLatencyUs;
 	info.maxQueueLatencyUs = client.maxQueueLatencyUs;
 	info.totalExecutionUs = client.totalExecutionUs;

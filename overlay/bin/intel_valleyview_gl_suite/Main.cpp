@@ -351,6 +351,9 @@ private:
 	void _RunCase(const char* name, CaseId id, unsigned index)
 	{
 		setenv("VALLEYVIEW_GPU_CASE", name, 1);
+		const char* mode = getenv("VALLEYVIEW_GPU_MODE");
+		const bool asyncDirect = mode != NULL
+			&& strcmp(mode, "direct") == 0;
 		const bigtime_t started = system_time();
 		printf("jr_gl_case begin name=%s index=%u\n", name, index);
 		LockGL();
@@ -362,12 +365,29 @@ private:
 			0.02f * (index % 3), 1.0f);
 		glClearDepth(1.0);
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-		glFinish();
+		if (!asyncDirect)
+			glFinish();
 		const GLenum clearError = _DrainErrors();
 		_DrawCase(id);
-		glFinish();
+		if (!asyncDirect)
+			glFinish();
 		const GLenum drawError = _DrainErrors();
-		SwapBuffers();
+		if (asyncDirect && index == 0) {
+			const bigtime_t burstStarted = system_time();
+			constexpr unsigned kPresentBurstFrames = 8;
+			for (unsigned frame = 0; frame < kPresentBurstFrames; frame++) {
+				if (frame != 0) {
+					glClearColor(0.02f * frame, 0.01f * frame,
+						0.03f * frame, 1.0f);
+					glClear(GL_COLOR_BUFFER_BIT);
+				}
+				SwapBuffers();
+			}
+			printf("jr_p2_present_burst frames=%u enqueue_us=%"
+				B_PRIdBIGTIME "\n", kPresentBurstFrames,
+				system_time() - burstStarted);
+		} else
+			SwapBuffers();
 		UnlockGL();
 		printf("jr_gl_case end name=%s index=%u clear_error=%#x"
 			" draw_error=%#x elapsed_us=%" B_PRIdBIGTIME "\n",
