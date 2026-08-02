@@ -8,12 +8,40 @@
 #include "PiglitCases.h"
 
 #include <GL/gl.h>
+#include <GL/glext.h>
 
 #include <math.h>
+#include <stddef.h>
 #include <stdio.h>
 
 
 namespace glsuite {
+
+extern "C" {
+void APIENTRY glGenBuffers(GLsizei count, GLuint* buffers);
+void APIENTRY glBindBuffer(GLenum target, GLuint buffer);
+void APIENTRY glBufferData(GLenum target, ptrdiff_t size, const void* data,
+	GLenum usage);
+void APIENTRY glBufferSubData(GLenum target, ptrdiff_t offset, ptrdiff_t size,
+	const void* data);
+void APIENTRY glDeleteBuffers(GLsizei count, const GLuint* buffers);
+void APIENTRY glGenFramebuffers(GLsizei count, GLuint* framebuffers);
+void APIENTRY glBindFramebuffer(GLenum target, GLuint framebuffer);
+void APIENTRY glFramebufferTexture2D(GLenum target, GLenum attachment,
+	GLenum textureTarget, GLuint texture, GLint level);
+GLenum APIENTRY glCheckFramebufferStatus(GLenum target);
+void APIENTRY glDeleteFramebuffers(GLsizei count, const GLuint* framebuffers);
+void APIENTRY glGenQueries(GLsizei count, GLuint* queries);
+void APIENTRY glBeginQuery(GLenum target, GLuint query);
+void APIENTRY glEndQuery(GLenum target);
+void APIENTRY glGetQueryObjectuiv(GLuint query, GLenum name, GLuint* value);
+void APIENTRY glDeleteQueries(GLsizei count, const GLuint* queries);
+void APIENTRY glDrawArraysInstanced(GLenum mode, GLint first, GLsizei count,
+	GLsizei instances);
+void APIENTRY glTexImage3D(GLenum target, GLint level, GLint internalFormat,
+	GLsizei width, GLsizei height, GLsizei depth, GLint border, GLenum format,
+	GLenum type, const void* pixels);
+}
 
 void
 DrawImmediateTriangle()
@@ -69,6 +97,123 @@ DrawClientArrays()
 	glDrawArrays(GL_TRIANGLES, 0, 3);
 	glDisableClientState(GL_COLOR_ARRAY);
 	glDisableClientState(GL_VERTEX_ARRAY);
+}
+
+void
+DrawIndexedUnsignedInt()
+{
+	static const GLfloat vertices[][2] = {
+		{0.0f, -0.8f}, {-0.8f, 0.8f}, {0.8f, 0.8f}
+	};
+	static const GLuint indices[] = {0, 1, 2};
+	glEnableClientState(GL_VERTEX_ARRAY);
+	glVertexPointer(2, GL_FLOAT, 0, vertices);
+	glColor3f(0.2f, 0.9f, 0.6f);
+	glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_INT, indices);
+	glDisableClientState(GL_VERTEX_ARRAY);
+}
+
+
+void
+DrawBufferSubData()
+{
+	static const GLfloat initial[][2] = {
+		{-0.2f, -0.8f}, {-0.9f, 0.7f}, {0.5f, 0.5f}
+	};
+	static const GLfloat replacement = 0.8f;
+	GLuint buffer = 0;
+	glGenBuffers(1, &buffer);
+	glBindBuffer(GL_ARRAY_BUFFER, buffer);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(initial), initial, GL_DYNAMIC_DRAW);
+	glBufferSubData(GL_ARRAY_BUFFER, 4 * sizeof(GLfloat),
+		sizeof(replacement), &replacement);
+	glEnableClientState(GL_VERTEX_ARRAY);
+	glVertexPointer(2, GL_FLOAT, 0, NULL);
+	glColor3f(0.9f, 0.3f, 0.8f);
+	glDrawArrays(GL_TRIANGLES, 0, 3);
+	glDisableClientState(GL_VERTEX_ARRAY);
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
+	glDeleteBuffers(1, &buffer);
+}
+
+
+bool
+DrawFramebufferObject()
+{
+	GLuint texture = 0;
+	GLuint framebuffer = 0;
+	glGenTextures(1, &texture);
+	glBindTexture(GL_TEXTURE_2D, texture);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 64, 64, 0, GL_RGBA,
+		GL_UNSIGNED_BYTE, NULL);
+	glGenFramebuffers(1, &framebuffer);
+	glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+		GL_TEXTURE_2D, texture, 0);
+	const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+	if (status == GL_FRAMEBUFFER_COMPLETE) {
+		glViewport(0, 0, 64, 64);
+		glClearColor(0.2f, 0.7f, 0.9f, 1.0f);
+		glClear(GL_COLOR_BUFFER_BIT);
+	}
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	glDeleteFramebuffers(1, &framebuffer);
+	glDeleteTextures(1, &texture);
+	printf("jr_gl_fbo status=%#x\n", status);
+	return status == GL_FRAMEBUFFER_COMPLETE;
+}
+
+
+bool
+DrawOcclusionQuery()
+{
+	GLuint query = 0;
+	GLuint samples = 0;
+	glGenQueries(1, &query);
+	glBeginQuery(GL_SAMPLES_PASSED, query);
+	DrawImmediateTriangle();
+	glEndQuery(GL_SAMPLES_PASSED);
+	glGetQueryObjectuiv(query, GL_QUERY_RESULT, &samples);
+	glDeleteQueries(1, &query);
+	printf("jr_gl_query samples=%u\n", samples);
+	return samples != 0;
+}
+
+
+void
+DrawInstanced()
+{
+	static const GLfloat vertices[][2] = {
+		{-0.25f, -0.8f}, {-0.75f, 0.4f}, {0.25f, 0.4f}
+	};
+	glEnableClientState(GL_VERTEX_ARRAY);
+	glVertexPointer(2, GL_FLOAT, 0, vertices);
+	glColor3f(0.3f, 0.8f, 1.0f);
+	glDrawArraysInstanced(GL_TRIANGLES, 0, 3, 4);
+	glDisableClientState(GL_VERTEX_ARRAY);
+}
+
+
+bool
+DrawTexture3D()
+{
+	GLubyte pixels[4 * 4 * 4 * 4];
+	for (size_t index = 0; index < sizeof(pixels); index++)
+		pixels[index] = static_cast<GLubyte>(index * 17);
+	GLuint texture = 0;
+	glGenTextures(1, &texture);
+	glBindTexture(GL_TEXTURE_3D, texture);
+	glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA8, 4, 4, 4, 0, GL_RGBA,
+		GL_UNSIGNED_BYTE, pixels);
+	GLint width = 0;
+	glGetTexLevelParameteriv(GL_TEXTURE_3D, 0, GL_TEXTURE_WIDTH, &width);
+	glDeleteTextures(1, &texture);
+	printf("jr_gl_texture3d width=%d\n", width);
+	return width == 4;
 }
 
 

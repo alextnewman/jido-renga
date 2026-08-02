@@ -54,6 +54,57 @@ JR_TEST(intel_valleyview_rcs, accepts_only_an_idle_ggtt_ring)
 	JR_CHECK(!IsRcsRingAvailable(snapshot));
 }
 
+JR_TEST(intel_valleyview_rcs, tracks_persistent_context_ownership)
+{
+	RcsPersistentOwnershipState state = {};
+	JR_CHECK_EQ(SelectRcsPersistentOwner(state, 7),
+		(uint32)kRcsPersistentClaim);
+	JR_CHECK(state.owned);
+	JR_CHECK_EQ(state.owner, 7u);
+	JR_CHECK_EQ(SelectRcsPersistentOwner(state, 7),
+		(uint32)kRcsPersistentReuse);
+	JR_CHECK_EQ(SelectRcsPersistentOwner(state, 11),
+		(uint32)kRcsPersistentSwitch);
+	JR_CHECK_EQ(state.owner, 11u);
+	JR_CHECK_EQ(state.claims, 1u);
+	JR_CHECK_EQ(state.reuses, 1u);
+	JR_CHECK_EQ(state.switches, 1u);
+	JR_CHECK(!ReleaseRcsPersistentOwner(state, 7));
+	JR_CHECK(ReleaseRcsPersistentOwner(state, 11));
+	JR_CHECK(!state.owned);
+	JR_CHECK_EQ(SelectRcsPersistentOwner(state, 0),
+		(uint32)kRcsPersistentInvalid);
+}
+
+
+JR_TEST(intel_valleyview_rcs, validates_retained_persistent_ring_state)
+{
+	const uint32 ring = 0x400000;
+	const uint32 hws = 0x401000;
+	const uint32 ppDir = 0x3e0000;
+	RcsRegisterSnapshot snapshot = {};
+	snapshot.miMode = kRcsModeIdle;
+	snapshot.mode = kRingPpgttEnable;
+	snapshot.ccid = kRcsCcidEnable;
+	snapshot.start = ring;
+	snapshot.hws = hws;
+	snapshot.ppDirDclv = UINT32_MAX;
+	snapshot.ppDirBase = ppDir;
+	JR_CHECK(IsRcsPersistentRingRetained(snapshot, ring, hws, ppDir));
+
+	snapshot.control = kRingValid;
+	JR_CHECK(!IsRcsPersistentRingRetained(snapshot, ring, hws, ppDir));
+	snapshot.control = 0;
+	snapshot.ccid = 0;
+	JR_CHECK(!IsRcsPersistentRingRetained(snapshot, ring, hws, ppDir));
+	snapshot.ccid = kRcsCcidEnable;
+	snapshot.ppDirBase += kPpgttDirectoryAlignment;
+	JR_CHECK(!IsRcsPersistentRingRetained(snapshot, ring, hws, ppDir));
+	snapshot.ppDirBase = ppDir;
+	snapshot.faultRegister = kRcsFaultValid;
+	JR_CHECK(!IsRcsPersistentRingRetained(snapshot, ring, hws, ppDir));
+}
+
 
 JR_TEST(intel_valleyview_rcs, compares_only_restored_ring_state)
 {
@@ -177,6 +228,20 @@ JR_TEST(intel_valleyview_rcs, builds_an_isolated_ggtt_shadow_submission)
 	JR_CHECK_EQ(commands[55], marker);
 	JR_CHECK_EQ(commands[56], kMiNoop);
 	JR_CHECK_EQ(commands[57], kMiNoop);
+
+	JR_CHECK_EQ(BuildRcsSubmitRing(commands, kRcsSubmitRingCommandCount,
+		batch, result, context, ppDir, marker, false, false),
+		kRcsSubmitRingNoSwitchCommandCount);
+	for (size_t index = 0; index < kRcsSubmitRingNoSwitchCommandCount;
+			index++) {
+		JR_CHECK(commands[index] != kMiSetContext);
+	}
+	JR_CHECK_EQ(BuildRcsSubmitRing(commands, kRcsSubmitRingCommandCount,
+		batch, result, context, ppDir, marker, true, false),
+		kRcsSubmitRingCommandCount);
+	JR_CHECK_EQ(commands[18],
+		context | kMiContextAddressGgtt | kMiContextSaveExtendedState
+			| kMiContextRestoreExtendedState);
 
 	JR_CHECK_EQ(BuildRcsSubmitRing(NULL, kRcsSubmitRingCommandCount,
 		batch, result, context, ppDir, marker), 0u);

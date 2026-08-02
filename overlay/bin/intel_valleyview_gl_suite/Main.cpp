@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include <spawn.h>
+#include <signal.h>
 #include <sys/wait.h>
 
 #include "PiglitCases.h"
@@ -72,7 +73,13 @@ enum CaseId {
 	kLighting,
 	kTextureAllocation,
 	kTextureUpload,
-	kLines
+	kLines,
+	kIndexedUnsignedInt,
+	kBufferSubData,
+	kFramebufferObject,
+	kOcclusionQuery,
+	kInstanced,
+	kTexture3D
 };
 
 struct CaseDefinition {
@@ -98,10 +105,33 @@ const CaseDefinition kCases[] = {
 	{"texture-allocation", kTextureAllocation},
 	{"texture-upload", kTextureUpload},
 	{"immediate-lines", kLines},
+	{"indexed-unsigned-int", kIndexedUnsignedInt},
+	{"buffer-subdata", kBufferSubData},
+	{"framebuffer-object", kFramebufferObject},
+	{"occlusion-query", kOcclusionQuery},
+	{"instanced-draw", kInstanced},
+	{"texture-3d", kTexture3D},
 	{"explicit-vbo-recovery", kExplicitVbo}
 };
 
 const unsigned kCaseCount = sizeof(kCases) / sizeof(kCases[0]);
+int gCaseResult;
+
+pid_t
+WaitForChild(pid_t child, int& status, bigtime_t timeout = 15000000)
+{
+	const bigtime_t deadline = system_time() + timeout;
+	for (;;) {
+		const pid_t waited = waitpid(child, &status, WNOHANG);
+		if (waited != 0)
+			return waited;
+		if (system_time() >= deadline)
+			break;
+		snooze(10000);
+	}
+	kill(child, SIGKILL);
+	return waitpid(child, &status, 0);
+}
 
 
 class SuiteView : public BGLView {
@@ -245,10 +275,10 @@ private:
 		glLoadIdentity();
 	}
 
-	void _DrawExplicitVbo()
+	bool _DrawExplicitVbo()
 	{
 		if (!_InitializeExplicitPipeline())
-			return;
+			return false;
 		glUseProgram(fProgram);
 		glBindBuffer(GL_ARRAY_BUFFER, fVertexBuffer);
 		glEnableVertexAttribArray(fPositionAttribute);
@@ -262,12 +292,13 @@ private:
 		glDisableVertexAttribArray(fPositionAttribute);
 		glDisableVertexAttribArray(fColorAttribute);
 		glUseProgram(0);
+		return true;
 	}
 
-	void _DrawFixedVbo()
+	bool _DrawFixedVbo()
 	{
 		if (!_InitializeExplicitPipeline())
-			return;
+			return false;
 		glUseProgram(0);
 		glBindBuffer(GL_ARRAY_BUFFER, fVertexBuffer);
 		glEnableClientState(GL_VERTEX_ARRAY);
@@ -279,21 +310,23 @@ private:
 		glDisableClientState(GL_COLOR_ARRAY);
 		glDisableClientState(GL_VERTEX_ARRAY);
 		glBindBuffer(GL_ARRAY_BUFFER, 0);
+		return true;
 	}
 
-	void _DrawCase(CaseId id)
+	bool _DrawCase(CaseId id)
 	{
+		bool valid = true;
 		switch (id) {
 			case kClear:
 				break;
 			case kExplicitVbo:
-				_DrawExplicitVbo();
+				valid = _DrawExplicitVbo();
 				break;
 			case kClientArrays:
 				glsuite::DrawClientArrays();
 				break;
 			case kFixedVbo:
-				_DrawFixedVbo();
+				valid = _DrawFixedVbo();
 				break;
 			case kImmediateTriangle:
 				glsuite::DrawImmediateTriangle();
@@ -334,7 +367,26 @@ private:
 			case kLines:
 				glsuite::DrawLines();
 				break;
+			case kIndexedUnsignedInt:
+				glsuite::DrawIndexedUnsignedInt();
+				break;
+			case kBufferSubData:
+				glsuite::DrawBufferSubData();
+				break;
+			case kFramebufferObject:
+				valid = glsuite::DrawFramebufferObject();
+				break;
+			case kOcclusionQuery:
+				valid = glsuite::DrawOcclusionQuery();
+				break;
+			case kInstanced:
+				glsuite::DrawInstanced();
+				break;
+			case kTexture3D:
+				valid = glsuite::DrawTexture3D();
+				break;
 		}
+		return valid;
 	}
 
 	GLenum _DrainErrors()
@@ -368,7 +420,7 @@ private:
 		if (!asyncDirect)
 			glFinish();
 		const GLenum clearError = _DrainErrors();
-		_DrawCase(id);
+		const bool semanticValid = _DrawCase(id);
 		if (!asyncDirect)
 			glFinish();
 		const GLenum drawError = _DrainErrors();
@@ -388,8 +440,13 @@ private:
 			SwapBuffers();
 		UnlockGL();
 		printf("jr_gl_case end name=%s index=%u clear_error=%#x"
-			" draw_error=%#x elapsed_us=%" B_PRIdBIGTIME "\n",
-			name, index, clearError, drawError, system_time() - started);
+			" draw_error=%#x semantic=%s elapsed_us=%" B_PRIdBIGTIME "\n",
+			name, index, clearError, drawError,
+			semanticValid ? "pass" : "fail", system_time() - started);
+		if (clearError != GL_NO_ERROR || drawError != GL_NO_ERROR
+			|| !semanticValid) {
+			gCaseResult = 1;
+		}
 	}
 
 	void _RunSelectedCase()
@@ -471,7 +528,7 @@ main(int argc, char** argv)
 			return 2;
 		SuiteApplication application(static_cast<unsigned>(selected));
 		application.Run();
-		return 0;
+		return gCaseResult;
 	}
 	const bool p2Lab = argc == 2 && strcmp(argv[1], "--p2-lab") == 0;
 	if (argc != 1 && !p2Lab)
@@ -482,6 +539,36 @@ main(int argc, char** argv)
 	printf("jr_gl_suite begin cases=%u modes=%u\n", kCaseCount, modeCount);
 	unsigned launchFailures = 0;
 	unsigned caseFailures = 0;
+	if (p2Lab) {
+		const char* probeStages[][2] = {
+			{"persistent", "--render-persistent-test"},
+			{"residency", "--render-residency-test"}
+		};
+		for (unsigned index = 0;
+				index < sizeof(probeStages) / sizeof(probeStages[0]);
+				index++) {
+			char* arguments[] = {
+				const_cast<char*>("intel_valleyview_probe"),
+				const_cast<char*>(probeStages[index][1]),
+				NULL
+			};
+			pid_t child;
+			const int spawnStatus = posix_spawnp(&child, arguments[0], NULL,
+				NULL, arguments, environ);
+			int childStatus = 0;
+			const pid_t waited = spawnStatus == 0
+				? WaitForChild(child, childStatus) : -1;
+			printf("jr_p2_probe stage=%s spawn=%d waited=%" B_PRId32
+				" status=%#x\n", probeStages[index][0], spawnStatus,
+				static_cast<int32>(waited), childStatus);
+			if (spawnStatus != 0)
+				launchFailures++;
+			else if (waited < 0 || !WIFEXITED(childStatus)
+				|| WEXITSTATUS(childStatus) != 0) {
+				caseFailures++;
+			}
+		}
+	}
 	for (unsigned modeIndex = 0; modeIndex < modeCount; modeIndex++) {
 		setenv("VALLEYVIEW_GPU_MODE", modes[modeIndex], 1);
 		unsetenv("VALLEYVIEW_GPU_FAULT");
@@ -507,7 +594,7 @@ main(int argc, char** argv)
 				continue;
 			}
 			int childStatus = 0;
-			const pid_t waited = waitpid(child, &childStatus, 0);
+			const pid_t waited = WaitForChild(child, childStatus);
 			printf("jr_gl_suite child mode=%s name=%s index=%u waited=%"
 				B_PRId32 " status=%#x\n", modes[modeIndex],
 				kCases[index].name, index, static_cast<int32>(waited),

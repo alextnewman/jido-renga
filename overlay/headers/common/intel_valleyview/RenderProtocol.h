@@ -11,7 +11,7 @@
 namespace valleyview {
 
 constexpr uint32 kRenderProtocolMagic = 0x564c5652;
-constexpr uint16 kRenderProtocolVersion = 12;
+constexpr uint16 kRenderProtocolVersion = 13;
 constexpr uint32 kRenderSubmitMaxObjects = 64;
 constexpr uint32 kRenderMaxQueuedJobsPerClient = 32;
 constexpr uint32 kRenderMaxQueuedJobsPerDevice = 128;
@@ -147,7 +147,11 @@ struct RenderDeviceInfo {
 	uint64			apertureSize;
 	uint64			displayReservedOffset;
 	uint64			displayReservedSize;
-	uint64			reserved[4];
+	uint64			maxBufferSize;
+	uint64			maxClientBytes;
+	uint32			maxClientBuffers;
+	uint32			maxSubmitObjects;
+	uint64			reserved;
 };
 
 struct RenderBufferCreate {
@@ -237,7 +241,9 @@ enum RenderSubmitDiagnosticFlag : uint32 {
 	kRenderSubmitDisplayUnchanged = 1u << 16,
 	kRenderSubmitBcsUnchanged = 1u << 17,
 	kRenderSubmitPpgttControlProgrammed = 1u << 18,
-	kRenderSubmitPpgttControlRestored = 1u << 19
+	kRenderSubmitPpgttControlRestored = 1u << 19,
+	kRenderSubmitPersistentRetained = 1u << 20,
+	kRenderSubmitContextSwitched = 1u << 21
 };
 
 struct RenderSubmit {
@@ -368,6 +374,16 @@ struct RenderQueueInfo {
 	uint64			directPresentFailures;
 	uint64			directPresentsQueued;
 	uint64			directPresentsDropped;
+	uint64			persistentClaims;
+	uint64			persistentContextSwitches;
+	uint64			persistentContextReuses;
+	uint64			persistentReleases;
+	uint64			persistentFaultResets;
+	uint64			persistentRestoreFailures;
+	uint64			ggttBinds;
+	uint64			ggttEvictions;
+	uint64			ggttResidentBytes;
+	uint64			ggttResidentMaxBytes;
 	uint64			totalQueueLatencyUs;
 	uint64			maxQueueLatencyUs;
 	uint64			totalExecutionUs;

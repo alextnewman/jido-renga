@@ -13,7 +13,7 @@ using namespace valleyview;
 JR_TEST(intel_valleyview, validates_the_render_discovery_abi)
 {
 	JR_CHECK_EQ(kRenderProtocolMagic, 0x564c5652u);
-	JR_CHECK_EQ(kRenderProtocolVersion, 12u);
+	JR_CHECK_EQ(kRenderProtocolVersion, 13u);
 	JR_CHECK(sizeof(RenderDeviceInfo) < UINT16_MAX);
 	JR_CHECK(sizeof(RenderBufferCreate) < UINT16_MAX);
 	JR_CHECK(sizeof(RenderContextCreate) < UINT16_MAX);

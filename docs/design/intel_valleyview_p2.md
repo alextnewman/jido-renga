@@ -130,22 +130,28 @@ queued presents, 18 executed copies, seven drops, zero presentation failures,
 and zero mapped fallbacks. P0 retains its existing shadow-to-scanout worker;
 that ownership boundary is intentional.
 
-## First lab image
+## Integrated B+D+E candidate
 
-The P2 lab implements three runtime modes in one driver and renderer:
+Render protocol version 13 adds the integrated candidate:
 
 - `safe`: the proven synchronous P1 transaction;
 - `queued`: immutable enqueue, timeline fence, fair kernel worker, and Safe GL
   execution on the worker;
-- `direct`: queued Safe execution plus clipped BCS copies from the retired
-  Crocus color BO into P0's framebuffer shadow.
+- `persistent`: lifetime-owned ring, HWS, trusted shadow, hardware context, and
+  PPGTT workspace with reset only on fault or ownership release; and
+- `direct`: persistent command execution plus P2C presentation.
 
-The failure-only-reset ABI value is reserved but not accepted or advertised.
-Merely omitting reset cannot restore the context state changed by
-`MI_SET_CONTEXT`; P2B must retain a kernel-owned hardware context and switch it
-explicitly. `direct` removes GPU readback, the temporary `BBitmap`, and the CPU
-direct-buffer copy, but P0 still performs its existing framebuffer-to-scanout
-copy and vblank latch.
+Initialized client switches save and restore extended context state. Adjacent
+jobs on the same owner omit redundant `MI_SET_CONTEXT`; first use remains
+restore-inhibited. Mixed Safe work explicitly releases persistent ownership
+back to the captured baseline.
+
+User render BOs are PPGTT-only by default. Their stable render VA survives
+lazy GGTT bind/evict cycles used by BCS presentation and diagnostics. The
+candidate raises the truthful bootstrap limits to 64 MiB per BO, 256 MiB and
+256 BOs per client, while retaining the 64-object submission bound. Physical
+pages remain locked; swapping physical backing is later P2D work and is not
+claimed by this milestone.
 
 Run the complete lab matrix with:
 
@@ -153,15 +159,15 @@ Run the complete lab matrix with:
 intel_valleyview_gl_suite --p2-lab
 ```
 
-After the queue gate has passed, the command runs one explicit Safe control,
-one queued control, and all 18 direct cases from a `BDirectWindow`. It does not
-repeat the raw queue burst, failure injection, or complete Safe/queued matrices.
-Queue captures report queue/execution latency, direct presentation results, and
-submission cleanup status. The first direct case also submits eight presentation
-requests against one retired render BO in a single swap. This bypasses normal
-render-buffer backpressure and deterministically exercises coalescing; require
-multiple queued presents, at least one dropped present, ordered fence
-retirement, and bounded enqueue time.
+The command first runs a persistent two-client switch/fault/recovery probe and
+a residency probe with 80 one-MiB BOs plus one 32-MiB BO. It then runs one Safe
+control, one queued control, and all 24 direct cases from a `BDirectWindow`.
+The first direct case retains the proven eight-request collapse burst.
+
+Require zero healthy resets, nonzero context switches and reuses, exactly one
+fault reset, zero restore failures, stable data beyond the former 64-MiB/64-BO
+limits, balanced GGTT bind/evict counters, 24 semantic GL passes, P2C frame
+collapse, and clean teardown.
 
 ## Required evidence
 

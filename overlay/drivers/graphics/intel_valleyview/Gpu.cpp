@@ -1102,6 +1102,58 @@ RestoreRcsSubmissionCache(volatile uint8* registers,
 	return status;
 }
 
+status_t
+RestorePersistentRcsBaselineLocked(ValleyViewDevice& device,
+	volatile uint8* registers, valleyview::RenderSubmit& submit)
+{
+	bool ringSafe = false;
+	submit.resetStatus = B_NO_INIT;
+	submit.ringRestoreStatus = RestoreRcsSubmissionRing(registers,
+		device.rcsPersistentRingBaseline, true, ringSafe, submit);
+	device.rcsResets++;
+	if (submit.resetStatus == B_OK) {
+		submit.diagnosticFlags
+			|= valleyview::kRenderSubmitResetPerformed;
+	}
+
+	for (uint32 index = 0; index < 3; index++)
+		submit.l3Before[index] = device.rcsPersistentL3Baseline[index];
+	submit.active.instpm = device.rcsPersistentRingBaseline.instpm;
+	submit.cacheRestoreStatus
+		= ringSafe ? RestoreRcsSubmissionCache(registers, submit)
+			: B_NOT_ALLOWED;
+	submit.ppgttControlBefore[0]
+		= device.rcsPersistentPpgttBaseline[0];
+	submit.ppgttControlBefore[1]
+		= device.rcsPersistentPpgttBaseline[1];
+	submit.ppgttControlRestoreStatus
+		= RestoreRcsPpgttControl(registers, submit);
+
+	status_t status = submit.ringRestoreStatus;
+	if (status == B_OK)
+		status = submit.cacheRestoreStatus;
+	if (status == B_OK)
+		status = submit.ppgttControlRestoreStatus;
+	if (status == B_OK && ringSafe) {
+		submit.diagnosticFlags |= valleyview::kRenderSubmitRingRestored
+			| valleyview::kRenderSubmitCacheRestored
+			| valleyview::kRenderSubmitPpgttControlRestored;
+	}
+
+	device.rcsPersistentGeneration++;
+	if (device.rcsPersistentGeneration == 0)
+		device.rcsPersistentGeneration++;
+	device.rcsPersistentOwner = NULL;
+	device.rcsPersistentState.owned = false;
+	device.rcsPersistentState.owner = 0;
+	if (status != B_OK) {
+		device.rcsPersistentRestoreFailures++;
+		device.gpuFaulted = true;
+		device.renderMemoryQuarantined = true;
+	}
+	return status;
+}
+
 
 bool
 VerifyPage(const uint32* page, uint32 sentinel, uint32& mismatchOffset,
@@ -1452,6 +1504,15 @@ BindRenderBufferGgtt(ValleyViewDevice& device,
 	}
 
 	buffer.ggttOffset = search.offset;
+	if (buffer.handle != 0) {
+		device.renderGgttBinds++;
+		device.renderGgttResidentBytes += buffer.size;
+		if (device.renderGgttResidentBytes
+				> device.renderGgttResidentMaxBytes) {
+			device.renderGgttResidentMaxBytes
+				= device.renderGgttResidentBytes;
+		}
+	}
 	mutex_unlock(&device.bcsLock);
 	return B_OK;
 }
@@ -1492,9 +1553,16 @@ UnbindRenderBufferGgtt(ValleyViewDevice& device,
 		if (observed != buffer.savedPtes[page])
 			status = B_IO_ERROR;
 	}
-	if (status == B_OK)
+	if (status == B_OK) {
 		buffer.ggttOffset = valleyview::kInvalidRenderGgttOffset;
-	else {
+		if (buffer.handle != 0) {
+			device.renderGgttEvictions++;
+			if (buffer.size <= device.renderGgttResidentBytes)
+				device.renderGgttResidentBytes -= buffer.size;
+			else
+				device.renderGgttResidentBytes = 0;
+		}
+	} else {
 		buffer.quarantined = true;
 		device.renderMemoryQuarantined = true;
 	}
@@ -1763,6 +1831,310 @@ cleanup:
 	}
 	mutex_unlock(&device.bcsLock);
 	return status;
+}
+
+status_t
+ExecutePersistentRcsSubmission(ValleyViewClient& client,
+	ValleyViewRenderBuffer& workspace, uint32 ppDirBase,
+	valleyview::RenderSubmit& submit)
+{
+	ValleyViewDevice& device = *client.device;
+	uint32* result = static_cast<uint32*>(workspace.address)
+		+ valleyview::kRcsSubmitResultPage
+			* valleyview::kPageSize / sizeof(uint32);
+	mutex_lock(&device.bcsLock);
+	volatile uint8* registers = device.registers;
+	valleyview::GpuDiagnostics forcewake = {};
+	bool gtWakeChanged = false;
+	bool forcewakeAttempted = false;
+	bool baselineCaptured = device.rcsPersistentState.owned;
+	bool engineTouched = false;
+	status_t status = B_OK;
+	bool firstClaim = !device.rcsPersistentState.owned;
+	bool switching = false;
+
+	ReadGpuRegisters(registers, submit.globalBefore);
+	ReadRcsRegisters(registers, submit.before);
+	const uint64 displaySignatureBefore = DisplaySignature(registers);
+	submit.diagnosticFlags |= valleyview::kRenderSubmitSnapshotCaptured;
+	submit.stage = valleyview::kRenderSubmitStageSnapshot;
+	if (!device.nativeActive || device.gpuFaulted
+		|| device.p0MemoryQuarantined || device.renderMemoryQuarantined) {
+		status = B_NO_INIT;
+		goto cleanup;
+	}
+	status = EnableGtWake(registers, submit.globalBefore, gtWakeChanged);
+	if (status != B_OK)
+		goto cleanup;
+	forcewakeAttempted = true;
+	status = AcquireForcewake(registers, forcewake);
+	if (status != B_OK)
+		goto cleanup;
+	submit.diagnosticFlags |= valleyview::kRenderSubmitForcewakeAcquired;
+	status = ClearRcsFault(registers);
+	if (status != B_OK)
+		goto cleanup;
+
+	submit.l3Before[0] = ReadMmio(registers, valleyview::kRcsL3SqcReg1);
+	submit.l3Before[1] = ReadMmio(registers, valleyview::kRcsL3Control2);
+	submit.l3Before[2] = ReadMmio(registers, valleyview::kRcsL3Control3);
+	ReadRcsRegisters(registers, submit.active);
+	if (!firstClaim) {
+		ValleyViewClient* owner = device.rcsPersistentOwner;
+		ValleyViewRenderBuffer* ownerWorkspace = owner != NULL
+			? owner->ppgtt.submissionBuffer : NULL;
+		const bool retained = ownerWorkspace != NULL
+			&& valleyview::IsRcsPersistentRingRetained(submit.active,
+				ownerWorkspace->ggttOffset
+					+ valleyview::kRcsSubmitRingPage * valleyview::kPageSize,
+				ownerWorkspace->ggttOffset
+					+ valleyview::kRcsSubmitStatusPage
+						* valleyview::kPageSize,
+				owner->ppgtt.ppDirBase);
+		if (!retained && valleyview::IsRcsRingAvailable(submit.active)) {
+			device.rcsPersistentOwner = NULL;
+			device.rcsPersistentState.owned = false;
+			device.rcsPersistentState.owner = 0;
+			firstClaim = true;
+			baselineCaptured = false;
+		} else if (!retained) {
+			status = B_IO_ERROR;
+			engineTouched = true;
+			goto cleanup;
+		}
+	}
+	if (firstClaim) {
+		if (!valleyview::IsRcsRingAvailable(submit.active)) {
+			status = B_BUSY;
+			goto cleanup;
+		}
+		device.rcsPersistentGlobalBaseline = submit.globalBefore;
+		device.rcsPersistentRingBaseline = submit.active;
+		device.rcsPersistentDisplayBaseline = displaySignatureBefore;
+		for (uint32 index = 0; index < 3; index++)
+			device.rcsPersistentL3Baseline[index] = submit.l3Before[index];
+		status = ProgramRcsPpgttControl(registers, submit, engineTouched);
+		device.rcsPersistentPpgttBaseline[0]
+			= submit.ppgttControlBefore[0];
+		device.rcsPersistentPpgttBaseline[1]
+			= submit.ppgttControlBefore[1];
+		baselineCaptured = true;
+	} else {
+		submit.ppgttControlBefore[0]
+			= device.rcsPersistentPpgttBaseline[0];
+		submit.ppgttControlBefore[1]
+			= device.rcsPersistentPpgttBaseline[1];
+		status = B_OK;
+	}
+	switching = !firstClaim
+		&& device.rcsPersistentState.owner != client.persistentId;
+	if (status != B_OK)
+		goto cleanup;
+	submit.diagnosticFlags
+		|= valleyview::kRenderSubmitPpgttControlProgrammed
+			| valleyview::kRenderSubmitRingAvailable;
+
+	engineTouched = true;
+	status = PrepareRcsRing(registers,
+		workspace.ggttOffset
+			+ valleyview::kRcsSubmitRingPage * valleyview::kPageSize,
+		workspace.ggttOffset
+			+ valleyview::kRcsSubmitStatusPage * valleyview::kPageSize);
+	if (status != B_OK)
+		goto cleanup;
+	status = ProgramRcsPpgtt(registers, ppDirBase);
+	if (status != B_OK)
+		goto cleanup;
+	submit.diagnosticFlags |= valleyview::kRenderSubmitPpgttProgrammed
+		| valleyview::kRenderSubmitTlbFlushed;
+	submit.stage = valleyview::kRenderSubmitStagePpgttProgrammed;
+	status = EnableRcsRing(registers, submit.ringTailBytes);
+	if (status != B_OK)
+		goto cleanup;
+	submit.diagnosticFlags |= valleyview::kRenderSubmitRingStarted;
+	submit.stage = valleyview::kRenderSubmitStageRingStarted;
+
+	status = WaitForRcsCompletion(result, submit.completionMarker);
+	memory_read_barrier();
+	submit.ppDirBaseObserved[0]
+		= result[valleyview::kRcsPpgttLoadPostOffset / sizeof(uint32)];
+	submit.ppDirBaseObserved[1]
+		= result[valleyview::kRcsPpgttSecondLoadPostOffset / sizeof(uint32)];
+	submit.ppgttBarrierObserved[0]
+		= result[valleyview::kRcsPpgttFirstFlushOffset / sizeof(uint32)];
+	submit.ppgttBarrierObserved[1]
+		= result[valleyview::kRcsPpgttFirstInvalidateOffset / sizeof(uint32)];
+	submit.ppgttBarrierObserved[2]
+		= result[valleyview::kRcsPpgttSecondInvalidateOffset / sizeof(uint32)];
+	submit.ppgttBarrierObserved[3]
+		= result[valleyview::kRcsPpgttFinalFlushOffset / sizeof(uint32)];
+	submit.observedCompletionMarker
+		= result[valleyview::kRcsCompletionOffset / sizeof(uint32)];
+	if (submit.observedCompletionMarker == submit.completionMarker) {
+		submit.diagnosticFlags
+			|= valleyview::kRenderSubmitCompletionVerified;
+	}
+	if (status == B_OK
+		&& (submit.diagnosticFlags
+			& valleyview::kRenderSubmitCompletionVerified) == 0) {
+		status = B_BAD_DATA;
+	}
+	if (status == B_OK)
+		submit.stage = valleyview::kRenderSubmitStageCompleted;
+	if (status == B_OK)
+		status = WaitForRcsIdle(registers);
+	if (status == B_OK)
+		status = WriteGt(registers, valleyview::kRcsRingControl, 0);
+	if (status == B_OK)
+		ReadMmio(registers, valleyview::kRcsRingControl);
+	if (status == B_OK) {
+		submit.cacheRestoreStatus
+			= RestoreRcsSubmissionCache(registers, submit);
+		status = submit.cacheRestoreStatus;
+	}
+	if (status == B_OK) {
+		submit.diagnosticFlags
+			|= valleyview::kRenderSubmitCacheRestored;
+		ReadRcsRegisters(registers, submit.after);
+		if (!valleyview::IsRcsPersistentRingRetained(submit.after,
+				workspace.ggttOffset
+					+ valleyview::kRcsSubmitRingPage * valleyview::kPageSize,
+				workspace.ggttOffset
+					+ valleyview::kRcsSubmitStatusPage * valleyview::kPageSize,
+				ppDirBase)) {
+			status = B_IO_ERROR;
+		}
+	}
+	ReadGpuRegisters(registers, submit.globalAfter);
+	if (status == B_OK
+		&& DisplaySignature(registers) != displaySignatureBefore) {
+		status = B_IO_ERROR;
+	}
+	if (status == B_OK
+		&& !BcsStateUnchanged(submit.globalBefore, submit.globalAfter)) {
+		status = B_IO_ERROR;
+	}
+	if (status == B_OK) {
+		submit.ringRestoreStatus = B_OK;
+		submit.ppgttControlRestoreStatus = B_OK;
+		submit.diagnosticFlags |= valleyview::kRenderSubmitRingRestored
+			| valleyview::kRenderSubmitDisplayUnchanged
+			| valleyview::kRenderSubmitBcsUnchanged
+			| valleyview::kRenderSubmitPersistentRetained;
+		if (switching)
+			submit.diagnosticFlags
+				|= valleyview::kRenderSubmitContextSwitched;
+		if (device.rcsPersistentGeneration == 0)
+			device.rcsPersistentGeneration = 1;
+		valleyview::SelectRcsPersistentOwner(device.rcsPersistentState,
+			client.persistentId);
+		device.rcsPersistentOwner = &client;
+	}
+
+cleanup:
+	if (status != B_OK && engineTouched) {
+		CaptureRcsSubmissionFault(registers, submit);
+		if (baselineCaptured) {
+			status_t restoreStatus = RestorePersistentRcsBaselineLocked(device,
+				registers, submit);
+			device.rcsPersistentFaultResets++;
+			if (restoreStatus != B_OK)
+				status = restoreStatus;
+		}
+	}
+	if (forcewakeAttempted) {
+		submit.forcewakeReleaseStatus
+			= ReleaseForcewake(registers, forcewake);
+		if (status == B_OK)
+			status = submit.forcewakeReleaseStatus;
+	} else
+		submit.forcewakeReleaseStatus = B_OK;
+	submit.wakeRestoreStatus = RestoreGtWake(registers,
+		submit.globalBefore, gtWakeChanged);
+	if (status == B_OK)
+		status = submit.wakeRestoreStatus;
+	if (status != B_OK && device.rcsPersistentState.owned
+		&& (submit.forcewakeReleaseStatus != B_OK
+			|| submit.wakeRestoreStatus != B_OK)) {
+		device.gpuFaulted = true;
+		device.renderMemoryQuarantined = true;
+	}
+	mutex_unlock(&device.bcsLock);
+	return status;
+}
+
+status_t
+ReleasePersistentRcsOwnership(ValleyViewDevice& device,
+	ValleyViewClient* expectedOwner, bool fault)
+{
+	mutex_lock(&device.lock);
+	if (!device.rcsPersistentState.owned
+		|| (expectedOwner != NULL
+			&& device.rcsPersistentOwner != expectedOwner)) {
+		mutex_unlock(&device.lock);
+		return B_OK;
+	}
+	ValleyViewClient* owner = device.rcsPersistentOwner;
+
+	mutex_lock(&device.presentLock);
+	mutex_lock(&device.bcsLock);
+	volatile uint8* registers = device.registers;
+	valleyview::GpuRegisterSnapshot before = {};
+	valleyview::GpuDiagnostics forcewake = {};
+	valleyview::RenderSubmit submit = {};
+	submit.resetStatus = B_NO_INIT;
+	submit.ringRestoreStatus = B_NO_INIT;
+	submit.cacheRestoreStatus = B_NO_INIT;
+	submit.ppgttControlRestoreStatus = B_NO_INIT;
+	submit.forcewakeReleaseStatus = B_NO_INIT;
+	submit.wakeRestoreStatus = B_NO_INIT;
+	bool gtWakeChanged = false;
+	bool forcewakeAttempted = false;
+	ReadGpuRegisters(registers, before);
+	status_t status = EnableGtWake(registers, before, gtWakeChanged);
+	if (status == B_OK) {
+		forcewakeAttempted = true;
+		status = AcquireForcewake(registers, forcewake);
+	}
+	if (status == B_OK)
+		status = RestorePersistentRcsBaselineLocked(device, registers, submit);
+	if (forcewakeAttempted) {
+		submit.forcewakeReleaseStatus
+			= ReleaseForcewake(registers, forcewake);
+		if (status == B_OK)
+			status = submit.forcewakeReleaseStatus;
+	}
+	submit.wakeRestoreStatus = RestoreGtWake(registers, before, gtWakeChanged);
+	if (status == B_OK)
+		status = submit.wakeRestoreStatus;
+	if (status == B_OK) {
+		if (fault)
+			device.rcsPersistentFaultResets++;
+		else
+			device.rcsPersistentReleases++;
+	}
+	else {
+		device.gpuFaulted = true;
+		device.renderMemoryQuarantined = true;
+		if (owner != NULL) {
+			owner->ppgtt.quarantined = true;
+			if (owner->ppgtt.submissionBuffer != NULL)
+				owner->ppgtt.submissionBuffer->quarantined = true;
+		}
+	}
+	device.rcsPersistentOwner = NULL;
+	device.rcsPersistentState.owned = false;
+	device.rcsPersistentState.owner = 0;
+	mutex_unlock(&device.bcsLock);
+	mutex_unlock(&device.presentLock);
+	mutex_unlock(&device.lock);
+	return status;
+}
+
+status_t
+ReleasePersistentRcsClient(ValleyViewClient& client)
+{
+	return ReleasePersistentRcsOwnership(*client.device, &client);
 }
 
 

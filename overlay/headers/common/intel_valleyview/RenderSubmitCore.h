@@ -27,7 +27,7 @@ inline bool
 ValidateRenderSubmitObjectHandles(const uint32* handles, uint32 count,
 	uint32 batchHandle)
 {
-	if (handles == NULL || count == 0 || count > kRenderMaxClientBuffers
+	if (handles == NULL || count == 0 || count > kRenderSubmitMaxObjects
 		|| batchHandle == 0) {
 		return false;
 	}

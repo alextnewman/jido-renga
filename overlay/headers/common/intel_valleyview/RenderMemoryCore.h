@@ -10,9 +10,9 @@
 
 namespace valleyview {
 
-constexpr uint64 kRenderMaxBufferSize = 16ull * 1024 * 1024;
-constexpr uint64 kRenderMaxClientBytes = 64ull * 1024 * 1024;
-constexpr uint32 kRenderMaxClientBuffers = kRenderSubmitMaxObjects;
+constexpr uint64 kRenderMaxBufferSize = 64ull * 1024 * 1024;
+constexpr uint64 kRenderMaxClientBytes = 256ull * 1024 * 1024;
+constexpr uint32 kRenderMaxClientBuffers = 256;
 constexpr uint32 kRenderFirstGgttPage = 1;
 constexpr uint32 kInvalidRenderGgttOffset = UINT32_MAX;
 constexpr uint32 kInvalidRenderPpgttOffset = UINT32_MAX;

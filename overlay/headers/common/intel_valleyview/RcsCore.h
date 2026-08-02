@@ -83,6 +83,7 @@ constexpr uint32 kMiArbitrationEnable = 1u << 0;
 constexpr uint32 kMiSetContext = 0x0c000000;
 constexpr uint32 kMiContextAddressGgtt = 1u << 8;
 constexpr uint32 kMiContextSaveExtendedState = 1u << 3;
+constexpr uint32 kMiContextRestoreExtendedState = 1u << 2;
 constexpr uint32 kMiContextRestoreInhibit = 1u << 0;
 constexpr uint32 kRcsPpgttStallFlags
 	= kPipeControlQwordWrite | kPipeControlCsStall
@@ -122,6 +123,9 @@ constexpr size_t kRcsBatchCommandCount = 6;
 constexpr size_t kRcsRingCommandCount = 10;
 constexpr size_t kRcsCombinedRingCommandCount = 12;
 constexpr size_t kRcsSubmitRingCommandCount = 58;
+constexpr size_t kRcsSubmitContextSwitchCommandCount = 5;
+constexpr size_t kRcsSubmitRingNoSwitchCommandCount
+	= kRcsSubmitRingCommandCount - kRcsSubmitContextSwitchCommandCount + 1;
 
 
 struct RcsRegisterSnapshot {
@@ -148,6 +152,53 @@ struct RcsRegisterSnapshot {
 	uint32	timestamp;
 };
 
+enum RcsPersistentTransition : uint32 {
+	kRcsPersistentInvalid = 0,
+	kRcsPersistentClaim,
+	kRcsPersistentReuse,
+	kRcsPersistentSwitch
+};
+
+struct RcsPersistentOwnershipState {
+	uint32	owner;
+	uint64	claims;
+	uint64	reuses;
+	uint64	switches;
+	bool	owned;
+};
+
+
+inline RcsPersistentTransition
+SelectRcsPersistentOwner(RcsPersistentOwnershipState& state, uint32 owner)
+{
+	if (owner == 0)
+		return kRcsPersistentInvalid;
+	if (!state.owned) {
+		state.owned = true;
+		state.owner = owner;
+		state.claims++;
+		return kRcsPersistentClaim;
+	}
+	if (state.owner == owner) {
+		state.reuses++;
+		return kRcsPersistentReuse;
+	}
+	state.owner = owner;
+	state.switches++;
+	return kRcsPersistentSwitch;
+}
+
+
+inline bool
+ReleaseRcsPersistentOwner(RcsPersistentOwnershipState& state, uint32 owner)
+{
+	if (!state.owned || owner == 0 || state.owner != owner)
+		return false;
+	state.owned = false;
+	state.owner = 0;
+	return true;
+}
+
 
 inline bool
 IsRcsRingAvailable(const RcsRegisterSnapshot& snapshot)
@@ -159,6 +210,24 @@ IsRcsRingAvailable(const RcsRegisterSnapshot& snapshot)
 		&& (snapshot.ccid & kRcsCcidEnable) == 0
 		&& (snapshot.head & kRingAddressMask)
 			== (snapshot.tail & kRingAddressMask);
+}
+
+inline bool
+IsRcsPersistentRingRetained(const RcsRegisterSnapshot& observed,
+	uint32 ringOffset, uint32 statusOffset, uint32 ppDirBase)
+{
+	return (observed.control & kRingValid) == 0
+		&& (observed.miMode & kRingStop) == 0
+		&& (observed.miMode & kRcsModeIdle) != 0
+		&& (observed.head & kRingAddressMask)
+			== (observed.tail & kRingAddressMask)
+		&& observed.start == ringOffset
+		&& observed.hws == statusOffset
+		&& (observed.mode & kRingPpgttEnable) != 0
+		&& (observed.ccid & kRcsCcidEnable) != 0
+		&& observed.ppDirDclv == UINT32_MAX
+		&& observed.ppDirBase == ppDirBase
+		&& (observed.faultRegister & kRcsFaultValid) == 0;
 }
 
 
@@ -294,9 +363,12 @@ BuildRcsCombinedDiagnosticRing(uint32* commands, size_t capacity,
 inline size_t
 BuildRcsSubmitRing(uint32* commands, size_t capacity, uint32 batchOffset,
 	uint32 resultOffset, uint32 contextOffset, uint32 ppDirBase,
-	uint32 completionMarker)
+	uint32 completionMarker, bool switchContext = true,
+	bool restoreInhibit = true)
 {
-	if (commands == NULL || capacity < kRcsSubmitRingCommandCount
+	const size_t expectedCount = switchContext
+		? kRcsSubmitRingCommandCount : kRcsSubmitRingNoSwitchCommandCount;
+	if (commands == NULL || capacity < expectedCount
 		|| (batchOffset & kPageMask) != 0
 		|| (resultOffset & kPageMask) != 0
 		|| resultOffset > UINT32_MAX - kRcsPpgttFinalFlushOffset
@@ -336,12 +408,17 @@ BuildRcsSubmitRing(uint32* commands, size_t capacity, uint32 batchOffset,
 		(kRcsInstpmTlbInvalidate << 16) | kRcsInstpmTlbInvalidate);
 	ADD_PIPE_CONTROL(kRcsCompletionFlags,
 		resultOffset + kRcsPpgttFirstFlushOffset, 1);
-	ADD(kMiArbitrationControl);
-	ADD(kMiSetContext);
-	ADD(contextOffset | kMiContextAddressGgtt
-		| kMiContextSaveExtendedState | kMiContextRestoreInhibit);
-	ADD(kMiNoop);
-	ADD(kMiArbitrationControl | kMiArbitrationEnable);
+	if (switchContext) {
+		ADD(kMiArbitrationControl);
+		ADD(kMiSetContext);
+		ADD(contextOffset | kMiContextAddressGgtt
+			| kMiContextSaveExtendedState
+			| (!restoreInhibit
+				? kMiContextRestoreExtendedState : 0)
+			| (restoreInhibit ? kMiContextRestoreInhibit : 0));
+		ADD(kMiNoop);
+		ADD(kMiArbitrationControl | kMiArbitrationEnable);
+	}
 	ADD_PIPE_CONTROL(kRcsPpgttStallFlags,
 		resultOffset + kRcsPpgttFirstInvalidateOffset, 1);
 	ADD_PIPE_CONTROL(kRcsPpgttInvalidateFlags,
@@ -363,6 +440,8 @@ BuildRcsSubmitRing(uint32* commands, size_t capacity, uint32 batchOffset,
 	ADD_SRM(kRcsRingTimestamp, resultOffset + kRcsTimestampOffset);
 	ADD_PIPE_CONTROL(kRcsCompletionFlags,
 		resultOffset + kRcsCompletionOffset, completionMarker);
+	if (!switchContext)
+		ADD(kMiNoop);
 	ADD(kMiNoop);
 	ADD(kMiNoop);
 
@@ -370,7 +449,7 @@ BuildRcsSubmitRing(uint32* commands, size_t capacity, uint32 batchOffset,
 #undef ADD_SRM
 #undef ADD_LRI
 #undef ADD
-	return count == kRcsSubmitRingCommandCount ? count : 0;
+	return count == expectedCount ? count : 0;
 }
 
 
