@@ -494,6 +494,11 @@ UninitDriver(void* cookie)
 	if (device->sharedArea >= B_OK)
 		delete_area(device->sharedArea);
 	ShutdownRenderQueue(*device);
+	status_t persistentStatus = ReleasePersistentRcsOwnership(*device);
+	if (persistentStatus != B_OK) {
+		dprintf("intel_valleyview: final persistent power release failed: %"
+			B_PRId32 "\n", persistentStatus);
+	}
 	ShutdownP0(*device);
 	if (!device->p0MemoryQuarantined)
 		ReleaseP0Areas(*device);

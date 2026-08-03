@@ -115,9 +115,13 @@ The version 12 Winky baseline is an eight-request single-BO burst at queue depth
 six with seven same-stream drops, 1–16 us ioctl latency, ordered successful
 retirement, and no fallback. Preserve it alongside the 18/18 direct matrix.
 
-For the version 13 B+D+E candidate, `--p2-lab` must run the persistent
+For the version 14 B+D+E candidate, `--p2-lab` must run the persistent
 two-client switch/fault probe and residency probe before one Safe, one queued,
 and 24 direct semantic cases. Require no healthy resets, a nonzero switch/reuse
 count, one fault reset, no restore failure, balanced lazy GGTT binds/evictions,
 and stable data for 112 MiB across 81 BOs. Treat physical backing as locked;
 do not call this physical-page eviction.
+
+Persistent ownership includes the render/media forcewake and GT-wake reference.
+BCS borrows it under `bcsLock`; release it only after reset-to-baseline on
+fault, Safe handoff, teardown, or final driver shutdown.

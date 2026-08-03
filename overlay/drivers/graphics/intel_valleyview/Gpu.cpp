@@ -1154,6 +1154,32 @@ RestorePersistentRcsBaselineLocked(ValleyViewDevice& device,
 	return status;
 }
 
+status_t
+ReleasePersistentPowerLocked(ValleyViewDevice& device,
+	volatile uint8* registers)
+{
+	if (!device.rcsPersistentForcewakeHeld)
+		return B_OK;
+	status_t status = B_OK;
+	if (device.rcsPersistentForcewake.flags != 0) {
+		status = ReleaseForcewake(registers,
+			device.rcsPersistentForcewake);
+		if (status == B_OK)
+			device.rcsPersistentForcewake = {};
+	}
+	if (status == B_OK && device.rcsPersistentWakeChanged) {
+		status = RestoreGtWake(registers,
+			device.rcsPersistentGlobalBaseline, true);
+		if (status == B_OK)
+			device.rcsPersistentWakeChanged = false;
+	}
+	if (status == B_OK && device.rcsPersistentForcewake.flags == 0
+		&& !device.rcsPersistentWakeChanged) {
+		device.rcsPersistentForcewakeHeld = false;
+	}
+	return status;
+}
+
 
 bool
 VerifyPage(const uint32* page, uint32 sentinel, uint32& mismatchOffset,
@@ -1260,16 +1286,30 @@ SubmitBcsCommandsLocked(ValleyViewDevice& device, uint32 tailBytes,
 	bool forcewakeAttempted = false;
 	bool ringStarted = false;
 	bool resetBcs = false;
+	const bool borrowedPersistentForcewake
+		= device.rcsPersistentForcewakeHeld
+			&& device.rcsPersistentForcewake.flags != 0;
 	status_t cleanupStatus = B_OK;
-	status_t status = EnableGtWake(registers, diagnostics.before,
-		gtWakeChanged);
-	if (status != B_OK)
-		goto cleanup;
+	status_t status = B_OK;
+	if (borrowedPersistentForcewake) {
+		if ((ReadMmio(registers, valleyview::kForcewakeAckRender)
+				& valleyview::kForcewakeKernel) == 0
+			|| (ReadMmio(registers, valleyview::kForcewakeAckMedia)
+				& valleyview::kForcewakeKernel) == 0) {
+			status = B_IO_ERROR;
+			goto cleanup;
+		}
+	} else {
+		status = EnableGtWake(registers, diagnostics.before,
+			gtWakeChanged);
+		if (status != B_OK)
+			goto cleanup;
 
-	forcewakeAttempted = true;
-	status = AcquireForcewake(registers, diagnostics);
-	if (status != B_OK)
-		goto cleanup;
+		forcewakeAttempted = true;
+		status = AcquireForcewake(registers, diagnostics);
+		if (status != B_OK)
+			goto cleanup;
+	}
 	ReadGpuRegisters(registers, diagnostics.active);
 	if (!BcsAvailable(diagnostics.active)) {
 		status = B_BUSY;
@@ -1313,10 +1353,12 @@ cleanup:
 		if (status == B_OK)
 			status = cleanupStatus;
 	}
-	cleanupStatus = RestoreGtWake(registers, diagnostics.before,
-		gtWakeChanged);
-	if (status == B_OK)
-		status = cleanupStatus;
+	if (!borrowedPersistentForcewake) {
+		cleanupStatus = RestoreGtWake(registers, diagnostics.before,
+			gtWakeChanged);
+		if (status == B_OK)
+			status = cleanupStatus;
+	}
 
 	if (status != B_OK) {
 		device.bcsFailures++;
@@ -1849,9 +1891,11 @@ ExecutePersistentRcsSubmission(ValleyViewClient& client,
 	bool forcewakeAttempted = false;
 	bool baselineCaptured = device.rcsPersistentState.owned;
 	bool engineTouched = false;
+	bool powerVerified = false;
 	status_t status = B_OK;
 	bool firstClaim = !device.rcsPersistentState.owned;
 	bool switching = false;
+	const bool inheritedForcewake = device.rcsPersistentForcewakeHeld;
 
 	ReadGpuRegisters(registers, submit.globalBefore);
 	ReadRcsRegisters(registers, submit.before);
@@ -1863,13 +1907,28 @@ ExecutePersistentRcsSubmission(ValleyViewClient& client,
 		status = B_NO_INIT;
 		goto cleanup;
 	}
-	status = EnableGtWake(registers, submit.globalBefore, gtWakeChanged);
-	if (status != B_OK)
-		goto cleanup;
-	forcewakeAttempted = true;
-	status = AcquireForcewake(registers, forcewake);
-	if (status != B_OK)
-		goto cleanup;
+	if (inheritedForcewake) {
+		const uint32 renderAck = ReadMmio(registers,
+			valleyview::kForcewakeAckRender);
+		const uint32 mediaAck = ReadMmio(registers,
+			valleyview::kForcewakeAckMedia);
+		if ((renderAck & valleyview::kForcewakeKernel) == 0
+			|| (mediaAck & valleyview::kForcewakeKernel) == 0) {
+			status = B_IO_ERROR;
+			engineTouched = true;
+			goto cleanup;
+		}
+		powerVerified = true;
+	} else {
+		status = EnableGtWake(registers, submit.globalBefore, gtWakeChanged);
+		if (status != B_OK)
+			goto cleanup;
+		forcewakeAttempted = true;
+		status = AcquireForcewake(registers, forcewake);
+		if (status != B_OK)
+			goto cleanup;
+		powerVerified = true;
+	}
 	submit.diagnosticFlags |= valleyview::kRenderSubmitForcewakeAcquired;
 	status = ClearRcsFault(registers);
 	if (status != B_OK)
@@ -1896,7 +1955,7 @@ ExecutePersistentRcsSubmission(ValleyViewClient& client,
 			device.rcsPersistentState.owned = false;
 			device.rcsPersistentState.owner = 0;
 			firstClaim = true;
-			baselineCaptured = false;
+			baselineCaptured = inheritedForcewake;
 		} else if (!retained) {
 			status = B_IO_ERROR;
 			engineTouched = true;
@@ -1908,16 +1967,20 @@ ExecutePersistentRcsSubmission(ValleyViewClient& client,
 			status = B_BUSY;
 			goto cleanup;
 		}
-		device.rcsPersistentGlobalBaseline = submit.globalBefore;
-		device.rcsPersistentRingBaseline = submit.active;
-		device.rcsPersistentDisplayBaseline = displaySignatureBefore;
-		for (uint32 index = 0; index < 3; index++)
-			device.rcsPersistentL3Baseline[index] = submit.l3Before[index];
+		if (!inheritedForcewake) {
+			device.rcsPersistentGlobalBaseline = submit.globalBefore;
+			device.rcsPersistentRingBaseline = submit.active;
+			device.rcsPersistentDisplayBaseline = displaySignatureBefore;
+			for (uint32 index = 0; index < 3; index++)
+				device.rcsPersistentL3Baseline[index] = submit.l3Before[index];
+		}
 		status = ProgramRcsPpgttControl(registers, submit, engineTouched);
-		device.rcsPersistentPpgttBaseline[0]
-			= submit.ppgttControlBefore[0];
-		device.rcsPersistentPpgttBaseline[1]
-			= submit.ppgttControlBefore[1];
+		if (!inheritedForcewake) {
+			device.rcsPersistentPpgttBaseline[0]
+				= submit.ppgttControlBefore[0];
+			device.rcsPersistentPpgttBaseline[1]
+				= submit.ppgttControlBefore[1];
+		}
 		baselineCaptured = true;
 	} else {
 		submit.ppgttControlBefore[0]
@@ -2042,35 +2105,56 @@ ExecutePersistentRcsSubmission(ValleyViewClient& client,
 		valleyview::SelectRcsPersistentOwner(device.rcsPersistentState,
 			client.persistentId);
 		device.rcsPersistentOwner = &client;
+		if (!inheritedForcewake) {
+			device.rcsPersistentForcewake = forcewake;
+			device.rcsPersistentWakeChanged = gtWakeChanged;
+			device.rcsPersistentForcewakeHeld = true;
+			forcewakeAttempted = false;
+			gtWakeChanged = false;
+		}
 	}
 
 cleanup:
 	if (status != B_OK && submit.persistentStatus == B_NO_INIT)
 		submit.persistentStatus = status;
-	if (status != B_OK && engineTouched) {
+	if (status != B_OK
+		&& (engineTouched || device.rcsPersistentState.owned)) {
 		CaptureRcsSubmissionFault(registers, submit);
-		if (baselineCaptured) {
+		if (baselineCaptured && powerVerified) {
 			status_t restoreStatus = RestorePersistentRcsBaselineLocked(device,
 				registers, submit);
 			device.rcsPersistentFaultResets++;
 			if (restoreStatus != B_OK)
 				status = restoreStatus;
 		}
+		if (!powerVerified) {
+			device.gpuFaulted = true;
+			device.renderMemoryQuarantined = true;
+		}
 	}
-	if (forcewakeAttempted) {
+	if (status != B_OK && inheritedForcewake) {
 		submit.forcewakeReleaseStatus
-			= ReleaseForcewake(registers, forcewake);
+			= ReleasePersistentPowerLocked(device, registers);
+		submit.wakeRestoreStatus = submit.forcewakeReleaseStatus;
+		if (submit.forcewakeReleaseStatus != B_OK) {
+			device.gpuFaulted = true;
+			device.renderMemoryQuarantined = true;
+		}
+	} else if (!inheritedForcewake) {
+		submit.forcewakeReleaseStatus = forcewakeAttempted
+			? ReleaseForcewake(registers, forcewake) : B_OK;
 		if (status == B_OK)
 			status = submit.forcewakeReleaseStatus;
-	} else
+		submit.wakeRestoreStatus = RestoreGtWake(registers,
+			submit.globalBefore, gtWakeChanged);
+		if (status == B_OK)
+			status = submit.wakeRestoreStatus;
+	} else {
 		submit.forcewakeReleaseStatus = B_OK;
-	submit.wakeRestoreStatus = RestoreGtWake(registers,
-		submit.globalBefore, gtWakeChanged);
-	if (status == B_OK)
-		status = submit.wakeRestoreStatus;
-	if (status != B_OK && device.rcsPersistentState.owned
-		&& (submit.forcewakeReleaseStatus != B_OK
-			|| submit.wakeRestoreStatus != B_OK)) {
+		submit.wakeRestoreStatus = B_OK;
+	}
+	if (submit.forcewakeReleaseStatus != B_OK
+		|| submit.wakeRestoreStatus != B_OK) {
 		device.gpuFaulted = true;
 		device.renderMemoryQuarantined = true;
 	}
@@ -2083,8 +2167,9 @@ ReleasePersistentRcsOwnership(ValleyViewDevice& device,
 	ValleyViewClient* expectedOwner, bool fault)
 {
 	mutex_lock(&device.lock);
-	if (!device.rcsPersistentState.owned
-		|| (expectedOwner != NULL
+	if ((!device.rcsPersistentState.owned
+			&& !device.rcsPersistentForcewakeHeld)
+		|| (expectedOwner != NULL && device.rcsPersistentState.owned
 			&& device.rcsPersistentOwner != expectedOwner)) {
 		mutex_unlock(&device.lock);
 		return B_OK;
@@ -2106,22 +2191,44 @@ ReleasePersistentRcsOwnership(ValleyViewDevice& device,
 	bool gtWakeChanged = false;
 	bool forcewakeAttempted = false;
 	ReadGpuRegisters(registers, before);
-	status_t status = EnableGtWake(registers, before, gtWakeChanged);
-	if (status == B_OK) {
-		forcewakeAttempted = true;
-		status = AcquireForcewake(registers, forcewake);
+	const bool owned = device.rcsPersistentState.owned;
+	const bool borrowedForcewake = device.rcsPersistentForcewakeHeld
+		&& device.rcsPersistentForcewake.flags != 0;
+	status_t status = B_OK;
+	if (owned && borrowedForcewake) {
+		if ((ReadMmio(registers, valleyview::kForcewakeAckRender)
+				& valleyview::kForcewakeKernel) == 0
+			|| (ReadMmio(registers, valleyview::kForcewakeAckMedia)
+				& valleyview::kForcewakeKernel) == 0) {
+			status = B_IO_ERROR;
+		}
+	} else if (owned && device.rcsPersistentForcewakeHeld) {
+		status = B_IO_ERROR;
+	} else if (owned) {
+		status = EnableGtWake(registers, before, gtWakeChanged);
+		if (status == B_OK) {
+			forcewakeAttempted = true;
+			status = AcquireForcewake(registers, forcewake);
+		}
 	}
-	if (status == B_OK)
+	if (status == B_OK && owned)
 		status = RestorePersistentRcsBaselineLocked(device, registers, submit);
-	if (forcewakeAttempted) {
+	if (device.rcsPersistentForcewakeHeld) {
 		submit.forcewakeReleaseStatus
-			= ReleaseForcewake(registers, forcewake);
+			= ReleasePersistentPowerLocked(device, registers);
 		if (status == B_OK)
 			status = submit.forcewakeReleaseStatus;
+		submit.wakeRestoreStatus = submit.forcewakeReleaseStatus;
+	} else {
+		submit.forcewakeReleaseStatus = forcewakeAttempted
+			? ReleaseForcewake(registers, forcewake) : B_OK;
+		if (status == B_OK)
+			status = submit.forcewakeReleaseStatus;
+		submit.wakeRestoreStatus = RestoreGtWake(registers, before,
+			gtWakeChanged);
+		if (status == B_OK)
+			status = submit.wakeRestoreStatus;
 	}
-	submit.wakeRestoreStatus = RestoreGtWake(registers, before, gtWakeChanged);
-	if (status == B_OK)
-		status = submit.wakeRestoreStatus;
 	if (status == B_OK) {
 		if (fault)
 			device.rcsPersistentFaultResets++;

@@ -236,10 +236,13 @@ struct ValleyViewDevice {
 	uint32						rcsPersistentL3Baseline[3];
 	uint32						rcsPersistentPpgttBaseline[2];
 	uint64						rcsPersistentDisplayBaseline;
+	valleyview::GpuDiagnostics rcsPersistentForcewake;
 	uint64						rcsPersistentReleases;
 	uint64						rcsPersistentFaultResets;
 	uint64						rcsPersistentRestoreFailures;
 	uint32						rcsPersistentGeneration;
+	bool						rcsPersistentForcewakeHeld;
+	bool						rcsPersistentWakeChanged;
 	uint64						renderGgttBinds;
 	uint64						renderGgttEvictions;
 	uint64						renderGgttResidentBytes;

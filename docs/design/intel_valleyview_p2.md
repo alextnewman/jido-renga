@@ -132,7 +132,7 @@ that ownership boundary is intentional.
 
 ## Integrated B+D+E candidate
 
-Render protocol version 13 adds the integrated candidate:
+Render protocol version 14 adds the integrated candidate:
 
 - `safe`: the proven synchronous P1 transaction;
 - `queued`: immutable enqueue, timeline fence, fair kernel worker, and Safe GL
@@ -144,7 +144,9 @@ Render protocol version 13 adds the integrated candidate:
 Initialized client switches save and restore extended context state. Adjacent
 jobs on the same owner omit redundant `MI_SET_CONTEXT`; first use remains
 restore-inhibited. Mixed Safe work explicitly releases persistent ownership
-back to the captured baseline.
+back to the captured baseline. Persistent ownership also carries a render/media
+forcewake and GT-wake reference so ring, HWS, context, and PP_DIR state survive
+idle intervals; BCS borrows that reference under the shared engine lock.
 
 User render BOs are PPGTT-only by default. Their stable render VA survives
 lazy GGTT bind/evict cycles used by BCS presentation and diagnostics. The

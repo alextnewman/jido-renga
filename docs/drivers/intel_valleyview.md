@@ -406,11 +406,13 @@ queued frames per window. Winky proves bounded 1–16 us present ioctls, queue
 depth six, seven same-stream drops, ordered retirement through fence 11, and
 the complete 18-case direct regression with zero failures or mapped fallback.
 
-The version 13 hardware candidate retains one trusted 192-KiB submission
+The version 14 hardware candidate retains one trusted 192-KiB submission
 workspace per render context. Same-owner jobs reuse the active context;
 initialized client switches save and restore extended state; timeout, explicit
 Safe ownership transfer, and teardown reset to the captured baseline. Metrics
 separate claims, reuses, switches, releases, fault resets, and restore failures.
+The owner holds the proven forcewake/GT-wake power reference across idle
+intervals; BCS borrows it rather than acquiring a conflicting claim.
 
 User BOs now keep stable PPGTT addresses without permanent GGTT mappings.
 Direct presentation and BCS tests bind them into GGTT only for the bounded copy
