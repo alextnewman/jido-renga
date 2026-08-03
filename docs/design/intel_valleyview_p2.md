@@ -130,6 +130,22 @@ queued presents, 18 executed copies, seven drops, zero presentation failures,
 and zero mapped fallbacks. P0 retains its existing shadow-to-scanout worker;
 that ownership boundary is intentional.
 
+P2B is hardware-proven on Winky. Two clients retired 32 healthy jobs with 31
+context switches and zero healthy resets. An injected failure caused one
+reset-to-baseline, then the client recovered; restore failures remained zero.
+Real Crocus contexts retain ring, HWS, PP_DIR, cache, saved extended state, and
+the shared power reference through rendering and BCS presentation.
+
+The integrated P2D bootstrap is hardware-proven at 112 MiB across 81 BOs,
+including one 32-MiB allocation. Data and stable PPGTT addresses survive lazy
+GGTT residency; bind/evict counters balance and resident bytes return to zero.
+Physical backing remains locked, so physical-page eviction is still open.
+
+The integrated P2E corpus completes 24/24 process-isolated cases. Added coverage
+includes 32-bit indices, buffer subdata, complete FBOs, nonzero occlusion
+queries, instanced draws, and 3D textures. This is a strong feature gate, not a
+replacement for broad Piglit/CTS profile conformance.
+
 ## Integrated B+D+E candidate
 
 Render protocol version 14 adds the integrated candidate:

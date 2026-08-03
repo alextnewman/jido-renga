@@ -125,3 +125,8 @@ do not call this physical-page eviction.
 Persistent ownership includes the render/media forcewake and GT-wake reference.
 BCS borrows it under `bcsLock`; release it only after reset-to-baseline on
 fault, Safe handoff, teardown, or final driver shutdown.
+
+The version 14 Winky baseline is 32 healthy jobs, 31 switches, zero healthy
+resets, one recovered fault reset, zero restore failures, 112 MiB across 81
+stable-VA BOs, balanced lazy GGTT residency, and 24/24 semantic direct cases.
+Do not describe this as physical-page eviction or broad CTS conformance.

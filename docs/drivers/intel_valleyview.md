@@ -406,7 +406,7 @@ queued frames per window. Winky proves bounded 1–16 us present ioctls, queue
 depth six, seven same-stream drops, ordered retirement through fence 11, and
 the complete 18-case direct regression with zero failures or mapped fallback.
 
-The version 14 hardware candidate retains one trusted 192-KiB submission
+Version 14 retains one trusted 192-KiB submission
 workspace per render context. Same-owner jobs reuse the active context;
 initialized client switches save and restore extended state; timeout, explicit
 Safe ownership transfer, and teardown reset to the captured baseline. Metrics
@@ -414,11 +414,17 @@ separate claims, reuses, switches, releases, fault resets, and restore failures.
 The owner holds the proven forcewake/GT-wake power reference across idle
 intervals; BCS borrows it rather than acquiring a conflicting claim.
 
+Winky proves 32 healthy persistent jobs across two clients, 31 switches, zero
+healthy resets, one injected fault reset with recovery, and zero restore
+failures. The 24-case direct corpus then completes with full retained-state
+masks on every RCS job.
+
 User BOs now keep stable PPGTT addresses without permanent GGTT mappings.
 Direct presentation and BCS tests bind them into GGTT only for the bounded copy
 and restore those PTEs immediately afterward. Reported limits are 64 MiB per
 BO, 256 MiB and 256 BOs per client, and 64 objects per submission. This is
-GGTT residency scaling; physical backing remains locked.
+GGTT residency scaling; Winky validates 112 MiB across 81 BOs with balanced
+bind/evict accounting. Physical backing remains locked.
 
 `intel_valleyview_probe --render-memory-test` creates two client-owned buffers,
 clones both into the process, writes coordinate-dependent source and destination
