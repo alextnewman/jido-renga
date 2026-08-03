@@ -11,7 +11,7 @@
 namespace valleyview {
 
 constexpr uint32 kRenderProtocolMagic = 0x564c5652;
-constexpr uint16 kRenderProtocolVersion = 13;
+constexpr uint16 kRenderProtocolVersion = 14;
 constexpr uint32 kRenderSubmitMaxObjects = 64;
 constexpr uint32 kRenderMaxQueuedJobsPerClient = 32;
 constexpr uint32 kRenderMaxQueuedJobsPerDevice = 128;
@@ -246,6 +246,16 @@ enum RenderSubmitDiagnosticFlag : uint32 {
 	kRenderSubmitContextSwitched = 1u << 21
 };
 
+enum RenderPersistentStage : uint32 {
+	kRenderPersistentStageNone = 0,
+	kRenderPersistentStageBaseline,
+	kRenderPersistentStageRingPrepared,
+	kRenderPersistentStageCompleted,
+	kRenderPersistentStageIdle,
+	kRenderPersistentStageStopped,
+	kRenderPersistentStageRetained
+};
+
 struct RenderSubmit {
 	RenderAbiHeader	header;
 	uint32			submitFlags;
@@ -276,6 +286,8 @@ struct RenderSubmit {
 	uint32			pipeControlCount;
 	uint32			primitiveCount;
 	uint32			persistentRetainedFlags;
+	RenderPersistentStage persistentStage;
+	int32			persistentStatus;
 	int32			resetStatus;
 	int32			ringRestoreStatus;
 	int32			cacheRestoreStatus;
@@ -343,6 +355,8 @@ struct RenderQueueCompletion {
 	uint32			parsedCommandCount;
 	uint32			primitiveCount;
 	uint32			persistentRetainedFlags;
+	RenderPersistentStage persistentStage;
+	int32			persistentStatus;
 	int32			resetStatus;
 	int32			ringRestoreStatus;
 	int32			cacheRestoreStatus;

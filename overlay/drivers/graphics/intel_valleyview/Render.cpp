@@ -517,6 +517,7 @@ InitializeRenderSubmitResult(valleyview::RenderSubmit& submit)
 	submit.parserFailingDword
 		= valleyview::kRenderCommandInvalidDword;
 	submit.resetStatus = B_NO_INIT;
+	submit.persistentStatus = B_NO_INIT;
 	submit.ringRestoreStatus = B_NO_INIT;
 	submit.cacheRestoreStatus = B_NO_INIT;
 	submit.ppgttControlRestoreStatus = B_NO_INIT;

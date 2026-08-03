@@ -88,6 +88,8 @@ AppendCompletionLocked(ValleyViewClient& client,
 	completion->record.primitiveCount = job.submit.primitiveCount;
 	completion->record.persistentRetainedFlags
 		= job.submit.persistentRetainedFlags;
+	completion->record.persistentStage = job.submit.persistentStage;
+	completion->record.persistentStatus = job.submit.persistentStatus;
 	completion->record.resetStatus = job.submit.resetStatus;
 	completion->record.ringRestoreStatus = job.submit.ringRestoreStatus;
 	completion->record.cacheRestoreStatus = job.submit.cacheRestoreStatus;
@@ -626,6 +628,7 @@ EnqueueRenderCommands(ValleyViewClient& client,
 			job->submit.parsedCommandCount = request.parsedCommandCount;
 			job->submit.primitiveCount = request.primitiveCount;
 			job->submit.resetStatus = B_NO_INIT;
+			job->submit.persistentStatus = B_NO_INIT;
 			job->submit.ringRestoreStatus = B_NO_INIT;
 			job->submit.cacheRestoreStatus = B_NO_INIT;
 			job->submit.ppgttControlRestoreStatus = B_NO_INIT;

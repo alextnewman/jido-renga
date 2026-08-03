@@ -1926,6 +1926,7 @@ ExecutePersistentRcsSubmission(ValleyViewClient& client,
 			= device.rcsPersistentPpgttBaseline[1];
 		status = B_OK;
 	}
+	submit.persistentStage = valleyview::kRenderPersistentStageBaseline;
 	switching = !firstClaim
 		&& device.rcsPersistentState.owner != client.persistentId;
 	if (status != B_OK)
@@ -1945,6 +1946,7 @@ ExecutePersistentRcsSubmission(ValleyViewClient& client,
 	status = ProgramRcsPpgtt(registers, ppDirBase);
 	if (status != B_OK)
 		goto cleanup;
+	submit.persistentStage = valleyview::kRenderPersistentStageRingPrepared;
 	submit.diagnosticFlags |= valleyview::kRenderSubmitPpgttProgrammed
 		| valleyview::kRenderSubmitTlbFlushed;
 	submit.stage = valleyview::kRenderSubmitStagePpgttProgrammed;
@@ -1982,19 +1984,20 @@ ExecutePersistentRcsSubmission(ValleyViewClient& client,
 	if (status == B_OK)
 		submit.stage = valleyview::kRenderSubmitStageCompleted;
 	if (status == B_OK)
+		submit.persistentStage = valleyview::kRenderPersistentStageCompleted;
+	if (status == B_OK)
 		status = WaitForRcsIdle(registers);
+	if (status == B_OK)
+		submit.persistentStage = valleyview::kRenderPersistentStageIdle;
 	if (status == B_OK)
 		status = WriteGt(registers, valleyview::kRcsRingControl, 0);
 	if (status == B_OK)
 		ReadMmio(registers, valleyview::kRcsRingControl);
 	if (status == B_OK) {
-		submit.cacheRestoreStatus
-			= RestoreRcsSubmissionCache(registers, submit);
-		status = submit.cacheRestoreStatus;
+		submit.cacheRestoreStatus = B_OK;
+		submit.persistentStage = valleyview::kRenderPersistentStageStopped;
 	}
 	if (status == B_OK) {
-		submit.diagnosticFlags
-			|= valleyview::kRenderSubmitCacheRestored;
 		ReadRcsRegisters(registers, submit.after);
 		submit.persistentRetainedFlags
 			= valleyview::RcsPersistentRetainedFlags(submit.after,
@@ -2012,6 +2015,8 @@ ExecutePersistentRcsSubmission(ValleyViewClient& client,
 			status = B_IO_ERROR;
 		}
 	}
+	if (status == B_OK)
+		submit.persistentStage = valleyview::kRenderPersistentStageRetained;
 	ReadGpuRegisters(registers, submit.globalAfter);
 	if (status == B_OK
 		&& DisplaySignature(registers) != displaySignatureBefore) {
@@ -2022,6 +2027,7 @@ ExecutePersistentRcsSubmission(ValleyViewClient& client,
 		status = B_IO_ERROR;
 	}
 	if (status == B_OK) {
+		submit.persistentStatus = B_OK;
 		submit.ringRestoreStatus = B_OK;
 		submit.ppgttControlRestoreStatus = B_OK;
 		submit.diagnosticFlags |= valleyview::kRenderSubmitRingRestored
@@ -2039,6 +2045,8 @@ ExecutePersistentRcsSubmission(ValleyViewClient& client,
 	}
 
 cleanup:
+	if (status != B_OK && submit.persistentStatus == B_NO_INIT)
+		submit.persistentStatus = status;
 	if (status != B_OK && engineTouched) {
 		CaptureRcsSubmissionFault(registers, submit);
 		if (baselineCaptured) {
