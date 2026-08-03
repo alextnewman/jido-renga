@@ -275,6 +275,7 @@ struct RenderSubmit {
 	uint32			lriRegisterCount;
 	uint32			pipeControlCount;
 	uint32			primitiveCount;
+	uint32			persistentRetainedFlags;
 	int32			resetStatus;
 	int32			ringRestoreStatus;
 	int32			cacheRestoreStatus;
@@ -341,6 +342,7 @@ struct RenderQueueCompletion {
 	uint32			parserReason;
 	uint32			parsedCommandCount;
 	uint32			primitiveCount;
+	uint32			persistentRetainedFlags;
 	int32			resetStatus;
 	int32			ringRestoreStatus;
 	int32			cacheRestoreStatus;

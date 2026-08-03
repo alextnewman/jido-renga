@@ -1996,6 +1996,13 @@ ExecutePersistentRcsSubmission(ValleyViewClient& client,
 		submit.diagnosticFlags
 			|= valleyview::kRenderSubmitCacheRestored;
 		ReadRcsRegisters(registers, submit.after);
+		submit.persistentRetainedFlags
+			= valleyview::RcsPersistentRetainedFlags(submit.after,
+				workspace.ggttOffset
+					+ valleyview::kRcsSubmitRingPage * valleyview::kPageSize,
+				workspace.ggttOffset
+					+ valleyview::kRcsSubmitStatusPage * valleyview::kPageSize,
+				ppDirBase);
 		if (!valleyview::IsRcsPersistentRingRetained(submit.after,
 				workspace.ggttOffset
 					+ valleyview::kRcsSubmitRingPage * valleyview::kPageSize,

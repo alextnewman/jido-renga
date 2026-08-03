@@ -159,6 +159,20 @@ enum RcsPersistentTransition : uint32 {
 	kRcsPersistentSwitch
 };
 
+enum RcsPersistentRetainedFlag : uint32 {
+	kRcsPersistentRingIdle = 1u << 0,
+	kRcsPersistentRingAddresses = 1u << 1,
+	kRcsPersistentPpgttEnabled = 1u << 2,
+	kRcsPersistentContextEnabled = 1u << 3,
+	kRcsPersistentPpDir = 1u << 4,
+	kRcsPersistentNoFault = 1u << 5
+};
+
+constexpr uint32 kRcsPersistentRequiredRetainedFlags
+	= kRcsPersistentRingIdle | kRcsPersistentRingAddresses
+		| kRcsPersistentPpgttEnabled | kRcsPersistentPpDir
+		| kRcsPersistentNoFault;
+
 struct RcsPersistentOwnershipState {
 	uint32	owner;
 	uint64	claims;
@@ -212,22 +226,41 @@ IsRcsRingAvailable(const RcsRegisterSnapshot& snapshot)
 			== (snapshot.tail & kRingAddressMask);
 }
 
+inline uint32
+RcsPersistentRetainedFlags(const RcsRegisterSnapshot& observed,
+	uint32 ringOffset, uint32 statusOffset, uint32 ppDirBase)
+{
+	uint32 flags = 0;
+	if ((observed.control & kRingValid) == 0
+		&& (observed.miMode & kRingStop) == 0
+		&& (observed.miMode & kRcsModeIdle) != 0
+		&& (observed.head & kRingAddressMask)
+			== (observed.tail & kRingAddressMask)) {
+		flags |= kRcsPersistentRingIdle;
+	}
+	if (observed.start == ringOffset && observed.hws == statusOffset)
+		flags |= kRcsPersistentRingAddresses;
+	if ((observed.mode & kRingPpgttEnable) != 0)
+		flags |= kRcsPersistentPpgttEnabled;
+	if ((observed.ccid & kRcsCcidEnable) != 0)
+		flags |= kRcsPersistentContextEnabled;
+	if (observed.ppDirDclv == UINT32_MAX
+		&& observed.ppDirBase == ppDirBase) {
+		flags |= kRcsPersistentPpDir;
+	}
+	if ((observed.faultRegister & kRcsFaultValid) == 0)
+		flags |= kRcsPersistentNoFault;
+	return flags;
+}
+
+
 inline bool
 IsRcsPersistentRingRetained(const RcsRegisterSnapshot& observed,
 	uint32 ringOffset, uint32 statusOffset, uint32 ppDirBase)
 {
-	return (observed.control & kRingValid) == 0
-		&& (observed.miMode & kRingStop) == 0
-		&& (observed.miMode & kRcsModeIdle) != 0
-		&& (observed.head & kRingAddressMask)
-			== (observed.tail & kRingAddressMask)
-		&& observed.start == ringOffset
-		&& observed.hws == statusOffset
-		&& (observed.mode & kRingPpgttEnable) != 0
-		&& (observed.ccid & kRcsCcidEnable) != 0
-		&& observed.ppDirDclv == UINT32_MAX
-		&& observed.ppDirBase == ppDirBase
-		&& (observed.faultRegister & kRcsFaultValid) == 0;
+	return (RcsPersistentRetainedFlags(observed, ringOffset, statusOffset,
+			ppDirBase) & kRcsPersistentRequiredRetainedFlags)
+		== kRcsPersistentRequiredRetainedFlags;
 }
 
 

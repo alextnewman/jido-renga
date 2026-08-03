@@ -91,12 +91,17 @@ JR_TEST(intel_valleyview_rcs, validates_retained_persistent_ring_state)
 	snapshot.ppDirDclv = UINT32_MAX;
 	snapshot.ppDirBase = ppDir;
 	JR_CHECK(IsRcsPersistentRingRetained(snapshot, ring, hws, ppDir));
+	JR_CHECK_EQ(RcsPersistentRetainedFlags(snapshot, ring, hws, ppDir),
+		kRcsPersistentRequiredRetainedFlags
+			| kRcsPersistentContextEnabled);
 
 	snapshot.control = kRingValid;
 	JR_CHECK(!IsRcsPersistentRingRetained(snapshot, ring, hws, ppDir));
 	snapshot.control = 0;
 	snapshot.ccid = 0;
-	JR_CHECK(!IsRcsPersistentRingRetained(snapshot, ring, hws, ppDir));
+	JR_CHECK(IsRcsPersistentRingRetained(snapshot, ring, hws, ppDir));
+	JR_CHECK((RcsPersistentRetainedFlags(snapshot, ring, hws, ppDir)
+		& kRcsPersistentContextEnabled) == 0);
 	snapshot.ccid = kRcsCcidEnable;
 	snapshot.ppDirBase += kPpgttDirectoryAlignment;
 	JR_CHECK(!IsRcsPersistentRingRetained(snapshot, ring, hws, ppDir));

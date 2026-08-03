@@ -86,6 +86,8 @@ AppendCompletionLocked(ValleyViewClient& client,
 	completion->record.parserReason = job.submit.parserReason;
 	completion->record.parsedCommandCount = job.submit.parsedCommandCount;
 	completion->record.primitiveCount = job.submit.primitiveCount;
+	completion->record.persistentRetainedFlags
+		= job.submit.persistentRetainedFlags;
 	completion->record.resetStatus = job.submit.resetStatus;
 	completion->record.ringRestoreStatus = job.submit.ringRestoreStatus;
 	completion->record.cacheRestoreStatus = job.submit.cacheRestoreStatus;
@@ -574,8 +576,6 @@ EnqueueRenderCommands(ValleyViewClient& client,
 						|| buffer->domain == valleyview::kRenderDomainBcs)));
 		if (buffer == NULL || buffer->quarantined || buffer->closePending
 			|| !orderedDomain
-			|| (buffer->handle == request.batchHandle
-				&& buffer->domain != valleyview::kRenderDomainCpu)
 			|| buffer->ppgttOffset
 				== valleyview::kInvalidRenderPpgttOffset) {
 			status = B_BAD_VALUE;
