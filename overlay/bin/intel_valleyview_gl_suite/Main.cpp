@@ -79,7 +79,15 @@ enum CaseId {
 	kFramebufferObject,
 	kOcclusionQuery,
 	kInstanced,
-	kTexture3D
+	kTexture3D,
+	kProfileLimits,
+	kBlend,
+	kScissor,
+	kTextureMipmaps,
+	kCubeMap,
+	kReadPixels,
+	kIndexedElementBuffer,
+	kMultisampleFramebuffer
 };
 
 struct CaseDefinition {
@@ -111,6 +119,14 @@ const CaseDefinition kCases[] = {
 	{"occlusion-query", kOcclusionQuery},
 	{"instanced-draw", kInstanced},
 	{"texture-3d", kTexture3D},
+	{"profile-limits", kProfileLimits},
+	{"alpha-blend", kBlend},
+	{"scissor", kScissor},
+	{"texture-mipmaps", kTextureMipmaps},
+	{"cube-map", kCubeMap},
+	{"read-pixels", kReadPixels},
+	{"indexed-element-buffer", kIndexedElementBuffer},
+	{"multisample-framebuffer", kMultisampleFramebuffer},
 	{"explicit-vbo-recovery", kExplicitVbo}
 };
 
@@ -249,6 +265,7 @@ private:
 	{
 		glUseProgram(0);
 		glBindBuffer(GL_ARRAY_BUFFER, 0);
+		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 		glDisableVertexAttribArray(0);
 		glDisableVertexAttribArray(1);
 		glDisableClientState(GL_VERTEX_ARRAY);
@@ -384,6 +401,30 @@ private:
 				break;
 			case kTexture3D:
 				valid = glsuite::DrawTexture3D();
+				break;
+			case kProfileLimits:
+				valid = glsuite::DrawProfileLimits();
+				break;
+			case kBlend:
+				valid = glsuite::DrawBlend();
+				break;
+			case kScissor:
+				valid = glsuite::DrawScissor();
+				break;
+			case kTextureMipmaps:
+				valid = glsuite::DrawTextureMipmaps();
+				break;
+			case kCubeMap:
+				valid = glsuite::DrawCubeMap();
+				break;
+			case kReadPixels:
+				valid = glsuite::DrawReadPixels();
+				break;
+			case kIndexedElementBuffer:
+				valid = glsuite::DrawIndexedElementBuffer();
+				break;
+			case kMultisampleFramebuffer:
+				valid = glsuite::DrawMultisampleFramebuffer();
 				break;
 		}
 		return valid;

@@ -7,6 +7,7 @@
 #include <common/intel_valleyview/P0Core.h>
 #include <common/intel_valleyview/PpgttCore.h>
 #include <common/intel_valleyview/Protocol.h>
+#include <common/intel_valleyview/RenderCommandCore.h>
 #include <common/intel_valleyview/RenderMemoryCore.h>
 #include <common/intel_valleyview/RenderProtocol.h>
 
@@ -880,6 +881,8 @@ ReadQueueProbeInfo(QueueProbeClient& client, const char* label,
 		" persistent=%" B_PRIu64 "/%" B_PRIu64 "/%" B_PRIu64
 		"/%" B_PRIu64 "/%" B_PRIu64 "/%" B_PRIu64
 		" ggtt=%" B_PRIu64 "/%" B_PRIu64 "/%" B_PRIu64
+		"/%" B_PRIu64
+		" physical=%" B_PRIu64 "/%" B_PRIu64 "/%" B_PRIu64
 		"/%" B_PRIu64 "\n",
 		label, client.device, status, info.status, info.mode, info.queuedJobs,
 		info.completionCount, info.queueHighWater, info.deviceQueuedJobs,
@@ -891,7 +894,9 @@ ReadQueueProbeInfo(QueueProbeClient& client, const char* label,
 		info.persistentContextReuses, info.persistentReleases,
 		info.persistentFaultResets, info.persistentRestoreFailures,
 		info.ggttBinds, info.ggttEvictions, info.ggttResidentBytes,
-		info.ggttResidentMaxBytes);
+		info.ggttResidentMaxBytes, info.physicalEvictions,
+		info.physicalReloads, info.physicalResidentBytes,
+		info.physicalResidentMaxBytes);
 	return status == B_OK ? info.status : status;
 }
 
@@ -1220,6 +1225,7 @@ RunRenderResidencyProbe(int device)
 	valleyview::RenderBufferMap mappings[kBufferCount + 1] = {};
 	valleyview::RenderQueueInfo before = {};
 	valleyview::RenderQueueInfo after = {};
+	valleyview::RenderQueueInfo teardown = {};
 	status_t status = RunRcsProbe(device);
 	uint32 created = 0;
 
@@ -1292,6 +1298,46 @@ RunRenderResidencyProbe(int device)
 		if (status == B_OK)
 			status = test.status;
 	}
+	if (status == B_OK) {
+		constexpr uint32 kBatchOffset = valleyview::kPageSize;
+		constexpr uint32 kTargetOffset = 64;
+		constexpr uint32 kMarker = 0x50324452;
+		uint32* batch = reinterpret_cast<uint32*>(
+			static_cast<addr_t>(mappings[0].address) + kBatchOffset);
+		uint32* target = reinterpret_cast<uint32*>(
+			static_cast<addr_t>(mappings[1].address) + kTargetOffset);
+		*target = 0;
+		batch[0] = valleyview::kRenderPipeControlOpcode | 3;
+		batch[1] = (1u << 20) | (1u << 14);
+		batch[2] = static_cast<uint32>(
+			buffers[1].renderAddress + kTargetOffset);
+		batch[3] = kMarker;
+		batch[4] = 0;
+		batch[5] = valleyview::kRenderMiBatchBufferEnd;
+		__sync_synchronize();
+
+		valleyview::RenderSubmit submit = {};
+		submit.header = valleyview::MakeRenderAbiHeader(sizeof(submit));
+		submit.contextHandle = context.handle;
+		submit.batchHandle = buffers[0].handle;
+		submit.batchOffset = kBatchOffset;
+		submit.batchLength = 6 * sizeof(uint32);
+		submit.objectCount = 2;
+		submit.objectHandles[0] = buffers[0].handle;
+		submit.objectHandles[1] = buffers[1].handle;
+		status = ioctl(device, valleyview::kRenderSubmit, &submit,
+			sizeof(submit));
+		if (status == B_OK)
+			status = submit.status;
+		__sync_synchronize();
+		printf("render_residency_ppgtt status=%" B_PRId32
+			" addresses=%#" B_PRIx64 "/%#" B_PRIx64
+			" marker=%#08" B_PRIx32 "/%#08" B_PRIx32 "\n",
+			status, buffers[0].renderAddress, buffers[1].renderAddress,
+			kMarker, *target);
+		if (status == B_OK && *target != kMarker)
+			status = B_BAD_DATA;
+	}
 
 	for (uint32 index = 2; status == B_OK && index <= kBufferCount; index++) {
 		const uint32* words = reinterpret_cast<const uint32*>(
@@ -1310,17 +1356,28 @@ RunRenderResidencyProbe(int device)
 		&& (after.ggttBinds - before.ggttBinds < 2
 			|| after.ggttEvictions - before.ggttEvictions < 2
 			|| after.ggttResidentBytes != before.ggttResidentBytes
-			|| after.ggttResidentMaxBytes < 2 * kSmallBytes)) {
+			|| after.ggttResidentMaxBytes < 2 * kSmallBytes
+			|| after.physicalEvictions == before.physicalEvictions
+			|| after.physicalReloads - before.physicalReloads < 2
+			|| after.physicalResidentBytes
+				> valleyview::kRenderResidentBudgetBytes
+			|| after.physicalResidentMaxBytes
+				< valleyview::kRenderResidentBudgetBytes)) {
 		status = B_BAD_DATA;
 	}
 	printf("render_residency status=%" B_PRId32 " buffers=%" B_PRIu32
 		" bytes=%" B_PRIu64 " large=%" B_PRIu64
 		" ggtt=%" B_PRIu64 "/%" B_PRIu64 "/%" B_PRIu64
+		"/%" B_PRIu64
+		" physical=%" B_PRIu64 "/%" B_PRIu64 "/%" B_PRIu64
 		"/%" B_PRIu64 "\n", status, created,
 		kBufferCount * kSmallBytes + kLargeBytes, kLargeBytes,
 		after.ggttBinds - before.ggttBinds,
 		after.ggttEvictions - before.ggttEvictions,
-		after.ggttResidentBytes, after.ggttResidentMaxBytes);
+		after.ggttResidentBytes, after.ggttResidentMaxBytes,
+		after.physicalEvictions - before.physicalEvictions,
+		after.physicalReloads - before.physicalReloads,
+		after.physicalResidentBytes, after.physicalResidentMaxBytes);
 
 	for (uint32 index = created; index > 0; index--) {
 		status_t closeStatus = CloseRenderBuffer(device,
@@ -1328,6 +1385,19 @@ RunRenderResidencyProbe(int device)
 		if (status == B_OK)
 			status = closeStatus;
 	}
+	teardown.header = valleyview::MakeRenderAbiHeader(sizeof(teardown));
+	if (status == B_OK) {
+		status = ioctl(device, valleyview::kRenderQueueGetInfo, &teardown,
+			sizeof(teardown));
+		if (status == B_OK
+			&& teardown.physicalResidentBytes
+				!= before.physicalResidentBytes) {
+			status = B_BAD_DATA;
+		}
+	}
+	printf("render_residency_teardown status=%" B_PRId32
+		" physical=%" B_PRIu64 "/%" B_PRIu64 "\n", status,
+		teardown.physicalResidentBytes, before.physicalResidentBytes);
 	if (context.handle != 0) {
 		valleyview::RenderContextDestroy destroy = {};
 		destroy.header = valleyview::MakeRenderAbiHeader(sizeof(destroy));

@@ -567,6 +567,7 @@ EnqueueRenderCommands(ValleyViewClient& client,
 	mutex_lock(&device.renderLock);
 	status_t status = B_OK;
 	ValleyViewRenderBuffer* batchBuffer = NULL;
+	uint32 referencesHeld = 0;
 	for (uint32 index = 0; status == B_OK && index < request.objectCount;
 			index++) {
 		ValleyViewRenderBuffer* buffer = FindClientRenderBuffer(client,
@@ -583,6 +584,11 @@ EnqueueRenderCommands(ValleyViewClient& client,
 			status = B_BAD_VALUE;
 			break;
 		}
+		status = EnsureRenderBufferResident(client, *buffer);
+		if (status != B_OK)
+			break;
+		buffer->queuedReferenceCount++;
+		referencesHeld++;
 		if (buffer->handle == request.batchHandle)
 			batchBuffer = buffer;
 	}
@@ -636,9 +642,6 @@ EnqueueRenderCommands(ValleyViewClient& client,
 			job->submit.wakeRestoreStatus = B_NO_INIT;
 			for (uint32 index = 0; index < request.objectCount; index++) {
 				job->submit.objectHandles[index] = request.objects[index].handle;
-				ValleyViewRenderBuffer* buffer = FindClientRenderBuffer(client,
-					request.objects[index].handle);
-				buffer->queuedReferenceCount++;
 			}
 			if (client.queueTail != NULL)
 				client.queueTail->next = job;
@@ -655,6 +658,14 @@ EnqueueRenderCommands(ValleyViewClient& client,
 			request.status = B_OK;
 		}
 		UnlockQueue(device);
+	}
+	if (status != B_OK) {
+		for (uint32 index = 0; index < referencesHeld; index++) {
+			ValleyViewRenderBuffer* buffer = FindClientRenderBuffer(client,
+				request.objects[index].handle);
+			if (buffer != NULL && buffer->queuedReferenceCount != 0)
+				buffer->queuedReferenceCount--;
+		}
 	}
 	mutex_unlock(&device.renderLock);
 
@@ -718,6 +729,8 @@ EnqueueRenderDirectPresent(ValleyViewClient& client,
 		|| sourceBytes > buffer->size - request.sourceOffset) {
 		status = B_BAD_VALUE;
 	}
+	if (status == B_OK)
+		status = EnsureRenderBufferResident(client, *buffer);
 
 	if (status == B_OK) {
 		LockQueue(device);
@@ -900,6 +913,10 @@ GetRenderQueueInfo(ValleyViewClient& client, valleyview::RenderQueueInfo& info)
 	info.ggttEvictions = device.renderGgttEvictions;
 	info.ggttResidentBytes = device.renderGgttResidentBytes;
 	info.ggttResidentMaxBytes = device.renderGgttResidentMaxBytes;
+	info.physicalEvictions = device.renderPhysicalEvictions;
+	info.physicalReloads = device.renderPhysicalReloads;
+	info.physicalResidentBytes = device.renderPhysicalResidentBytes;
+	info.physicalResidentMaxBytes = device.renderPhysicalResidentMaxBytes;
 	info.totalQueueLatencyUs = client.totalQueueLatencyUs;
 	info.maxQueueLatencyUs = client.maxQueueLatencyUs;
 	info.totalExecutionUs = client.totalExecutionUs;

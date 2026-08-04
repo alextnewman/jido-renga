@@ -47,6 +47,8 @@ struct ValleyViewRenderBuffer {
 	ValleyViewRenderGgttEncoding ggttEncoding;
 	valleyview::RenderBufferDomain domain;
 	uint32					queuedReferenceCount;
+	uint64					residencySerial;
+	bool					resident;
 	bool					closePending;
 	bool					quarantined;
 	ValleyViewRenderBuffer*	next;
@@ -90,6 +92,8 @@ struct ValleyViewClient {
 	ValleyViewClient*		queueNext;
 	ValleyViewRenderBuffer*	buffers;
 	uint64					allocatedBytes;
+	uint64					residentBytes;
+	uint64					residencySerial;
 	uint32					bufferCount;
 	uint32					nextHandle;
 	uint32					contextHandle;
@@ -247,6 +251,10 @@ struct ValleyViewDevice {
 	uint64						renderGgttEvictions;
 	uint64						renderGgttResidentBytes;
 	uint64						renderGgttResidentMaxBytes;
+	uint64						renderPhysicalEvictions;
+	uint64						renderPhysicalReloads;
+	uint64						renderPhysicalResidentBytes;
+	uint64						renderPhysicalResidentMaxBytes;
 	sem_id						renderQueueSem;
 	thread_id					renderQueueThread;
 	ValleyViewClient*		renderClients;
@@ -336,6 +344,8 @@ status_t DeselectRenderQueue(ValleyViewClient& client, uint8 event,
 	selectsync* sync);
 ValleyViewRenderBuffer* FindClientRenderBuffer(ValleyViewClient& client,
 	uint32 handle);
+status_t EnsureRenderBufferResident(ValleyViewClient& client,
+	ValleyViewRenderBuffer& buffer);
 void ReleaseRenderQueueReferences(ValleyViewClient& client,
 	const uint32* handles, uint32 count);
 status_t MapRenderBuffer(ValleyViewClient& client,

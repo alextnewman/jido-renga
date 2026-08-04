@@ -379,7 +379,7 @@ keeps this Safe GL path as a separately selectable recovery mode while moving
 healthy work to queued timelines, persistent contexts, and fence-aware direct
 presentation. EGL remains outside that phase.
 
-Render protocol version 13 carries the P2 lab queue: immutable enqueue, explicit
+Render protocol version 15 carries the P2 lab queue: immutable enqueue, explicit
 BO access, 64-bit timeline waits, completion dequeue, `select()` readiness,
 bounded per-client/device depth, a round-robin kernel worker, and complete
 submission-cleanup status in each completion record. Failed retired fences are
@@ -422,9 +422,24 @@ masks on every RCS job.
 User BOs now keep stable PPGTT addresses without permanent GGTT mappings.
 Direct presentation and BCS tests bind them into GGTT only for the bounded copy
 and restore those PTEs immediately afterward. Reported limits are 64 MiB per
-BO, 256 MiB and 256 BOs per client, and 64 objects per submission. This is
-GGTT residency scaling; Winky validates 112 MiB across 81 BOs with balanced
-bind/evict accounting. Physical backing remains locked.
+BO, 256 MiB and 256 BOs per client, and 64 objects per submission.
+
+Protocol version 15 makes user BO areas pageable and caps pinned physical
+backing at 96 MiB per client. Eviction replaces the BO's stable PPGTT range
+with the client's scratch PTE, unwires its pages, and leaves the kernel and
+Mesa virtual mappings intact. Reload wires the same pageable data, rebuilds
+the physical-page list, restores the same PPGTT VA, and relies on the trusted
+submission wrapper's TLB invalidation before RCS access. Queued references,
+active engine domains, GGTT bindings, quarantine, and internal context
+resources are never eviction candidates. Failures roll back to scratch or
+quarantine the context; they do not expose stale physical addresses.
+
+The 112-MiB/81-BO probe now exceeds the physical budget, requires eviction and
+reload counters to advance, checks data through mappings that survive the
+unwire/re-wire cycle, and requires physical residency to return to its baseline
+after close. The previous hardware result proved stable VA and lazy GGTT
+residency; physical eviction/reload remains a release-candidate gate until the
+version-15 image completes that probe on Winky.
 
 `intel_valleyview_probe --render-memory-test` creates two client-owned buffers,
 clones both into the process, writes coordinate-dependent source and destination
