@@ -58,12 +58,11 @@ Graphics development continues in
 two-client scheduling, persistent RCS contexts, ordered fault recovery, and
 asynchronous BCS direct presentation are hardware-proven. The integrated gate
 switches 32 healthy context jobs without resetting, recovers one injected fault,
-verifies 112 MiB across 81 stable-VA BOs, and completes 24 isolated semantic GL
-cases. Safe GL remains the recovery baseline. The P2 release candidate adds
-pageable BO backing with a 96-MiB pinned-page budget, stable-VA physical
-eviction/reload, and a 32-case OpenGL 3.1 compatibility/profile gate. Its final
-hardware qualification is one integrated `--p2-lab` run; EGL and browser
-integration are reserved for P3.
+verifies 112 MiB across 81 stable-VA BOs under a 96-MiB pinned-page budget,
+reloads evicted backing through the original PPGTT addresses, and completes
+32 isolated OpenGL 3.1 compatibility/profile cases. P2 is hardware-proven;
+Safe GL remains the recovery baseline. EGL and browser integration are
+reserved for P3.
 
 ## Why an overlay?
 

@@ -173,7 +173,7 @@ milestone raises the truthful bootstrap limits to 64 MiB per BO, 256 MiB and
 pages remain locked; swapping physical backing is later P2D work and is not
 claimed by this milestone.
 
-## P2 release candidate
+## Completed P2 engine
 
 Render protocol version 15 closes the physical-residency and profile gates.
 User BOs use pageable areas, while a 96-MiB per-client budget bounds the pages
@@ -196,7 +196,7 @@ linear; private multisample render targets use the Gen7-required tiled layout.
 No externally shareable tiled modifier is advertised without matching kernel
 metadata.
 
-The conformance gate grows from 24 to 32 isolated cases. It retains every
+The conformance gate contains 32 isolated cases. It retains every
 proven compatibility and recovery case and adds an explicit OpenGL 3.1/GLSL
 1.40 profile-and-limit check, alpha blending, scissoring, mipmapped and cube
 textures, readback, element-buffer indexing, and a complete four-sample FBO.
@@ -220,8 +220,15 @@ fault reset, zero restore failures, stable data beyond the former 64-MiB/64-BO
 limits, nonzero physical evictions and at least two reloads, physical residency
 no higher than 96 MiB with baseline restoration at teardown, balanced GGTT
 bind/evict counters, 32 semantic GL passes, P2C frame collapse, and clean
-teardown. This single run is the hardware promotion gate for the candidate;
-the version-15 behavior is not claimed proven before its capture.
+teardown.
+
+The complete version-15 gate is hardware-proven on Winky. It retired 32
+healthy two-client jobs without a reset, recovered the injected fault with no
+restore failure, held 112 MiB across 81 BOs while limiting physical residency
+to 96 MiB, recorded 18 evictions and two reloads, wrote the expected RCS marker
+through the reloaded original PPGTT addresses, and returned physical residency
+to zero. All 32 direct semantic cases passed, including the four-sample tiled
+renderbuffer resolve, with zero launch or case failures.
 
 ## Required evidence
 
@@ -230,7 +237,7 @@ high-water marks, enqueue-to-start and start-to-retire latency, context
 switches, resets, dropped presentation frames, CPU/GPU cache transitions, and
 copy paths.
 
-P2 is not complete until:
+The P2 completion boundary requires:
 
 - two clients make bounded forward progress without cross-client access;
 - fence waits, timeouts, cancellation, close, and `select()` notification are

@@ -304,8 +304,8 @@ vertex regions, triangle edge positions and widths at six rows, representative
 interpolation samples, and an untouched 8,304-dword allocation guard. The
 checksum and every count remain in probe output for offline diagnosis.
 
-This remains a host-validated hardware candidate until the combined Winky run,
-but it uses the same transport as the installed Crocus screen.
+The combined Winky run hardware-validates this corpus through the same transport
+used by the installed Crocus screen.
 
 ### Haiku Crocus renderer
 
@@ -439,9 +439,16 @@ quarantine the context; they do not expose stale physical addresses.
 The 112-MiB/81-BO probe now exceeds the physical budget, requires eviction and
 reload counters to advance, checks data through mappings that survive the
 unwire/re-wire cycle, and requires physical residency to return to its baseline
-after close. The previous hardware result proved stable VA and lazy GGTT
-residency; physical eviction/reload remains a release-candidate gate until the
-version-15 image completes that probe on Winky.
+after close. Winky completes this gate with 18 physical evictions, two reloads,
+an RCS marker written through the reloaded original PPGTT addresses, a
+96-MiB physical-residency high-water mark, and zero residual residency.
+
+The complete version-15 OpenGL gate also passes 32/32 process-isolated direct
+cases with zero launch failures. It asserts the Crocus OpenGL 3.1 compatibility
+profile and reported limits, then pixel-verifies blending, scissoring, mipmapped
+and cube textures, readback, element-buffer drawing, and a four-sample tiled
+renderbuffer resolve. This is the hardware-proven P2 profile boundary, not
+Piglit or CTS certification.
 
 `intel_valleyview_probe --render-memory-test` creates two client-owned buffers,
 clones both into the process, writes coordinate-dependent source and destination
