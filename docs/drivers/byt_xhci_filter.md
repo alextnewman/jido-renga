@@ -36,7 +36,7 @@ writes and every other read are passed through unchanged.
 ## Boot diagnostics
 
 The filter uses the shared Jidō Renga kernel diagnostic format with label
-`byt_xhci_filter`. Its ordered milestones distinguish load-path failures:
+`byt_xhci_filter`. Its ordered events distinguish load-path failures:
 
 1. `module discovered by kernel loader` — the module list found and initialized
    the exported driver module;
@@ -55,23 +55,17 @@ The filter uses the shared Jidō Renga kernel diagnostic format with label
 If the first line is absent, inspect the boot-module package/link. If only the
 first line appears, inspect the PCI identity and device-manager node tree.
 
-## Landing and retirement
+## Scope and removal
 
-This filter is scoped to the Winky BSP and provides a removable compatibility
-layer. The corresponding Haiku fix belongs in the Intel xHCI routing policy:
-only transfer ports when an Intel EHCI companion exists, as Linux does. Once a
-human-authored upstream fix is merged and the captive Haiku revision advances
-past it, remove this add-on and its BSP package entries. No xHCI fork or source
-patch should remain.
+This Winky-specific filter is a compatibility layer, not an xHCI fork. It is
+needed while stock Haiku transfers Intel port routing without checking for an
+EHCI companion. Remove the filter and its BSP entries when the captive Haiku
+revision contains equivalent routing policy.
 
-## Hardware validation
+## Supported behavior and limitations
 
-External USB insertion is hardware-validated: an inserted device enumerates
-without rebooting. This confirms the filter loads, claims `8086:0f35`, delegates
-to stock xHCI, and preserves usable port routing.
-
-The internal camera is also hardware-validated to enumerate as UVC 1.0 device
-`2232:1068`.
+External USB devices enumerate after insertion, and the internal camera
+enumerates as UVC 1.0 device `2232:1068`.
 
 Camera streaming is outside this filter's scope. The camera requires a
 three-transaction high-speed isochronous endpoint, which stock Haiku xHCI
@@ -79,11 +73,7 @@ currently encodes incorrectly. A single-transaction userspace fallback reaches
 the device but receives header-only UVC packets. See
 [`jr_uvc_probe.md`](jr_uvc_probe.md).
 
-The following remain unvalidated:
-
-- internal Bluetooth `8087:07dc` enumerates;
-- a USB device present during boot enumerates;
-- removal/reinsertion and both external ports enumerate without rebooting.
-
-Camera UVC streaming remains blocked on a generic upstream xHCI fix; no Media
-Kit add-on is planned before that transport works.
+Internal Bluetooth, boot-present USB devices, repeated hotplug, and both
+external ports are not qualified. Camera streaming is blocked on the generic
+xHCI high-bandwidth isochronous issue described in
+[`jr_uvc_probe.md`](jr_uvc_probe.md).

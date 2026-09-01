@@ -82,12 +82,10 @@ reinterpreted as protocol responses.
 A spontaneous keyboard reset disables decoding and schedules reinitialization
 from reader context.
 
-## Current support
+## Supported behavior and limitations
 
-The driver is validated on Winky for normal typing, modifiers, extended keys,
-repeat configuration, and early-boot/debugger handoff.
-
-Current limitations:
+The Winky interface supports normal typing, modifiers, extended keys, repeat
+configuration, and early-boot/debugger handoff.
 
 - Chromebook top-row action keys are exposed as ordinary function keys.
 - Keyboard backlight control is outside the 8042 interface and is not

@@ -6,11 +6,9 @@ SPDX-FileContributor: Generated with GitHub Copilot (GPT-5.6 Sol)
 
 # `jr_uvc_probe`
 
-`jr_uvc_probe` is Jidō Renga's first userspace UVC bring-up tool. It is a
-standalone fitness sweep, not a Media Kit add-on. Its pure descriptor, control,
-payload, and validation core lives under `overlay/bin/jr_uvc_probe/core/` so a
-future `jr_uvc.media_addon` could reuse it after kernel transport support exists.
-No camera Media Kit add-on is currently shipped.
+`jr_uvc_probe` is a standalone userspace fitness sweep for Winky's internal UVC
+camera. It is not a Media Kit add-on. Its descriptor, control, payload, and
+validation core lives under `overlay/bin/jr_uvc_probe/core/`.
 
 The Winky BSP installs the binary at `/boot/system/bin/jr_uvc_probe`. It opens
 only the public USB Kit API and matches the internal `2232:1068` camera. By
@@ -88,31 +86,23 @@ YUY2 frames must be exactly `width * height * 2`. MJPEG requires SOI and a SOF
 marker, stays within the negotiated size, and records a missing EOI as a warning
 rather than discarding an otherwise useful bring-up sample.
 
-Haiku's current xHCI path rejects multiplier-bearing Winky alternates 4 through
-7. Winky hardware testing confirmed that the camera negotiates 3072
-bytes per microframe for every mode, selecting alternate 7, while stock xHCI
-rejects Configure Endpoint with `Bandwidth`. The failure is caused by xHCI
-programming raw high-speed `wMaxPacketSize` (`0x1400`) as 5120 bytes instead of
-masking it to 1024 and carrying the three-transaction multiplier separately.
+Haiku's xHCI path rejects Winky's multiplier-bearing alternates 4 through 7.
+The camera requires 3072 bytes per microframe on alternate 7, while stock xHCI
+programs raw high-speed `wMaxPacketSize` (`0x1400`) as 5120 bytes instead of
+separating the 1024-byte payload from its three-transaction multiplier.
 
 Until that general Haiku xHCI fix lands, the probe deliberately selects the
 largest single-transaction alternate (alternate 3, 1024 bytes per microframe)
 and records `high_bandwidth_avoided`.
 
-Hardware validation of that fallback reached the camera but did not produce a
-frame. All 41 standard modes negotiated their exact requested tuple, activated
-the camera, and completed 2,624 isochronous packets with successful transport
-status. Every packet contained only its 12-byte UVC header: zero payload bytes,
-frame-ID toggles, or end-of-frame markers arrived. The run introduced no xHCI
-`Bandwidth` or `Endpoint not enabled` errors, confirming that the
-single-transaction schedule itself works, but it cannot satisfy the camera's
-committed 3072-byte payload contract.
+The single-transaction fallback negotiates and activates modes but receives
+header-only packets because it cannot satisfy the committed 3072-byte payload
+contract. No mode produces a valid frame.
 
-Full Winky camera support therefore requires the generic Haiku xHCI
-high-bandwidth isochronous fix. The out-of-tree PCI routing filter cannot alter
-endpoint-context encoding inside stock xHCI, and a Media Kit add-on cannot
-repair transport below USB Kit. Camera integration remains intentionally
-stopped at this diagnostic boundary.
+Winky camera streaming requires a generic Haiku xHCI high-bandwidth
+isochronous fix. The PCI routing filter cannot alter endpoint-context encoding
+inside stock xHCI, and Media Kit cannot repair transport below USB Kit. No
+camera Media Kit add-on is shipped.
 
 Exit status is 0 only after at least one active mode passes, 1 after enumeration
 with no passing mode or a fatal sweep error, and 2 when the exact camera cannot

@@ -1,117 +1,191 @@
 # Intel ValleyView graphics driver
 
-`intel_valleyview` is the native Haiku graphics driver for the ValleyView GPU in
-Winky. It owns PCI device `8086:0f31`, adopts the firmware-lit eDP panel on DP_C
-and pipe A, and publishes a single native 1366x768 RGB32 mode with a 5504-byte
-stride.
+`intel_valleyview` is the native Haiku graphics driver for Winky's ValleyView
+GPU, PCI `8086:0f31`. It adopts the firmware-lit eDP panel on DP_C and pipe A,
+publishes the native 1366x768 RGB32 mode, accelerates frame presentation and
+cursor movement, and provides the kernel interface used by the Crocus OpenGL
+renderer.
 
-The driver, accelerant, and diagnostic tool install at their canonical Haiku
-paths:
+The runtime components install at canonical Haiku paths:
 
 ```text
 /boot/system/add-ons/kernel/drivers/dev/graphics/intel_valleyview
 /boot/system/add-ons/accelerants/intel_valleyview.accelerant
+/boot/system/non-packaged/add-ons/opengl/Crocus
 /boot/system/bin/intel_valleyview_probe
 ```
 
-## Firmware-gated takeover
+## Firmware-gated display ownership
 
-The driver does not perform a general modeset. It accepts only the exact
-firmware state validated on Winky:
+The driver does not implement a general modesetter. It accepts the Winky
+firmware state only when all required registers agree:
 
-- a locked DPLL and enabled pipe A;
-- native 1366x768 panel timing, 1530x793 total;
-- eDP enabled on DP_C;
-- the firmware 1024x768 RGB32 source and 4096-byte stride;
-- an enabled panel fitter in firmware AUTO mode;
-- panel power and PWM state consistent with the captured snapshot;
-- a complete, present GGTT mapping for the firmware framebuffer;
-- no active firmware cursor.
+- DPLL and pipe A are enabled for the native 1366x768 timing;
+- eDP is active on DP_C;
+- the firmware source is 1024x768 RGB32 with a 4096-byte stride;
+- the panel fitter is enabled in firmware AUTO mode;
+- panel power and PWM state are coherent;
+- the firmware framebuffer has a complete GGTT mapping; and
+- no firmware cursor is active.
 
-Every relevant live register is rechecked immediately before takeover. Unknown
-or stale state is rejected without modifying the display. Takeover saves the
-firmware plane, fitter, cursor, CxSR, PWM, and GGTT state before installing any
-candidate mapping.
+Every live register is checked immediately before takeover. A mismatch leaves
+the display untouched. Successful takeover saves the firmware plane, fitter,
+cursor, CxSR, PWM, and GGTT state for teardown.
 
-## Presentation architecture
+## P0 presentation
 
-Haiku's local app_server draws into its own cached backbuffer, then copies each
-damaged rectangle row by row into the framebuffer returned by the accelerant.
-Returning the live write-combined scanout therefore exposes each partial damage
-copy as it happens.
+The accelerant gives app_server a cloneable write-back shadow framebuffer, not
+a live write-combined scanout. A kernel worker presents complete frames:
 
-`intel_valleyview` instead returns a cached write-back shadow framebuffer.
-app_server's damage copies land in that shadow and are never scanned out
-directly. A display-priority kernel worker presents complete frames:
+1. choose the scanout not named by `DSPASURFLIVE`;
+2. copy the complete shadow into that inactive scanout;
+3. wait for BCS completion, or drain CPU stores for the fallback copy;
+4. program `DSPASURF`;
+5. retain the target until `DSPASURFLIVE` confirms the latch; and
+6. reuse only the other scanout.
 
-1. select the scanout not named by `DSPASURFLIVE`;
-2. copy the full shadow into that inactive scanout;
-3. wait for the BCS `MI_FLUSH_DW` completion marker when BCS performs the copy;
-4. arm the completed surface through `DSPASURF`;
-5. retain ownership of the target until `DSPASURFLIVE` confirms the latch;
-6. repeat with the other scanout.
+This hides app_server's row-by-row damage copies from the panel. A delayed latch
+keeps the target pending; hardware-visible memory is never overwritten or
+released speculatively.
 
-The live panel only sees complete scanout surfaces. The confirmed latch naturally
-paces the worker at the display refresh rate. A delayed latch remains pending;
-the target is never reused or overwritten while hardware may still adopt it.
+### GGTT layout
 
-The resulting desktop, window drawing, text rendering, and cursor motion are
-hardware-validated as fast and smooth on Winky.
-
-## GGTT and cache contract
-
-The native framebuffer footprint is 1032 pages. P0 reserves three such ranges
-plus eight private pages at the top of the 256 MiB GMADR aperture:
+P0 reserves three 1032-page framebuffer ranges and eight private pages at the
+top of the 256 MiB GMADR aperture:
 
 | Range | GGTT offset | CPU mapping | GGTT policy |
 |---|---:|---|---|
-| app_server shadow | `0x0f3e0000` | write-back, cloneable | writable, CPU-cache snooped |
+| app_server shadow | `0x0f3e0000` | write-back, cloneable | writable, snooped |
 | scanout 0 | `0x0f7e8000` | write-combining, private | writable, non-snooped |
 | scanout 1 | `0x0fbf0000` | write-combining, private | writable, non-snooped |
 | 64x64 cursor | `0x0fff8000` | private | writable, non-snooped |
 | BCS ring | `0x0fffc000` | private | writable, non-snooped |
-| hardware status | `0x0fffd000` | private | writable, non-snooped |
+| BCS HWS | `0x0fffd000` | private | writable, non-snooped |
 | BCS test source | `0x0fffe000` | private | writable, non-snooped |
 | BCS test destination | `0x0ffff000` | private | writable, non-snooped |
 
-Physical pages are allocated at boot and vary between runs. The fixed GGTT
-layout keeps cursor, ring, status, and test addresses at their proven top-of-
-aperture locations while the larger presentation allocation grows downward.
+ValleyView has no LLC. The shadow's snooped PTEs make app_server's cached writes
+visible to BCS. Scanouts remain write-combined and non-snooped because they are
+display destinations.
 
-The shadow's snooped PTEs make app_server's cached writes coherent with BCS on
-non-LLC ValleyView. Scanouts remain write-combined and non-snooped because they
-are display destinations, not CPU rendering surfaces.
-
-## BCS presentation and fallback
-
-Before the graphics node is published, the driver proves the complete
-presentation path against the inactive scanout. It writes a deterministic
-per-pixel pattern with distinct row padding into the cached shadow, performs a
-full-frame BCS copy, and verifies every visible destination pixel and untouched
-padding through the CPU mapping.
-
-A successful test enables BCS presentation. If data verification or a safely
-restored BCS submission fails, presentation uses a full-frame CPU copy instead.
-The same page-flip and ownership protocol applies to both copy engines. An unsafe
-ring cleanup faults the candidate rather than pretending the CPU fallback is
-safe.
-
-The runtime BCS path is synchronous. Each submission acquires forcewake, installs
-the private ring and hardware-status page, waits for its completion marker,
-restores the prior ring and wake state, and only then permits the surface flip.
+Before publishing the graphics node, the driver verifies a coordinate-dependent
+BCS copy from the cached shadow to the inactive scanout, including visible
+pixels and untouched row padding. A safe test failure selects full-frame CPU
+copy. An uncertain ring cleanup faults the graphics path rather than treating
+fallback as safe.
 
 ## Cursor, brightness, and DPMS
 
-The accelerant implements Haiku's preferred `B_SET_CURSOR_BITMAP` hook. Default
-RGBA cursors are converted into Intel's 64x64 ARGB surface format and programmed
-with ValleyView cursor mode `0x27`. The cursor plane moves independently of
-frame presentation and is hardware-validated for smooth motion.
+The accelerant implements `B_SET_CURSOR_BITMAP`. RGBA cursors are converted to
+Intel's 64x64 ARGB format and use cursor mode `0x27`; cursor movement is
+independent from frame presentation.
 
-The driver preserves the firmware PWM period and exposes normalized brightness
-control. Soft DPMS blanks the backlight, cursor, and primary plane without
-power-cycling the panel link. Blank and unblank operations serialize with the
-present worker. A scanout is not reused after blanking until the plane is
-disabled and the live surface no longer names any P0 framebuffer.
+Brightness control preserves the firmware PWM period. Soft DPMS serializes
+with presentation and blanks the backlight, cursor, and primary plane without
+power-cycling the panel link. Unblanking starts from a confirmed detached plane,
+populates one scanout, confirms its latch, and only then restarts presentation.
+
+## Render discovery and contexts
+
+`kGetRenderDeviceInfo` is a separately versioned discovery ABI. It reports the
+ValleyView generation, no-LLC cache model, GGTT aperture, P0 reservation,
+supported queue modes, memory limits, and whether the complete render service
+is ready.
+
+Each open render client owns:
+
+- one scratch-backed 2 GiB Gen7 PPGTT;
+- a private scratch page mapped by every free PTE;
+- a 64 KiB hardware context;
+- a persistent ring and HWS page;
+- trusted batch and result storage;
+- a bounded queue and ordered 64-bit timeline; and
+- independently accounted BO allocation and residency.
+
+Page zero is reserved. PPGTT tables occupy a fragmented 2 MiB DMA32 allocation
+whose physical pages are bound as 512 Gen6 PDE entries in a 64 KiB-aligned GGTT
+run. Cached page-table writes are completed with bounded `clflush` and
+`mfence`.
+
+## Buffer objects and residency
+
+User BOs receive stable page-aligned PPGTT addresses and are not permanently
+bound into GGTT. Direct presentation and BCS diagnostics create a temporary
+GGTT binding for the bounded operation and restore its entries immediately.
+
+| Resource | Limit |
+|---|---:|
+| BO size | 64 MiB |
+| BOs per client | 256 |
+| Allocated bytes per client | 256 MiB |
+| Objects per submission | 64 |
+| Wired user-BO backing per client | 96 MiB |
+
+The backing area is pageable. Eviction replaces an idle BO's complete PPGTT
+range with scratch PTEs before unwiring its pages. Reload wires the same data,
+rebuilds the physical list, and restores the original GPU VA. Queued, active,
+GGTT-bound, internal, or quarantined buffers are not eviction candidates.
+
+CPU mappings are driver-owned `B_KERNEL_AREA` clones. The mapping remains valid
+while backing is evicted because it names the pageable area rather than a
+physical allocation. Before close, the driver detaches inherited clones with
+`vm_change_clones_to_null_areas()`.
+
+Single-sample window color, staging, batch, and state resources are linear.
+Gen7 multisample color and depth use tiled layouts; separate stencil uses W
+tiling. Tiled GPU resources are not exposed as logically linear mappings or
+external modifiers.
+
+## Submission isolation
+
+An enqueue names one context, one batch BO, a dword-aligned range of at most
+64 KiB, and up to 64 unique client BO handles with explicit read, write, and
+execute access. The batch is the only executable BO and is read-only.
+
+The kernel copies the batch into private GGTT memory before parsing it. The
+parser rejects unknown commands, nested batch starts, BLT commands, unapproved
+LRI pairs, global-GTT or MMIO `PIPE_CONTROL` writes, malformed lengths, and
+nonzero data after `MI_BATCH_BUFFER_END`.
+
+The trusted ring loads the client's page directory, posts the load, invalidates
+the TLB, switches hardware context with the required arbitration and
+extended-state flags, performs cache barriers, dispatches the immutable shadow,
+and writes a completion marker outside client PPGTT.
+
+Safe mode resets RCS and verifies the captured baseline after every batch.
+Persistent modes retain context and power ownership between healthy jobs.
+Timeout, fault, Safe handoff, teardown, and shutdown reset the engine and fail
+any completion that cannot be established.
+
+## Queue and presentation
+
+Each client has a bounded FIFO and a monotonically increasing nonzero fence
+timeline. The kernel worker schedules ready clients round-robin. Completion
+records support blocking waits, dequeue, and `select()` readiness.
+
+Direct `SwapBuffers()` appends a presentation job to the same timeline and
+returns without waiting. Crocus supplies the retired linear color BO and a
+copied clipping snapshot. BCS copies the requested rectangles into P0's shadow;
+P0 continues to own shadow-to-scanout presentation.
+
+Older unpresented frames may be dropped only within the same window stream.
+Their fences still retire in order. The CPU presentation fallback drains the
+timeline first so pending BCS work cannot overwrite the fallback frame.
+
+## Crocus renderer
+
+`tools/build-crocus` builds the maintained Mesa fork as the
+`BGLRenderer` add-on. Haiku loads it from the system non-packaged override
+directory. If discovery, context creation, or screen setup fails, the add-on
+delegates to packaged Software Pipe.
+
+The BGL frontend exposes an OpenGL 3.1 compatibility context with GLSL 1.40.
+EGL, GLES, WebGL, external buffer sharing, performance monitors, and
+externally supplied tiled allocations are not part of this interface.
+
+Compatibility uniforms use binding-table pull loads. Display-list save BOs are
+bounded to 4 MiB. Haiku-specific transfer allocation and Mesa-internal locking
+avoid unsupported allocator and pthread assumptions.
 
 ## Locking and teardown
 
@@ -122,410 +196,47 @@ device.lock -> renderLock -> bcsLock
 device.lock -> presentLock -> bcsLock
 ```
 
-The present worker takes `presentLock -> bcsLock` and never takes `device.lock`.
-`renderLock` and `presentLock` never nest. The RCS diagnostic binds both hidden
-allocations under the render path, releases `renderLock`, then freezes
-presentation under `presentLock -> bcsLock` while sampling display state and
-using RCS. Every forcewake, engine-ring, and diagnostic GGTT operation takes
-`bcsLock`.
+The present worker takes `presentLock -> bcsLock` without `device.lock`.
+`renderLock` and `presentLock` never nest.
 
-Shutdown joins the present worker before quiescing BCS or restoring display
-state. The candidate cursor is detached, BCS is quiesced, the firmware plane is
-restored and observed live, and only then are the original GGTT PTEs reinstalled.
-The saved firmware cursor state is restored and observed after its candidate
-mapping is gone.
-
-If the worker, cursor, BCS ring, plane, or GGTT cannot be proven detached, every
-P0 allocation is quarantined. The kernel never returns a page to the allocator
-while the GPU or display may still reference it.
+Shutdown joins the render and present workers, releases persistent RCS
+ownership, detaches the candidate cursor and BCS ring, restores and observes the
+firmware plane, and then restores the original GGTT PTEs. Any object that may
+remain referenced is quarantined rather than freed.
 
 ## Diagnostics
 
-`intel_valleyview_probe --p0-status` reports:
+`intel_valleyview_probe` provides:
 
-- native, BCS, and presentation status;
-- shadow, scanout, cursor, ring, and status addresses;
-- programmed and live plane surfaces;
-- panel-fitter and cursor registers;
-- BCS request, submission, and failure counts;
-- confirmed frame, copy-engine, copy-time, flip-time, and latch-failure counts.
+- `--p0-status` for display, cursor, engine, and presentation state;
+- `--p0-benchmark` for shadow throughput and confirmed scanout;
+- `--p0-test` for the private BCS fill/copy self-test;
+- `--render-info` for the render capability boundary;
+- `--render-transport-test` for RCS diagnostics, isolated submission, Crocus
+  raster, mapping ownership, and P0 coexistence;
+- `--render-persistent-test` for two-client switching and fault recovery; and
+- `--render-residency-test` for stable-VA eviction and reload.
 
-`intel_valleyview_probe --p0-benchmark` measures cached shadow upload and
-read/modify/write throughput, writes two identical 128x128 bottom-left grids,
-waits for two confirmed presentation frames, and verifies that the active
-scanout matches `DSPASURFLIVE`.
+`intel_valleyview_gl_suite --p2-lab` combines persistent scheduling, fault
+recovery, residency, direct-presentation collapse, and the process-isolated
+OpenGL semantic suite.
 
-`intel_valleyview_probe --p0-test` reruns the private BCS fill/copy self-test
-under the same serialization used by presentation.
+Set `VALLEYVIEW_GPU_DEBUG=1` only for application investigation. It enables
+bounded batch, queue, fault, and presentation telemetry.
 
-## Render boundary
+## Supported configuration and limitations
 
-The kernel driver exposes a separately versioned `kGetRenderDeviceInfo` query
-for hardware-renderer discovery. It reports the ValleyView generation, GGTT
-aperture, no-LLC cache model, P0's reserved aperture range, and the distinction
-between engines proven by kernel diagnostics and engines available for
-userspace submission.
-
-The render status is `B_NOT_SUPPORTED` until an open client has proven the RCS
-diagnostic, created its PPGTT, and completed the immutable-shadow submission
-bootstrap. It then becomes `B_OK`; `IsRenderReady()` requires the complete
-linear synchronous transport, trusted completion, command isolation, and reset
-recovery. Crocus keeps color and staging resources linear while using the
-hardware-required Y/W layouts for Gen7 depth and stencil resources.
-
-`intel_valleyview_probe --render-info` prints this boundary without attempting
-submission or changing GPU state.
-
-### Linear render-memory substrate
-
-When native P0 is healthy, the discovery query advertises per-open buffer
-objects, driver-owned CPU mappings, GGTT addresses, and cache-domain
-transitions.
-Each client is limited to 64 buffers, 16 MiB per buffer, and 64 MiB total.
-Buffers use fragmented pages locked below 4 GiB rather than requiring
-physically contiguous allocations.
-
-The GGTT allocator recognizes free space by the exact firmware scratch PTE
-saved during P0 takeover. It excludes GGTT address zero and the complete P0
-range, saves every displaced scratch entry, installs snooped writable PTEs, and
-verifies both installation and exact restoration. Buffer pages are quarantined
-rather than freed if restoration cannot be proven.
-
-Buffers are write-back CPU mappings with snooped GGTT entries. Single-sample
-color, staging, batch, and state resources are linear. Multisample render
-targets use the hardware-required tiled layout; depth and stencil BOs expose
-only their raw hardware layout to the CPU. Crocus does not advertise a
-logically detiled mapping. Mappings are non-transferable kernel areas revoked when their handle
-or client closes. Teardown detaches every inherited clone from the backing cache
-before releasing BO accounting, so forked mappings cannot retain pinned pages.
-Their tracked domains are CPU, the kernel-owned BCS, and synchronous RCS
-ownership. BCS submission remains kernel-generated under `bcsLock`.
-
-### Per-client PPGTT substrate
-
-Each open client may explicitly create one software render context before
-creating any BOs. Creation allocates a 2 GiB Gen7 two-level PPGTT and reserves
-virtual page zero. Buffers created while the context is healthy receive a stable
-page-aligned PPGTT address before creation succeeds. The existing `gpuOffset`
-remains the GGTT/BCS diagnostic address; `renderAddress` is zero without a
-context and carries the isolated PPGTT address with one. Duplicate context
-creation and context creation after BO allocation return `B_BUSY` without
-changing the client's live resources.
-
-The PPGTT uses 512 complete 1024-entry page tables in a fragmented 2 MiB DMA32
-allocation. Their physical pages are installed as Gen6 PDE encodings in a
-2 MiB GGTT run aligned to 64 KiB; that GGTT offset is the diagnostic `PP_DIR`
-base. A separate DMA32 scratch page backs all 524,288 PTEs initially, using
-writable snooped BYT PTEs. Unmapped writes therefore remain in private scratch
-memory. Although the encoding helpers preserve the Gen6 40-bit format, current
-BO, page-table, and scratch allocations remain locked below 4 GiB.
-
-Page-table writes are made through the cached kernel mapping and completed with
-bounded x86 `clflush` operations followed by `mfence`. BO close restores its
-PTEs to scratch before releasing its GGTT binding or backing. Context destroy
-restores every BO mapping, verifies and restores the directory's GGTT entries,
-then releases the directory, scratch, and bitmap. Any restoration that cannot
-be proven quarantines the potentially referenced memory and disables render
-work. Quarantined PPGTT resources are never rewritten or unbound during client
-teardown. The scratch restoration model follows Linux i915
-`gt/gen6_ppgtt.c`; cache-line completion follows its `gt/intel_gtt.c`
-page-table fill path.
-
-### Synchronous isolated RCS submission
-
-After the kernel RCS diagnostic has proven the engine, a healthy PPGTT context
-advertises executable render contexts, command isolation, and reset recovery.
-Before the new address-space path is proven, the ioctl accepts only a
-one-dword `MI_BATCH_BUFFER_END` bootstrap. Successful completion and full
-restoration of that immutable-shadow transaction enable synchronous RCS
-submission, trusted synchronous completion fences, and RCS in
-`submissionEngines`. A normal submission names its
-context, one batch BO, a dword-aligned batch range of at most 64 KiB, and a
-fixed inline list of up to 64 unique client BO handles. The batch must be in the
-list. Every listed BO must be CPU-owned, healthy, and mapped in that client's
-PPGTT.
-
-The kernel copies the range into a private 19-page GGTT workspace before
-parsing it, so later CPU writes cannot change the accepted command stream.
-The strict Gen7 parser rejects unknown commands, nested batches, BLT commands,
-unapproved LRI pairs, global-GTT or MMIO `PIPE_CONTROL` writes, malformed
-lengths, and nonzero data after `MI_BATCH_BUFFER_END`. State and resource
-pointers still resolve only through the client's scratch-backed PPGTT.
-
-The accepted shadow is dispatched with a privileged bare
-`MI_BATCH_BUFFER_START`. On SNB/IVB/VLV, the nominal non-secure bit also selects
-PPGTT once PPGTT is enabled, so setting it would fetch from a mutable client
-address rather than the immutable GGTT shadow. The parser is therefore the
-privilege boundary, following Linux i915's Gen6/7 shadow-parser model. The
-workspace is not mapped into the client PPGTT, and the trusted ring writes its
-timestamp and completion marker through GGTT. Client commands cannot forge
-retirement or modify the shadow.
-
-Submission freezes presentation, programs the client's 2 GiB `PP_DIR`, enables
-the Gen7 64-byte PPGTT cache controls in `GAC_ECO_BITS` and `GAM_ECOCHK`,
-programs the client's 2 GiB `PP_DIR`, enables legacy RCS PPGTT, flushes the TLB,
-then repeats the page-directory load inside the trusted RCS ring. That sequence
-matches Linux's Gen7 legacy-ring path: LRI loads of `PP_DIR_DCLV` and
-`PP_DIR_BASE`, a GGTT posting read, and `INSTPM` TLB invalidation. The ring then
-disables arbitration, switches to a 64 KiB-aligned kernel-owned hardware context
-with restore inhibited, reenables arbitration, and issues two complete
-PIPE_CONTROL invalidate/flush barriers before dispatch. The posting-read values,
-context address, and all barrier markers are returned in submission diagnostics.
-The context transition is required because Gen7 caches the PDEs in the active
-hardware context; it also avoids Bay Trail's documented full-PPGTT timing
-instability when execution follows page-directory changes too quickly.
-
-The driver waits synchronously for the trusted completion marker. Every started
-submission resets RCS, restores and verifies the original ring, HWS, mode,
-`PP_DIR`, global PPGTT controls, L3 registers, `INSTPM`, wake state, display
-signature, and BCS state, then restores BO ownership to CPU. A timeout, fault,
-or failed restoration is returned in the submission record with before,
-active, fault, and after snapshots. Any memory that might remain referenced is
-quarantined without further PTE or GGTT mutation.
-
-### Crocus raster candidate
-
-The combined probe carries the exact Mesa 22.0.5 Crocus render corpus generated
-for ValleyView PCI `0x0f31` from Gallium's triangle test. The target is forced
-linear: 300x300 B8G8R8A8, 1200-byte stride, and a 384 KiB allocation. The corpus
-contains the real clear and triangle VS/PS kernels, state, workaround data,
-vertex data, 2,036-byte command stream, seven BO roles, fourteen command
-relocations, and two surface-state relocations. Host tests reconstruct every BO
-at synthetic PPGTT addresses and parse the complete relocated batch.
-
-After the immutable-shadow bootstrap succeeds,
-`intel_valleyview_probe --render-transport-test` creates the seven real client
-BOs, patches only the recorded Crocus relocations to their assigned PPGTT
-addresses, submits all three `3DPRIMITIVE` packets, and checks both Crocus's
-PPGTT fence write and trusted kernel completion. The render target begins as a
-sentinel. Verification requires all 90,000 visible pixels to become opaque,
-roughly 36,000 pixels to carry interpolated triangle color, red/green/blue
-vertex regions, triangle edge positions and widths at six rows, representative
-interpolation samples, and an untouched 8,304-dword allocation guard. The
-checksum and every count remain in probe output for offline diagnosis.
-
-The combined Winky run hardware-validates this corpus through the same transport
-used by the installed Crocus screen.
-
-### Haiku Crocus renderer
-
-The derivative image installs `non-packaged/add-ons/opengl/Crocus`, a Mesa
-22.0.5 Gallium renderer built reproducibly by `tools/build-crocus`. Haiku checks
-the system non-packaged add-on directory before package add-ons, so Crocus
-deterministically owns renderer selection. If hardware screen creation fails,
-that add-on delegates to the packaged Software Pipe renderer. Crocus is mastered as a
-real loose file in `/boot/system/non-packaged/add-ons/opengl`, not as content
-inside packagefs; the packaged `mesa_swpipe` renderer remains installed as the
-next fallback. The maintained Mesa fork adds a
-Haiku Crocus buffer manager that creates and maps driver-owned BOs, uses their
-stable PPGTT addresses directly, shares the one per-open context between
-Crocus's synchronous render batches, submits the fixed inline validation list,
-and treats the returned trusted completion as its fence. DRM sharing, userptr
-aliasing, performance monitors, and externally supplied tiled allocation fail
-closed or remain disabled. The Haiku path uses binding-table pull constants
-because BYT VS push fetches do not retire in the isolated context, caps
-display-list save BOs at 4 MiB, and uses direct transfer records plus atomic
-Mesa-internal locks for texture upload and sampler validation.
-
-The HGL frontend creates the Crocus screen directly from
-`/dev/misc/intel_valleyview_probe`. Single-sample color and staging resources
-remain linear; Gen7 multisample color and depth use tiled layouts and separate
-stencil uses W tiling as required by the hardware. `flush_frontbuffer` maps
-only the retired linear single-sample color resource,
-copies it into a Haiku `BBitmap`, and hands it to the existing `BGLRenderer`
-clipping/direct-mode presentation path. The screen therefore reaches the
-P0-backed desktop without exposing overlay paths or GPU mappings at runtime. If
-discovery, bootstrap, or screen creation fails, it loads Haiku's packaged
-Software Pipe add-on, preserving the proven llvmpipe fallback.
-
-`intel_valleyview_crocus_demo` opens a 600x500 `BGLView`, prints `GL_RENDERER`
-and `GL_VERSION`, and draws a visible interpolated RGB triangle. It is the
-visible half of the final hardware gate after
-`intel_valleyview_probe --render-transport-test` passes.
-
-Set `VALLEYVIEW_GPU_DEBUG=1` in an application's environment to enable Crocus
-submission and presentation telemetry. The mode reports up to 256 parsed
-batches, the first timeout for each `VALLEYVIEW_GPU_CASE` with its RCS
-instruction/fault snapshot and surrounding immutable batch words, and
-frontbuffer samples and checksums. It is an investigation interface, not an
-acceptance test; GLTeapot covers one fixed-function compatibility workload and
-does not represent the complete OpenGL surface.
-
-`intel_valleyview_gl_suite` is a focused Haiku port of permissively licensed
-Piglit GL 1.0/1.1 batch, depth-function, and array-start cases, combined with
-project-owned explicit GLSL/VBO controls. One invocation tags and isolates
-clear, client-array, fixed-function VBO, immediate-mode, display-list,
-quad-strip scaling, depth, lighting, texture, line, and post-stall recovery
-stages in separate child processes so one failure cannot exhaust the following
-cases. It sets `VALLEYVIEW_GPU_DEBUG` and Mesa's batch decoder itself, and
-labels every submission through `VALLEYVIEW_GPU_CASE`, producing one capture
-that includes command/state decoding and can locate a hang without a flash per
-hypothesis. Winky hardware passes all 18 stages without a parser rejection,
-timeout, GL error, or core dump. The uploaded-texture stage presents the
-expected green sample, and the final explicit stage proves recovery after the
-legacy cases.
-
-GLTeapot also renders through Crocus. Its default **Limit FPS to refresh rate**
-setting calls `WaitForRetrace()` after every frame; Winky currently sustains
-about 44 fps and can dip during manipulation. GLTeapot emits roughly 162
-immediate-mode primitives per frame, while the current renderer submits
-synchronously, resets/restores RCS after each batch, invalidates the CPU mapping,
-copies into a temporary `BBitmap`, and then copies into the direct framebuffer.
-Because GLTeapot uses `BDirectWindow`, app_server composition is not the primary
-limit. The result is a compatibility proof, not a representative Crocus
-throughput benchmark.
-
-The asynchronous successor is specified in
-[`docs/design/intel_valleyview_p2.md`](../design/intel_valleyview_p2.md). P2
-keeps this Safe GL path as a separately selectable recovery mode while moving
-healthy work to queued timelines, persistent contexts, and fence-aware direct
-presentation. EGL remains outside that phase.
-
-Render protocol version 15 carries the P2 lab queue: immutable enqueue, explicit
-BO access, 64-bit timeline waits, completion dequeue, `select()` readiness,
-bounded per-client/device depth, a round-robin kernel worker, and complete
-submission-cleanup status in each completion record. Failed retired fences are
-terminal: Mesa poisons affected BOs instead of polling them as perpetually busy.
-The worker calls the proven Safe GL executor. Direct mode independently proves
-clipped BCS presentation into P0's framebuffer shadow using that reset-safe
-executor. Failure-only reset is reserved but rejected: the current transaction
-changes hardware-context state that cannot be restored by MMIO ring cleanup
-alone. A future persistent mode must own and switch resident context state
-rather than omit reset from the Safe executor.
-
-Winky completes the direct `BDirectWindow` gate across all 18 compatibility
-cases. Every render fence retired successfully, all submission cleanup fields
-were `B_OK`, and the kernel recorded 18 direct presents with zero failures.
-No direct case entered the mapped `BBitmap` fallback. BCS direct-copy ioctl
-latency ranged from 881 to 4,245 us, averaging 2,087 us. This proves the
-render-BO-to-P0-shadow path; a latest-frame presentation queue and nonblocking
-`SwapBuffers()` remain separate P2C work.
-
-Version 12 moves direct presents onto the render
-timeline and returns their fences from `SwapBuffers()` without waiting for RCS
-or BCS. It preserves BO lifetime through BCS completion and coalesces obsolete
-queued frames per window. Winky proves bounded 1–16 us present ioctls, queue
-depth six, seven same-stream drops, ordered retirement through fence 11, and
-the complete 18-case direct regression with zero failures or mapped fallback.
-
-Version 14 retains one trusted 192-KiB submission
-workspace per render context. Same-owner jobs reuse the active context;
-initialized client switches save and restore extended state; timeout, explicit
-Safe ownership transfer, and teardown reset to the captured baseline. Metrics
-separate claims, reuses, switches, releases, fault resets, and restore failures.
-The owner holds the proven forcewake/GT-wake power reference across idle
-intervals; BCS borrows it rather than acquiring a conflicting claim.
-
-Winky proves 32 healthy persistent jobs across two clients, 31 switches, zero
-healthy resets, one injected fault reset with recovery, and zero restore
-failures. The 24-case direct corpus then completes with full retained-state
-masks on every RCS job.
-
-User BOs now keep stable PPGTT addresses without permanent GGTT mappings.
-Direct presentation and BCS tests bind them into GGTT only for the bounded copy
-and restore those PTEs immediately afterward. Reported limits are 64 MiB per
-BO, 256 MiB and 256 BOs per client, and 64 objects per submission.
-
-Protocol version 15 makes user BO areas pageable and caps pinned physical
-backing at 96 MiB per client. Eviction replaces the BO's stable PPGTT range
-with the client's scratch PTE, unwires its pages, and leaves the kernel and
-Mesa virtual mappings intact. Reload wires the same pageable data, rebuilds
-the physical-page list, restores the same PPGTT VA, and relies on the trusted
-submission wrapper's TLB invalidation before RCS access. Queued references,
-active engine domains, GGTT bindings, quarantine, and internal context
-resources are never eviction candidates. Failures roll back to scratch or
-quarantine the context; they do not expose stale physical addresses.
-
-The 112-MiB/81-BO probe now exceeds the physical budget, requires eviction and
-reload counters to advance, checks data through mappings that survive the
-unwire/re-wire cycle, and requires physical residency to return to its baseline
-after close. Winky completes this gate with 18 physical evictions, two reloads,
-an RCS marker written through the reloaded original PPGTT addresses, a
-96-MiB physical-residency high-water mark, and zero residual residency.
-
-The complete version-15 OpenGL gate also passes 32/32 process-isolated direct
-cases with zero launch failures. It asserts the Crocus OpenGL 3.1 compatibility
-profile and reported limits, then pixel-verifies blending, scissoring, mipmapped
-and cube textures, readback, element-buffer drawing, and a four-sample tiled
-renderbuffer resolve. This is the hardware-proven P2 profile boundary, not
-Piglit or CTS certification.
-
-`intel_valleyview_probe --render-memory-test` creates two client-owned buffers,
-clones both into the process, writes coordinate-dependent source and destination
-patterns, confirms that userspace cannot delete the driver-owned mappings,
-cycles their domains, performs a kernel-generated one-page BCS copy, verifies
-both mappings, restores their GGTT entries, and closes the handles. The BCS
-data path is hardware-validated on Winky while native P0 presentation remains
-active and fault-free.
-
-### RCS transport diagnostic
-
-The driver has a kernel-generated RCS diagnostic, not a userspace submission
-API. It allocates a hidden four-page transport buffer for the RCS ring,
-hardware-status page, marker batch, and result page, plus a separate hidden
-19-page GGTT object. The second object runs the MIT-licensed Ivy Bridge
-clear-residual EU kernel and Gen7 media-pipeline sequence derived from the local
-Linux i915 `gen7_renderclear.c` reference.
-
-The ring first runs the marker batch and records the RCS timestamp, then chains
-to the secure kernel shader batch and retires through a Gen7 `PIPE_CONTROL`
-completion write. The shader batch initializes a B8G8R8A8 render-cache surface
-with a sentinel and emits 36 `MEDIA_OBJECT` dispatches, the ValleyView
-`max_threads` value, to write zero blocks. A following guard page must remain
-untouched.
-
-Output verification requires exactly 2,048 zero dwords and 14,336 sentinel
-dwords, no third values, and an untouched guard. It deliberately does not assume
-byte positions: the first Winky run showed that ValleyView media-block placement
-differs from the naive coordinate model. Diagnostics also retain the changed
-range, checksums, first unexpected value, every shader GGTT PTE transition, and
-cache modes 0 and 1 before and after execution.
-
-The diagnostic requires an idle legacy RCS with PPGTT and active CCID context
-selection disabled. It programs and posts the hardware-status page before the
-required RCS TLB sync-flush. It snapshots global GT, BCS, CCID, context,
-page-directory, cache-mode, and decoded RCS fault state. Because the shader
-changes pipeline, state-base, media, and cache state, every attempt ends with a
-bounded RCS reset. The driver then restores cache modes, HWS, ring, context,
-page-directory state, and both hidden GGTT allocations, flushes the TLB again,
-and verifies the complete restoration. Unsafe restoration quarantines both
-buffers and fails all further render work closed.
-
-A successful diagnostic adds RCS to `provenEngines` and permits the isolated
-one-dword submission bootstrap; it does not itself add RCS to
-`submissionEngines`. When hardware passes, it proves only this kernel-generated
-EU/render-cache workload, not the separate PPGTT dispatch, completion fences,
-tiling, or presentation.
-The `gfx_test8` Winky run hardware-validated the RCS marker and timestamp, EU
-shader/render-cache writes, `PIPE_CONTROL` completion, bounded reset,
-cache/ring/HWS/context and all 19 shader-PTE restorations, BCS operation, and P0
-coexistence. This is not evidence of 3D rasterization or Crocus readiness.
-
-`intel_valleyview_probe --render-transport-test` is the combined hardware gate.
-It runs render discovery and the kernel RCS diagnostic, creates a PPGTT context,
-verifies the executable capability boundary, rejects a duplicate context,
-submits a parsed one-dword `MI_BATCH_BUFFER_END` through the isolated transport,
-submits and verifies the Crocus triangle corpus, validates PPGTT addresses while
-exercising mapping ownership and the BCS memory copy, closes the buffers,
-destroys the context, captures P0 again, and prints one summary. Failure output
-retains the RCS diagnostic plus submission parser, object, workspace,
-completion, raster geometry/color/guard, L3, global GT, ring, `PP_DIR`, reset,
-restoration, and P0 state needed for offline diagnosis.
-
-## Current support
-
-The driver currently supports only the hardware-validated Winky configuration:
+The driver supports Winky's:
 
 - ValleyView PCI `8086:0f31`;
-- eDP on DP_C and pipe A;
-- one native 1366x768 RGB32 mode;
-- linear scanout;
-- BCS full-frame presentation with CPU fallback;
-- 64x64 monochrome and ARGB hardware cursors;
-- PWM brightness and soft DPMS.
+- eDP panel on DP_C and pipe A;
+- native 1366x768 RGB32 mode;
+- BCS presentation with CPU fallback;
+- monochrome and ARGB hardware cursors;
+- PWM brightness and soft DPMS; and
+- Crocus OpenGL 3.1 compatibility rendering.
 
-The panel fitter remains in its firmware AUTO configuration. With a native
-1366x768 pipe source, the observed geometry and diagnostic grids are square.
-Presentation copies the full frame continuously; it does not consume app_server
-damage notifications. Suspend/resume and other ValleyView boards, ports, pipes,
-formats, tiling modes, and display timings are not implemented or validated.
+The panel fitter stays in firmware AUTO mode. Presentation copies complete
+frames rather than consuming app_server damage notifications. Suspend/resume,
+other ValleyView devices, ports, pipes, display timings, EGL, and browser
+surface integration are not implemented.

@@ -306,6 +306,21 @@ between functions. Format with `haiku-format` and check with
 rule: `references/coding-style.md`. Authoritative source:
 <https://www.haiku-os.org/development/coding-guidelines>.
 
+## Documentation durability
+
+Describe the driver that exists now: ownership, interfaces, hardware meaning,
+concurrency, error behavior, and current limitations. Do not turn committed
+documentation into a development journal.
+
+Keep prompts, task plans, phase notes, captures, build hashes, experiments,
+discarded approaches, and validation transcripts in session metadata. Git
+history already records previous implementations.
+
+Create or extend a skill only for a stable procedure reusable across future
+driver tasks. A device-specific architecture description belongs in `docs/`;
+a repository-wide invariant belongs in `AGENTS.md`; a current-task instruction
+belongs in the session. Skills must not preserve task prompts or status.
+
 ## Weaving it into the overlay
 
 This skill covers *authoring* the driver. To compile and integrate it — the

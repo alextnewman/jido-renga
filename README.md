@@ -35,7 +35,7 @@ needed to make that hardware useful.
 
 ## Winky board support
 
-The first BSP targets the Samsung Chromebook 2 `XE500C12`, ChromeOS board
+The Winky BSP targets the Samsung Chromebook 2 `XE500C12`, ChromeOS board
 `winky`, built around Intel Bay Trail-M.
 
 | Area | Components | Purpose |
@@ -53,16 +53,11 @@ dependency.
 
 Detailed hardware contracts and limitations live in [`docs/`](docs/).
 
-Graphics development continues in
-[`P2`](docs/design/intel_valleyview_p2.md). Its bounded timeline queue, fair
-two-client scheduling, persistent RCS contexts, ordered fault recovery, and
-asynchronous BCS direct presentation are hardware-proven. The integrated gate
-switches 32 healthy context jobs without resetting, recovers one injected fault,
-verifies 112 MiB across 81 stable-VA BOs under a 96-MiB pinned-page budget,
-reloads evicted backing through the original PPGTT addresses, and completes
-32 isolated OpenGL 3.1 compatibility/profile cases. P2 is hardware-proven;
-Safe GL remains the recovery baseline. EGL and browser integration are
-reserved for P3.
+The ValleyView graphics stack provides a native desktop and Crocus OpenGL 3.1
+compatibility rendering. It uses private GPU address spaces, persistent
+contexts, bounded asynchronous queues, pageable buffer residency, and direct
+BCS presentation while retaining Safe GL and Software Pipe recovery paths.
+EGL and browser surfaces are not implemented.
 
 ## Why an overlay?
 

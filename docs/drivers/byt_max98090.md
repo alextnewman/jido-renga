@@ -6,431 +6,250 @@ SPDX-FileContributor: Generated with GitHub Copilot
 
 # Bay Trail SST + MAX98090 audio
 
-`byt_max98090` is the Bay Trail SST/MAX98090 audio-card add-on. It selects an
-immutable platform profile while probing its two independently enumerated
-devices. Winky, the Samsung Chromebook 2 XE500C12, is currently the sole
-configured profile:
+`byt_max98090` is the Haiku audio-card driver for Winky's Intel Bay Trail
+SST/LPE DSP and MAX98090 codec:
 
-- Intel Bay Trail SST/LPE DSP, ACPI HID `80860F28`;
-- MAX98090 codec, I2C ACPI HID `193C9890`.
+- LPE ACPI HID `80860F28`;
+- codec ACPI HID `193C9890`;
+- codec I2C address `0x10`; and
+- 48 kHz stereo `S16_LE` playback and capture.
 
-The add-on publishes `audio/hmulti/byt_max98090/0` from the LPE half. A singleton
-card object coordinates both halves, so either device may attach first. Opening
-the multi_audio device returns `B_DEV_NOT_READY` until the codec is initialized
-and the external SST firmware has completed its init handshake.
+The driver publishes:
 
-This is a device-manager `KernelAddon`, packaged directly at
-`add-ons/kernel/drivers/audio/hmulti/byt_max98090`. It must not use Haiku's
-legacy `drivers/bin` plus `drivers/dev/audio/hmulti` symlink layout; that path
-loads the binary through devfs and requires the incompatible legacy driver API.
-Its exported module names use the matching `drivers/audio/hmulti/byt_max98090`
-prefix so the kernel module resolver can map each module back to this add-on.
+```text
+/dev/audio/hmulti/byt_max98090/0
+```
 
-## Current implementation
+It is a device-manager `KernelAddon` installed at
+`add-ons/kernel/drivers/audio/hmulti/byt_max98090`. Its module names use the
+same `drivers/audio/hmulti/byt_max98090` prefix.
 
-The driver provides fixed 48 kHz stereo duplex audio between Haiku, the Intel
-SST DSP, and the MAX98090 codec:
+## Device model
 
-- preserves Winky firmware's 25 MHz `PLT_CLK_0` parent and forces it on;
-- maps the Bay Trail IRAM, DRAM, SHIM, mailbox, and ACPI IMR resources;
-- strictly parses the legacy `$SST` firmware container and bounds every module,
-  block, destination offset, and 32-bit MMIO copy;
-- writes the ACPI IMR physical base and BSS-reset feature into DSP DRAM before
-  releasing runstall, matching the MRFLD post-download contract;
-- resets and starts the DSP and waits up to five seconds for firmware
-  init-complete IPC;
-- preserves Linux's two-write/readback MRFLD start sequence: assert reset and
-  runstall, read back, then enable snooping and release reset/runstall;
-- configures MAX98090 as an I2S clock consumer for 48 kHz stereo 16-bit duplex
-  audio, including SDOUT, the Winky DMIC clock/compensation image, ADC gain,
-  and MIC2/IN34 headset routing;
-- reports fixed stereo playback and capture channels, independent physically
-  contiguous rings with shared period geometry, speaker/headphone controls,
-  and GPIO-selected active output and microphone sources;
-- accepts Haiku's mandatory enabled-channel writeback as a validated no-op
-  when both fixed stereo channels remain enabled;
-- starts the virtual-bus scheduler and configures SSP2 first, allocates the
-  `media1_in` stream, and only then enables its dependent DAPM route, matching
-  Linux's startup/hw_params/prepare ordering;
-- sends the exact 10-command playback route configuration sequence:
-  SBA virtual-bus start, SSP configure, SSP slot map, MMX media1 gain 0 dB,
-  MMX SWM media1_in → media0_out, MMX enable media0 path, SBA enable pcm0
-  input, SBA pcm0 input gain 0 dB, SBA SWM pcm0_in → codec_out0, and SBA
-  codec_out0 gain 0 dB;
-- latches a route-programming failure after its first diagnostic instead of
-  retrying and flooding the kernel log on every buffer exchange;
-- latches a stream-allocation failure until buffers are recreated or the DSP is
-  reloaded, preventing exchange-driven allocation log floods;
-- allocates the playback stream (100-byte MRFLD allocation, pipe 0x90, task 3,
-  PCM 48 kHz stereo S16_LE, timestamp address 0xff34484c);
-- allocates capture stream 3 on `pcm1_out` pipe 0x0e, task 3, with timestamp
-  address 0xff3448e4;
-- configures the direct six-command capture route: SSP slot map, zeroed
-  `codec_in0` DCR parameters, `codec_in0` gain 0 dB, SBA SWM
-  `codec_in0 -> pcm1_out`, `pcm1_out` enable, and `pcm1_out` gain 0 dB;
-- starts, drops, and frees both DSP streams independently;
-- implements `B_MULTI_BUFFER_EXCHANGE` with period-elapsed polling, firmware
-  timestamp reading, playback position from the SSP hardware counter, and
-  capture position from bytes committed to its DDR ring;
-- acquires the codec's two ACPI GPIO resources through the common GPIO service,
-  subscribes to both edges with 200 ms debounce, and reads the initial levels;
-- treats SCORE pin 14 as active-high headphone presence and pin 15 as
-  active-low microphone presence;
-- mutes the old MAX98090 path before switching `OUTPUT_ENABLE`, then unmutes
-  the selected speaker or headphone path;
-- exposes separate speaker/headphone volume and mute controls plus GPIO-driven
-  active-output and active-microphone selectors.
+ACPI enumerates the LPE and codec independently. A singleton card coordinates
+both nodes, so attachment order does not matter. The multi_audio device is
+published from the LPE node and returns `B_DEV_NOT_READY` until both the codec
+and DSP firmware are initialized.
 
-**IPC/period servicing is currently polling-based** with all host interrupts
-masked. The driver polls SHIM registers whenever waiting for DSP responses or
-period-elapsed notifications. IRQ-driven IPC handling is a future refinement.
+The driver exposes a focused Haiku interface rather than the Linux control
+graph:
 
-Audible internal-speaker playback and internal-microphone capture are validated
-on Winky hardware.
+- fixed stereo playback and capture;
+- independent contiguous DMA rings with shared period geometry;
+- speaker and headphone volume and mute controls;
+- GPIO-selected output and microphone sources; and
+- `B_MULTI_BUFFER_EXCHANGE` position and period reporting.
 
-## Microphone capture
+DSP cells, switch matrices, SSP controls, and raw codec registers remain
+private.
 
-The camera has no USB Audio interface. Winky's microphones are part of the
-MAX98090/SST audio card:
+## Winky hardware contract
 
-- internal microphone: digital microphone pair through MAX98090 `DMICL`, codec
-  SDOUT, SSP2 receive slots, SST `codec_in0`, and `pcm1_out`;
-- headset microphone: analog `IN34` through MIC2 with MICBIAS, both ADC paths,
-  then the same codec/SST receive route.
+Winky routes internal audio through SSP2. The DSP provides BCLK and FSYNC;
+MAX98090 is the I2S clock consumer. The format is 48 kHz stereo, 16 bits per
+slot, two slots, one-bit I2S delay, and active slot mask `0x3`.
 
-The default internal image mirrors Linux's Winky codec behavior. Coreboot
-leaves physical `PLT_CLK0` at 25 MHz, while the machine driver declares 19.2
-MHz to MAX98090; the codec therefore uses `PSCLK_DIV1`, DMIC divisor 8, and the
-48 kHz compensation value, yielding `DIGITAL_MIC_ENABLE=0x53` and
-`DIGITAL_MIC_CONFIG=0x60`. The validated internal path enables the MAX98090
-record DC blocker and uses raw ADC-biquad level `0x0f` (-15 dB) to remove the
-DMIC's full-scale DC offset without clipping speech. A headset-microphone GPIO
-transition first disables both sources, then atomically selects MIC2 at 10 dB
-with its 0 dB preamplifier, enables high-performance MICBIAS and both
-high-performance dithered ADCs, and applies the same record filter and
-attenuation. Removal restores the internal DMIC image.
+Coreboot leaves physical `PLT_CLK0` at 25 MHz. The driver preserves that parent
+selection and changes only control bits 1:0 to `FORCE_ON`. MAX98090 uses
+`PSCLK_DIV1`; consumer-mode clock registers are cleared.
 
-MAX98090 input enables are latched through the codec shutdown sequencer. After
-enabling either DMIC or ADC power, the driver mirrors Linux's DAPM sequence:
-assert `DEVICE_SHUTDOWN` for 40 ms, release it, then verify the complete capture
-image by register readback.
+The codec is `\_SB.PCI0.I2C2` at 400 kHz. Its ACPI resources describe headphone
+and microphone GPIOs 14 and 15 in the Bay Trail SCORE community. They share
+controller GSI 49. The MAX98090 IRQ is 67, outside Haiku's usable IO-APIC range,
+so jack detection uses the GPIO service instead.
 
-The Winky BSP installs a bounded Media Kit test:
+The LPE resources include:
+
+- 2 MiB BAR0 for IRAM, DRAM, SHIM, and mailbox windows;
+- 4 KiB BAR1 for PCI configuration;
+- 1 MiB BAR2/IMR at physical `0x20000000`; and
+- DMA0, DMA1, SSP0, SSP1, SSP2, and IPC2HOST IRQs 24 through 29.
+
+The internal SST/MAX98090 path is distinct from PCI HDA `8086:0f04`, which
+remains available to Haiku's HDA driver for HDMI audio.
+
+## Firmware
+
+The Winky BSP installs the unmodified Intel SST image at:
+
+```text
+/boot/system/data/firmware/byt_max98090/fw_sst_0f28.bin
+```
+
+The driver checks the matching non-packaged path first. It accepts firmware by
+strictly validating the `$SST` container, module and block bounds, destination
+ranges, and 32-bit MMIO copy operations. A missing or invalid image leaves the
+device published but not ready.
+
+The image is separately licensed under
+`LICENSES/LicenseRef-Intel-SST.txt`. Package metadata installs that license as
+`data/licenses/Intel (SST firmware)`.
+
+Firmware loading:
+
+1. asserts DSP reset and runstall;
+2. copies validated IRAM, DRAM, and DDR blocks;
+3. writes the IMR base and BSS-reset feature to DSP DRAM;
+4. enables snooping and releases reset/runstall with posted readback; and
+5. waits up to five seconds for firmware-init IPC.
+
+The canonical image contains a final two-byte DDR tail. The loader follows the
+legacy 32-bit access contract and does not synthesize a partial MMIO word.
+
+## MRFLD IPC
+
+The 64-bit SHIM envelope carries payload length in its low word. Its high word
+contains category, task, driver ID, and response/large/done/busy flags. Stream
+mailboxes begin with an 8-byte packed DSP header.
+
+Host requests are serialized and use driver ID 1. Asynchronous firmware events
+use driver ID 0. Relevant stream commands are:
+
+| Command | ID |
+|---|---:|
+| allocate | `0x02` |
+| free | `0x03` |
+| pause | `0x04` |
+| resume | `0x05` |
+| start | `0x06` |
+| drop | `0x07` |
+| drain | `0x08` |
+| set parameters | `0x12` |
+
+Firmware init is an asynchronous driver-zero MRFLD command `0x01`, not a
+process-bit message. Both the 38-byte Winky response and the defined 48-byte
+form are parsed without reading beyond the advertised payload. Firmware-error
+command `0x11` fails initialization immediately.
+
+A successful stream allocation may return a short zero-result IPC with no
+mailbox body. This is a complete success response.
+
+IPC and period servicing are polling-based and host interrupts remain masked.
+Polling is bounded, and persistent allocation or routing failures are latched
+instead of retried on every buffer exchange.
+
+## Playback
+
+Playback uses stream ID 1, pipe `0x90`, task 3, and timestamp address
+`0xff34484c`. Its 100-byte allocation body contains the ring descriptors,
+fragment size, timestamp address, and PCM parameters. Periods are multiples of
+48 frames and the period count is even.
+
+Startup orders dependencies as the DSP requires:
+
+1. start the SBA virtual bus;
+2. configure SSP2 and its slot map;
+3. allocate `media1_in`;
+4. route `media1_in` to `media0_out`;
+5. enable `pcm0_in`;
+6. route `pcm0_in` to `codec_out0`; and
+7. apply explicit 0 dB gains to each active path.
+
+Firmware defaults are muted at -144 dB, so all required gains are programmed
+explicitly. Buffer exchange derives playback position from the SSP hardware
+counter and firmware period notifications.
+
+Speaker routing sends the left and right DACs to their matching speaker mixers.
+Headphone insertion mutes the speakers, switches `OUTPUT_ENABLE` to HPL/HPR,
+and then unmutes the headphone path. Removal performs the inverse sequence.
+
+## Capture
+
+Winky's camera has no USB Audio interface. Microphones belong to the
+MAX98090/SST card:
+
+- the internal digital pair uses DMICL, codec SDOUT, SSP2 receive slots,
+  `codec_in0`, and `pcm1_out`;
+- a headset microphone uses MIC2/IN34 and both ADC paths before the same SST
+  route.
+
+Capture uses stream ID 3, pipe `0x0e`, task 3, and timestamp address
+`0xff3448e4`. The DSP route sets the SSP slot map, zeroes `codec_in0` DCR
+parameters, applies 0 dB gain, connects `codec_in0` to `pcm1_out`, and enables
+the destination.
+
+The internal codec image uses DMIC divisor 8,
+`DIGITAL_MIC_ENABLE = 0x53`, `DIGITAL_MIC_CONFIG = 0x60`, record DC blocking,
+and raw ADC-biquad attenuation `0x0f`. Headset selection disables both sources
+before enabling MIC2, MICBIAS, and the ADCs.
+
+Input enables are latched through MAX98090's shutdown sequencer: assert
+`DEVICE_SHUTDOWN` for 40 ms, release it, and verify the complete capture image
+by readback.
+
+Buffer exchange reports capture position from bytes committed to the DDR ring.
+
+## Controls and GPIO
+
+SCORE pin 14 is active-high headphone presence. Pin 15 is active-low headset
+microphone presence. The driver subscribes to both edges with 200 ms debounce
+and reads initial levels before publishing the ready card.
+
+Speaker volume defaults to logical 10 (-14 dB), is capped at logical 20 (0 dB),
+and uses a fixed logical mixer level 2 (-6 dB). Headphone volume defaults to and
+is capped at logical 19 (-9 dB).
+
+The normal codec path programs the complete clock, interface, filter, routing,
+volume, and output-enable image. Configuration writes that define the active
+contract are read back before use.
+
+## Speaker equalization
+
+The Winky profile contains a seven-band MAX98090 speaker EQ encoded as Q4.20
+Direct Form I coefficients. The filter graph uses the ChromeOS frequencies and
+gains, with CRAS's high-pass calculation for its zero-resonance input. Poles
+remain inside the unit circle and the quantized response stays below 0 dB.
+
+Each 15-byte band is written in one I2C transaction while the codec is shut
+down, then all coefficients are read back. The path uses 4 dB EQ
+preattenuation.
+
+The stored DRC parameters are not enabled. The active speaker contract is the
+direct-sign seven-band EQ, 4 dB preattenuation, 0 dB speaker-volume ceiling,
+and -6 dB speaker mixer.
+
+## Test utilities
+
+The Winky image includes:
 
 ```sh
 jr_mic_probe /boot/home/microphone.wav 5
 jr_mic_collect /boot/home/artifacts 5
 ```
 
-Speak near the display during capture. `jr_mic_probe` requires exact stereo
-48 kHz S16_LE, writes a WAV, and reports callback count, bytes, frames, peak,
-RMS, and nonzero-sample percentage. It passes only after receiving nonzero
-samples without a full-scale rail. The collector creates a timestamped
-directory and zip containing the WAV, console output, exit status, and
-before/after syslogs.
+`jr_mic_probe` requires stereo 48 kHz `S16_LE`, writes a WAV, and reports
+callbacks, bytes, frames, peak, RMS, and nonzero-sample percentage. It succeeds
+only after receiving nonzero samples without a full-scale rail.
 
-## Platform profiles
+`jr_mic_collect` stores the WAV, console output, exit status, and before/after
+syslogs in a timestamped directory and zip.
 
-The driver remains one focused BYT/MAX98090 implementation. Platform profiles
-are load-time configuration records, not alternate backends or a Linux-style
-machine-driver layer. Probing matches the LPE and codec ACPI identities plus the
-codec I2C address, stores the selected profile ID on both driver nodes, and
-rejects attachments from different profiles.
+## Diagnostics
 
-The Winky profile contains the existing hardware contract: firmware paths, PMC
-clock programming, ACPI resource indices and expected IMR/IRQ values, SST task,
-stream, pipe, mailbox, SSP and PCM parameters, and jack GPIO wiring. Playback,
-GPIO handling, IPC, codec programming, and `multi_audio` behavior are otherwise
-unchanged. Winky is the only registered and hardware-validated profile.
+Kernel messages begin with `byt_max98090:`. A normal initialization reports:
 
-## Hardware status
+1. the preserved and forced-on PMC clock;
+2. mapped LPE and IMR resources;
+3. the selected firmware path and init-complete IPC;
+4. MAX98090 revision and fixed format;
+5. initial jack GPIO state; and
+6. the published multi_audio path.
 
-On 2026-07-16, Winky completed firmware boot, stream allocation, DSP route
-configuration, stream start, period exchange, and audible playback through its
-internal speakers. The successful allocation reply is the firmware's short
-zero-result form with no mailbox body.
+Firmware timeout diagnostics include CSR, ISRX, IMRX, IPCX, and IPCD. Stream
+errors include command, pipe, task, ring geometry, timestamp address, and the
+raw firmware result. A failed buffer exchange sleeps after releasing driver
+locks because Haiku's `MultiAudioNode` otherwise retries immediately.
 
-Headphone-jack detection and output switching are hardware-validated and
-reliable in both directions on Winky. The path uses the Bay Trail SCORE
-community's shared GSI 49 rather than MAX98090 IRQ 67. Insertion selects HPL/HPR
-and mutes SPL/SPR; removal restores the internal speakers. SCORE pin 15 selects
-the headset microphone when present and the internal DMIC otherwise. Internal
-DMIC capture is hardware-validated; analog headset-microphone capture remains
-unvalidated.
+## Supported behavior and limitations
 
-## MRFLD IPC protocol
+The Winky profile supports:
 
-The 64-bit SHIM envelope carries payload length in its low word and the IPC
-category (`CMD=1` or `SET_PARAMS=2`), task/driver IDs, and
-response/large/done/busy bits in its high word. A stream-command mailbox body
-then begins with the packed 8-byte DSP header containing pipe and command IDs.
-The polling engine serializes host requests and therefore reuses Linux's first
-available private driver ID, `1`; asynchronous firmware events use driver ID
-`0`.
-Those DSP command IDs are allocate `0x02`, free `0x03`, pause `0x04`, resume
-`0x05`, start `0x06`, drop `0x07`, drain `0x08`, and set parameters `0x12`;
-allocate `0x20` and the other older generic IDs are not the Bay Trail protocol.
-Control byte streams use the same MRFLD envelope but carry their complete
-control command as the mailbox body.
+- internal-speaker playback;
+- headphone detection, switching, playback, volume, and mute;
+- internal digital-microphone capture;
+- fixed stereo period exchange; and
+- automatic microphone-source selection.
 
-Firmware init is an asynchronous driver-zero message, not a process-bit
-message. Its SHIM envelope has driver ID `0`, a large mailbox payload, and
-firmware task ID `3` on Winky. The mailbox begins with the 8-byte DSP header,
-whose command is MRFLD firmware-init `0x01`. The canonical
-`fw_sst_0f28.bin` reports a 38-byte success message, while Linux also defines
-a 48-byte form with a 40-byte init body and its result field at message offset
-44. Linux accepts the short form because its mailbox copy is zero-initialized;
-this driver models both forms explicitly without reading beyond the advertised
-message. It also treats asynchronous firmware-error command `0x11` as an
-immediate boot failure. It validates both layers and acknowledges by clearing
-busy, setting done, and returning a zero low-word status.
-
-The fixed Winky control sequence begins with SBA virtual-bus start command 85,
-then SSP command 117 and SSP slot-map command 130, before any route or gain
-commands. The SSP command selects logical `SSP_CODEC` (`3`, mapped to physical
-SSP2), switch state `3`, 16 bits per slot, two slots, provider mode, full
-duplex, active TX/RX masks `0x03` with reserved map bytes `0xff`, 48 kHz enum
-`3`, active-high frame sync, normal data polarity, 16-clock frame-sync width,
-I2S protocol, and one-clock start delay. The following slot-map command has a
-22-byte body, parameter ID 130, parameter length 18, selection 3, and identity
-receive/transmit maps `{1, 2, 4, 8, 16, 32, 64, 128}`.
-
-`media1_in -> media0_out` route and explicit 0 dB gain commands use MMX task 3.
-`pcm0_in -> codec_out0`, SSP, and backend gains use SBA task 1. Defaults are
-muted at -144 dB, so every required gain must be sent explicitly. Playback
-allocation uses MRFLD command `0x02`, stream ID 1, pipe `0x90`, task 3, the
-100-byte allocation body, timestamp offset `mailbox + 0x800 + 1 * 76`, and a
-fragment size expressed in bytes. Linux defines `struct snd_sst_tstamp` as a
-packed 76-byte structure. Buffer periods are constrained to multiples of 48
-frames and the period count to even values. Within the allocation body, the
-ring descriptors begin at byte 4, fragment size at byte 68, timestamp address
-at byte 72, and the 24-byte PCM parameter union at byte 76. Winky's LPE-view
-timestamp address for stream 1 is therefore `0xff34484c`.
-
-The firmware may acknowledge a successful allocation with a short zero-result
-IPC and no mailbox payload. This is a complete success response, not a malformed
-allocation body; Linux's MRFLD reply path wakes the request with `data = NULL`,
-and its allocation path accepts that result.
-
-The ring allocation follows the firmware's 32-bit address fields and Linux's
-device-DMA behavior. It may occupy any range wholly below 4 GiB; the firmware
-download IMR at `0x20000000` is a separate reserved resource, not a PCM-ring
-placement rule.
-
-## Firmware boundary
-
-The Intel firmware is separately licensed rather than MIT. The Winky BSP
-vendors the canonical linux-firmware blob unchanged and installs it in
-`haiku.hpkg` at:
-
-```text
-/boot/system/data/firmware/byt_max98090/fw_sst_0f28.bin
-```
-
-Linux's Bay Trail machine table selects that unsuffixed blob for ACPI codec
-`193C9890`; the other linux-firmware `0f28` variants are not the Winky
-MAX98090 contract.
-
-The driver first checks the matching non-packaged path, allowing developers to
-test another exact firmware image without rebuilding the system package. It
-logs the path it loads and remains published but not ready when the file is
-absent, invalid, targets memory outside the ACPI resources, or fails to
-initialize.
-
-Redistribution is governed by `LICENSES/LicenseRef-Intel-SST.txt`, which permits
-unmodified binary redistribution while prohibiting reverse engineering,
-decompilation, and disassembly. The Winky package installs that text as
-`data/licenses/Intel (SST firmware)` and records the license and Intel copyright
-in its metadata.
-
-The canonical artifact is 701622 bytes with SHA-256
-`5226ad60d7bf8f43f16508e13e3b4e8b53e9ab318b6825994bebeb4b96bfc64e`.
-The driver does not require that size or hash; acceptance is based on bounded
-`$SST` structure and destination validation.
-
-The legacy Linux loader writes every loadable block through 32-bit MMIO. Jidō
-Renga follows that access-width contract, including Linux's behavior of
-omitting a final partial word; the canonical image has one DDR block with a
-two-byte tail.
-
-MrChromebox firmware is not inherently incompatible with this SST image. An
-[archived Winky boot](https://raw.githubusercontent.com/linuxhw/Dmesg/master/Notebook/Google/Winky/Winky/A593940E635F/ENDLESS-3.6.3/5.0.0-25-GENERIC/X86_64/BA55726DB0)
-using MrChromebox 4.10 reports the same LPE/IRAM/DRAM/mailbox/DDR layout and
-successfully reaches SST firmware version `01.0c.00.01`. The Haiku timeout
-therefore points first to host reset/copy/IPC mechanics, not a ChromeOS-only
-firmware contract.
-
-## Hardware contract
-
-Winky uses SSP2 with the DSP providing BCLK and FSYNC. The backend format is
-48 kHz stereo `S16_LE`, I2S one-bit delay, two 16-bit slots, and active slot
-mask `0x3`. MAX98090 consumes both clocks. Speaker routing selects left DAC to
-left speaker mixer and right DAC to right speaker mixer. The Winky profile
-retains logical speaker volume 10 (-14 dB) as its default, caps it at logical
-20 (0 dB), and fixes the speaker mixer at logical 2 (-6 dB). The maximum
-speaker path is therefore -6 dB before future digital tuning.
-Headphone volume defaults to and is capped at logical 19 (-9 dB).
-
-The original ChromeOS `db_at_100 = -5 dB` speaker value belongs to CRAS's
-software volume curve, not to the MAX98090 speaker-volume register. Winky's UCM
-does not set that register, leaving the codec reset value `0x2c` (logical 20,
-0 dB), while explicitly setting only the speaker mixers to logical 2 (-6 dB).
-Applying both the CRAS software ceiling and mixer attenuation as analog policy
-made Haiku unnecessarily quiet and encouraged clipping when applications were
-raised above 0 dB.
-
-Codec setup uses the normal full-register path. Matching Linux's Winky machine
-driver, `SYSTEM_CLOCK` register `0x1b` receives `PSCLK_DIV1` (`0x10`) while
-coreboot's 25 MHz `PLT_CLK0` parent remains untouched;
-consumer-mode clock registers `0x1c` through `0x1e` are cleared; `MASTER_MODE`
-`0x21` receives `0`; `INTERFACE_FORMAT` `0x22` receives only the I2S delay bit
-(`0x04`, with 16-bit word size and normal polarities); TDM format/control
-registers `0x24`/`0x23` are cleared; and `IO_CONFIGURATION` `0x25` enables
-SDIN and SDOUT (`0x03`). `FILTER_CONFIGURATION` `0x26` enables Music mode plus
-playback and record DC blocking (`0xe0`), while `ADC_BIQUAD_LEVEL` `0x19`
-receives raw attenuation `0x0f`. The driver does not write quick-system-clock
-register `0x04` or quick-sample-rate register `0x05`.
-
-The fixed playback controls follow their ALSA value mappings rather than
-writing user-facing numbers directly. Logical speaker volume 10 maps through
-the ranged control's raw minimum 24 to `0x22` in registers `0x31` and `0x32`;
-mute bits remain clear. Logical left/right mixer volume 2 is inverted over
-0..3, so `SPK_CONTROL` `0x30` receives `0x05`. The speaker mixers receive
-`0x01` and `0x02`, `FILTER_CONFIG` `0x26` receives Music mode plus playback DC
-blocking (`0xa0`), and `OUTPUT_ENABLE` `0x3f` enables DACL, DACR, SPL, and SPR
-(`0x33`). Headphone control remains on the direct-DAC path, registers
-`0x2c`/`0x2d` start at raw volume `0x13` with their mute bits set, and
-`DEVICE_SHUTDOWN` `0x45 = 0x80` is written last. Jack insertion changes
-`OUTPUT_ENABLE` to DACL, DACR, HPL, and HPR (`0xc3`) after muting the speakers.
-
-The codec is ACPI child `\_SB.PCI0.I2C2`, HID `193C9890`, at 7-bit I2C address
-`0x10` and 400 kHz. The captured boot maps that controller to Haiku I2C bus 1
-(MMIO `0xfd8db000`, IRQ 33) and confirms the codec HID there. Codec `_CRS`
-also describes level-triggered, active-low IRQ 67 and GPSC GPIO pins 14 and 15.
-Haiku currently limits IO-APIC use to IRQ 63, so IRQ 67 is unusable and this
-playback milestone intentionally neither requires nor installs it.
-
-The codec and LPE `_CRS` tables both describe those GPIOs as
-jack/microphone indices 0/1. The native GPIO service resolves the codec
-resources to SCORE, where live Linux evidence identifies child IRQs for
-`BYT-GPIO 14 hp` and `BYT-GPIO 15 mic` behind shared controller GSI 49. The
-separate LPE IPC2HOST IRQ 29 is usable; the current playback implementation
-records it but masks host interrupts and polls the IPC register, avoiding an
-unhandled IRQ until stream IPC has a proper interrupt path.
-
-Coreboot exposes a 2 MiB LPE BAR0, 4 KiB PCI-configuration BAR1, and 1 MiB
-firmware/IMR BAR2. Winky reserves BAR2 at physical `0x20000000`; on C0 and
-later silicon coreboot records that base and size at BAR0 offsets `0x144000`
-and `0x144004`. The driver validates both BAR2 and this mailbox configuration.
-The six level-triggered, active-low, exclusive IRQ resources are DMA0 24, DMA1
-25, SSP0 26, SSP1 27, SSP2 28, and IPC2HOST 29, making the IPC interrupt
-IRQ-resource index 5.
-
-PMC `PLT_CLK_0` is register `0x60` in the 0x100-byte mapping selected by PCI
-configuration register `0x44 & 0xfffffe00`. Winky's coreboot configuration
-selects a 25 MHz clock on `PMC_PLT_CLK[0]`. The driver preserves that parent
-bit and writes only control bits 1:0 as `FORCE_ON` (`01b`), matching Linux's
-Winky quirk requirement not to change the firmware clock.
-
-The ACPI `80860F28` function is SST/LPE, not HDA. It is distinct from Winky's
-real PCI `00:1b.0` HDA controller (`8086:0f04`, class `040300`), which coreboot
-configures for the HDMI codec `8086:2882`. The Winky BSP therefore packages
-both drivers: `byt_max98090` owns the internal SST/MAX98090 path, while Haiku's
-HDA driver remains available for potential HDMI audio.
-
-The SST driver deliberately presents a small Haiku-native facade rather than
-the Linux control graph: one fixed 48 kHz, 16-bit stereo endpoint, separate
-speaker/headphone volume and mute controls, and an automatically selected
-active-output route. DSP cells, switch matrices, SSP controls, and raw codec
-register controls remain private implementation details; no UCM-style
-userspace policy is required.
-
-### Speaker tuning boundary
-
-The Winky profile carries the historical ChromeOS seven-band speaker graph as
-an immutable 105-byte MAX98090 coefficient image. The tuning implementation is
-speaker-only. Its first hardware exercise used an erroneous -11 dB analog path
-and sounded excessively quiet and narrow; the bypassed comparison remained too
-quiet and distorted only when userspace gain entered the red. The unchanged EQ
-and DRC were tested again with the corrected -6 dB hardware path and produced
-silence, but that combined test did not identify which block caused it. A
-subsequent EQ-only test with negated stored `A1` and `A2` was also silent,
-rejecting that alternate sign convention. Restoring direct `A1` and `A2` with
-4 dB preattenuation while leaving DRC disabled produced clear, good-sounding
-speaker output and is the accepted Winky configuration.
-
-[Analog Devices' MAX98090 coefficient guidance](https://ez.analog.com/other-products/w/documents/38421/how-are-the-equalizer-coefficients-for-the-max98090-and-max98091-obtained)
-identifies the codec equation as a Direct Form I IIR biquad, points to the RBJ
-Audio EQ Cookbook used by the evaluation GUI, and requires normalization by
-`a0`, multiplication by `2^20`, and rounding. MuditaOS independently packs
-standard RBJ `a1`/`a2` unchanged as Q4.20. Winky hardware testing confirms that
-direct encoding: the direct EQ-only image sounds correct, while negating the
-stored feedback coefficients produces silence.
-
-The original CRAS high-pass used `Q = 0` as zero resonance, not as an RBJ
-quality factor. Coefficients are therefore generated with CRAS's actual
-high-pass implementation; shelves use slope 1 and the five peaking stages use
-their recorded Q values. After Q4.20 rounding, all poles remain inside the unit
-circle; the closest pole radius is below 0.999. The combined response peaks at
-approximately -1.89 dB near 9.4 kHz.
-
-[Analog Devices' register-write guidance](https://ez.analog.com/other-products/w/documents/36561/how-do-i-write-the-eq-registers-on-the-max98090)
-requires each three-byte coefficient to be written consecutively or discarded.
-The driver writes each complete 15-byte band in one I2C transaction while the
-codec is shut down, then reads all seven bands back before enabling the device.
-
-The historical limiter maps to `DRC_TIMING = 0xb1` (enabled, 1-second release,
-1 ms attack), `DRC_COMPRESSOR = 0x8b` (infinite ratio, -11 dB threshold), and
-`DRC_GAIN = 0x04` (+4 dB makeup). Those parameters remain recorded, but the
-enable bit is deliberately clear because the combined EQ/DRC image silenced
-playback. EQ preattenuation is 4 dB, leaving the quantized EQ's -1.89 dB peak
-below 0 dB without compressor makeup. Music filter mode, already required by
-the playback path, remains selected.
-
-The accepted profile therefore combines the corrected analog path (0 dB
-speaker-volume ceiling and -6 dB speaker mixer), the direct-sign seven-band EQ,
-and 4 dB EQ preattenuation. DRC is not part of the accepted profile.
-
-The captured Winky boot log confirms Haiku detects and reserves the
-`8086:0f04` HDA controller independently, and separately enumerates the I2C
-child HID `193C9890`. That boot recorded no active HDA codec, so it is runtime
-topology evidence rather than a claim that HDMI playback is validated.
-
-## Boot diagnostics
-
-Bring-up tracing is controlled by `TRACE_BYT_MAX98090` in `Debug.h`; it is
-currently enabled. Routine probe and lifecycle messages use `TRACE`, while
-hardware and protocol failures use the always-on `ERROR` path.
-
-Useful kernel log lines begin with `byt_max98090:`. A successful bring-up should
-show:
-
-1. firmware-selected 25 MHz PMC `PLT_CLK_0` forced on;
-2. LPE and IMR resources mapped, including IPC IRQ index 5;
-3. external firmware path selected;
-4. `SST firmware init-complete received`;
-5. MAX98090 revision and fixed playback format;
-6. jack GPIO initial state and 200 ms debounce;
-7. `/dev/audio/hmulti/byt_max98090/0` published.
-
-Missing firmware logs the required path. Firmware parser failures name the
-failed validation class. An open before both halves are ready logs the readiness
-failure and returns `B_DEV_NOT_READY`. Stream allocation and route configuration
-failures are logged with the failing command name. A firmware-init timeout dumps
-CSR, ISRX, IMRX, IPCX, and IPCD so the next boot distinguishes a DSP that never
-ran from one that ran but failed to post init-complete.
-
-With tracing enabled, allocation logs the virtual-bus/SSP lifecycle state, pipe,
-task, ring address and sizes, timestamp address, and the exact 100-byte request.
-A failed DSP reply includes the complete raw 64-bit IPCD value. Allocation
-failures are then latched until buffers are recreated or the DSP is reloaded.
-Every failed buffer exchange also sleeps for 100 ms after releasing driver
-locks. Haiku's `MultiAudioNode` ignores the exchange return status and
-immediately retries, so a driver that returns a persistent error without
-blocking otherwise creates an unbounded userspace/kernel ioctl spin.
-
-Firmware reply result `1` means `SST_ERR_INVALID_STREAM_ID`. In the first
-media-stack exercise, `media0_out` produced that result because route setup ran
-before the allocation that creates `media1_in`. Playback startup now preserves
-Linux's ordering, and any remaining route failure is reported once and latched
-rather than retried on every buffer exchange.
+Analog headset-microphone capture is not qualified. IPC and period notification
+remain polling-based. The driver has one Winky profile and does not match other
+Bay Trail/MAX98090 boards.

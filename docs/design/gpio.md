@@ -102,10 +102,9 @@ Linux's live IRQ domain reports them as `BYT-GPIO 14 hp` and
 `BYT-GPIO 15 mic`, both delivered through SCORE GSI 49. The audio driver uses
 both-edge subscriptions with 200 ms software debounce.
 
-## Validation
+## Checks
 
 Host policy tests cover community maps, register offsets, mux quirks, trigger
-encoding, direction, and pull strength. Cross-build validation covers the GPIO
-bus manager, `byt_gpio`, and its `byt_max98090` consumer. Winky hardware
-validation confirms reliable physical edge delivery and speaker/headphone
-switching on both jack insertion and removal.
+encoding, direction, and pull strength. The build links the GPIO bus manager,
+`byt_gpio`, and its `byt_max98090` consumer. The Winky audio path depends on
+physical edge delivery for speaker/headphone switching in both directions.

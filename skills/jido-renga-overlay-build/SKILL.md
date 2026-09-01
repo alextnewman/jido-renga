@@ -132,27 +132,9 @@ The Winky image applies four surgical composition policies:
    only Bay Trail `8086:0f35`, delegates the complete PCI interface, and makes
    the stock driver's legacy routing writes preserve coreboot's live values.
 
-### maXTouch message-drain invariant
-
-For `i2c_atmel_mxt`, read T44 and the first T5 message together, then explicitly
-set the pointer back to T5 before every follow-up message read. T5 is a FIFO-like
-object, not linear memory after the first message; an addressless continuation
-can lose a contact release. Keep runtime and initialization drains on the shared
-`MxtMessageReadStep()` contract and its host tests.
-
-### ValleyView P0 presentation invariant
-
-`intel_valleyview` does not expose its live scanout to app_server. The
-app_server-facing framebuffer is a cached, snooped shadow. A serialized present
-worker copies each complete frame into the inactive write-combined scanout and
-does not reuse that scanout until `DSPASURFLIVE` confirms the page flip. This
-shadow/copy/confirmed-flip architecture is hardware-validated on Winky and must
-remain the baseline.
-
-Graphics changes must also follow
-[`skills/intel-valleyview-p0/SKILL.md`](../intel-valleyview-p0/SKILL.md), which
-records the GGTT cache policy, lock order, BCS completion contract, DPMS
-ownership rules, quarantine requirements, and hardware validation procedure.
+Subsystem architecture and invariants belong in `docs/`, not in this build
+skill. Read the relevant driver and design documents before changing a
+subsystem.
 
 ## The derivative-revision seam
 
@@ -263,7 +245,8 @@ desired future:
 - `README.md` is the practical human introduction.
 - `docs/` records current architecture, hardware contracts, rationale, and
   known limitations.
-- `skills/` records durable operational lessons for agents.
+- `skills/` records only stable, reusable procedures that remain applicable
+  across future tasks.
 - Git history records previous repository states.
 - Forward-looking vision, roadmaps, phase plans, and designs for features that
   do not yet exist stay out of `README.md`, `docs/`, and `skills/`. Keep them in
@@ -275,6 +258,13 @@ investigation timelines, discarded hypotheses, forward-looking plans, and
 temporary comparisons in session-local storage. Promote only the durable
 conclusion into committed docs.
 
+Apply a durability test before adding or expanding a skill: would the guidance
+still be necessary if the current task, phase name, prompt, capture, and branch
+were forgotten? If not, keep it in session metadata. Skills must not duplicate
+driver architecture, record validation status, preserve a task plan, or act as
+a prompt transcript. Put current subsystem behavior in `docs/` and repository
+invariants in `AGENTS.md`.
+
 Code comments are reader hints, not a development diary. Retain comments that
 state hardware meaning, units, ownership, concurrency or lifetime invariants,
 and non-obvious safety requirements. Remove comments that narrate debugging,
@@ -283,7 +273,7 @@ the next line.
 
 ## Release validation
 
-Before shipping a BSP milestone:
+Before publishing a BSP image:
 
 ```sh
 # Pure policy/concurrency coverage.

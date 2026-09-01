@@ -451,20 +451,13 @@ Recovery is selected by what state may have been lost:
 - Scheduler and DMA resources must be destroyed before the controller worker and
   MMIO mapping are torn down.
 
-## 12. Current validation status
+## 12. Supported behavior and limits
 
-The following behavior is validated on Winky:
-
-| Area | Status |
-|---|---|
-| Image ownership | JR `sdhci_embedded` is present with its boot link; stock `sdhci` is absent |
-| Early dependency order | `iosf_mbi`, PCI registration, ACPI binding, and IOSF OCP access complete before SDHCI MMIO |
-| Removable SD | Boots through staged SDMA; hot insertion auto-mounts; logical eject and repeated removal/reinsertion are reliable |
-| eMMC | Identifies, publishes writable media, and supports installation and sustained block I/O through ADMA2 |
-| Interrupt convergence | Supports identification and runtime traffic without treating interrupt delivery as authoritative |
-| Input drivers | JR keyboard and Atmel touchpad behavior is validated on Winky |
-
-Current limits:
+The Winky image uses `sdhci_embedded` instead of stock `sdhci`. It initializes
+IOSF sideband access before SDHCI MMIO, publishes writable eMMC through ADMA2,
+and supports removable-SD boot, hot insertion, logical eject, and repeated
+removal/reinsertion through staged SDMA. Identification and runtime I/O use the
+same interrupt-convergence contract.
 
 - SD UHS modes remain disabled when the Intel DSM interface is unavailable.
 - The exact eMMC timing rung selected by the current mode ladder is not exposed
@@ -483,7 +476,7 @@ A new BSP must declare its own:
 - card roles, widths, mode ceilings, and fallback ladders;
 - DMA address and descriptor limits;
 - interrupt-sharing assumptions;
-- current hardware validation status and known limits.
+- supported behavior and known limits.
 
 Do not broaden an existing matcher merely because a controller looks similar.
 Explicit platform contracts are the mechanism by which Jido Renga remains

@@ -108,14 +108,11 @@ contacts. A full output queue is reported as an error only after the remaining
 hardware messages have been drained, preventing an asserted interrupt from
 wedging the device.
 
-## Current support
+## Supported behavior and limitations
 
-The authoritative-slot and ordered-frame implementation is validated on Winky
-for smooth pointer movement, physical clickpad input, two-finger scrolling, and
-physical two-finger right-click without cursor jumps or retained-contact stalls.
-The controller lifecycle is also covered by host-side message-sequence tests.
-
-Current limitations:
+The Winky interface supports pointer movement, physical clickpad input,
+two-finger scrolling, and physical two-finger right-click. Host-side
+message-sequence tests cover the controller lifecycle.
 
 - Suspend/resume hooks are not implemented.
 - Scrolling and most gesture interpretation remain in Haiku's input server.

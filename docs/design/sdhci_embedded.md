@@ -231,8 +231,8 @@ causes Haiku's disk-device manager to refresh geometry and rescan partitions.
 Consuming that notification does not change the media epoch captured by queued
 I/O. `B_EJECT_DEVICE` flushes and offlines removable media, powers down the
 slot, and suppresses watcher recovery until physical removal rearms it. Initial
-hot insertion, logical eject, and repeated physical removal/reinsertion are
-hardware-validated on Winky.
+hot insertion, logical eject, and repeated physical removal/reinsertion use
+this path on Winky.
 
 ## Thread model
 

@@ -54,10 +54,9 @@ never committed.
 
 The full procedure is in
 [`skills/jido-renga-overlay-build/SKILL.md`](skills/jido-renga-overlay-build/SKILL.md).
-ValleyView graphics work must also preserve the proven contracts in
-[`skills/intel-valleyview-p0/SKILL.md`](skills/intel-valleyview-p0/SKILL.md).
-Crocus work must also follow the fail-closed render gates in
-[`skills/intel-valleyview-crocus/SKILL.md`](skills/intel-valleyview-crocus/SKILL.md).
+Subsystem contracts live under [`docs/`](docs/); ValleyView graphics work uses
+[`docs/drivers/intel_valleyview.md`](docs/drivers/intel_valleyview.md) and
+[`docs/design/intel_valleyview_render.md`](docs/design/intel_valleyview_render.md).
 
 Quick build:
 
@@ -70,7 +69,8 @@ cd generated.x86_64
 ../tools/jr-jam -q gpio byt_gpio byt_xhci_filter i2c_guarded iosf_mbi \
   sdhci_embedded cros_ec_keyboard i2c_atmel_mxt byt_max98090 \
   intel_valleyview intel_valleyview.accelerant intel_valleyview_probe \
-  intel_valleyview_crocus_demo jr_mic_probe jr_mic_collect
+  intel_valleyview_crocus_demo intel_valleyview_gl_suite \
+  jr_mic_probe jr_mic_collect
 ../tools/jr-jam -q haiku_devel.hpkg
 cd .. && tools/build-crocus generated.x86_64
 ```
