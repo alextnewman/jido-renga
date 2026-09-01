@@ -191,10 +191,11 @@ range, saves every displaced scratch entry, installs snooped writable PTEs, and
 verifies both installation and exact restoration. Buffer pages are quarantined
 rather than freed if restoration cannot be proven.
 
-Buffers are write-back CPU mappings with snooped GGTT entries. Color, staging,
-batch, and state resources are linear. Depth and stencil BOs expose only their
-raw hardware layout to the CPU; Crocus does not advertise a logically detiled
-mapping. Mappings are non-transferable kernel areas revoked when their handle
+Buffers are write-back CPU mappings with snooped GGTT entries. Single-sample
+color, staging, batch, and state resources are linear. Multisample render
+targets use the hardware-required tiled layout; depth and stencil BOs expose
+only their raw hardware layout to the CPU. Crocus does not advertise a
+logically detiled mapping. Mappings are non-transferable kernel areas revoked when their handle
 or client closes. Teardown detaches every inherited clone from the backing cache
 before releasing BO accounting, so forked mappings cannot retain pinned pages.
 Their tracked domains are CPU, the kernel-owned BCS, and synchronous RCS
@@ -327,9 +328,10 @@ display-list save BOs at 4 MiB, and uses direct transfer records plus atomic
 Mesa-internal locks for texture upload and sampler validation.
 
 The HGL frontend creates the Crocus screen directly from
-`/dev/misc/intel_valleyview_probe`. Color and staging resources remain linear;
-Gen7 depth uses Y tiling and separate stencil uses W tiling as required by the
-hardware. `flush_frontbuffer` maps only the retired linear color resource,
+`/dev/misc/intel_valleyview_probe`. Single-sample color and staging resources
+remain linear; Gen7 multisample color and depth use tiled layouts and separate
+stencil uses W tiling as required by the hardware. `flush_frontbuffer` maps
+only the retired linear single-sample color resource,
 copies it into a Haiku `BBitmap`, and hands it to the existing `BGLRenderer`
 clipping/direct-mode presentation path. The screen therefore reaches the
 P0-backed desktop without exposing overlay paths or GPU mappings at runtime. If

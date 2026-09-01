@@ -147,3 +147,8 @@ and cube textures, readback, element-buffer drawing, four-sample FBO resolve,
 and the explicit OpenGL 3.1/GLSL 1.40 limit gate. Treat this as a candidate
 until one complete Winky capture passes; do not substitute allocation-only
 feature checks or describe it as Piglit/CTS certification.
+
+Keep window color and staging resources linear for direct presentation. Do not
+force multisample render targets linear: Gen7 requires them tiled and Crocus
+uses their MCS metadata for resolve. This private layout does not advertise an
+external tiled modifier.

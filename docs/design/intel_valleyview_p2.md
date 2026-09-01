@@ -191,8 +191,10 @@ wired for GPU access. Stable PPGTT VA is independent of those wires:
 5. A failed transition rolls back to scratch or quarantines the context.
 
 Internal PPGTT, ring, HWS, context, and presentation workspaces remain wired
-and are outside the client budget. Linear resources are the truthful winsys
-contract; no tiled modifier is advertised without matching kernel metadata.
+and are outside the client budget. Window color and staging resources remain
+linear; private multisample render targets use the Gen7-required tiled layout.
+No externally shareable tiled modifier is advertised without matching kernel
+metadata.
 
 The conformance gate grows from 24 to 32 isolated cases. It retains every
 proven compatibility and recovery case and adds an explicit OpenGL 3.1/GLSL
