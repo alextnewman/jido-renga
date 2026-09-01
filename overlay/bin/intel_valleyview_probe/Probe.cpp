@@ -7,6 +7,7 @@
 #include <common/intel_valleyview/P0Core.h>
 #include <common/intel_valleyview/PpgttCore.h>
 #include <common/intel_valleyview/Protocol.h>
+#include <common/intel_valleyview/RenderCommandCore.h>
 #include <common/intel_valleyview/RenderMemoryCore.h>
 #include <common/intel_valleyview/RenderProtocol.h>
 
@@ -267,6 +268,10 @@ PrintRenderDeviceInfo(const valleyview::RenderDeviceInfo& info)
 		" page_size=%" B_PRIu32 " flags=%#08" B_PRIx32 "\n",
 		info.apertureBase, info.apertureSize, info.displayReservedOffset,
 		info.displayReservedSize, info.pageSize, info.deviceFlags);
+	printf("render_limits bo=%" B_PRIu64 " client_bytes=%" B_PRIu64
+		" client_buffers=%" B_PRIu32 " submit_objects=%" B_PRIu32 "\n",
+		info.maxBufferSize, info.maxClientBytes, info.maxClientBuffers,
+		info.maxSubmitObjects);
 	printf("render_contract capabilities=%#016" B_PRIx64
 		" required=%#016" B_PRIx64 " proven_engines=%#08" B_PRIx32
 		" submission_engines=%#08" B_PRIx32 "\n",
@@ -772,7 +777,8 @@ struct QueueProbeClient {
 
 
 status_t
-InitializeQueueProbeClient(QueueProbeClient& client)
+InitializeQueueProbeClient(QueueProbeClient& client,
+	valleyview::RenderQueueMode mode)
 {
 	client.context = {};
 	client.context.header
@@ -809,7 +815,7 @@ InitializeQueueProbeClient(QueueProbeClient& client)
 
 	valleyview::RenderQueueConfigure configure = {};
 	configure.header = valleyview::MakeRenderAbiHeader(sizeof(configure));
-	configure.mode = valleyview::kRenderQueueModeAsynchronous;
+	configure.mode = mode;
 	status = ioctl(client.device, valleyview::kRenderQueueConfigure,
 		&configure, sizeof(configure));
 	return status == B_OK ? configure.status : status;
@@ -858,10 +864,11 @@ WaitQueueProbeFence(QueueProbeClient& client,
 }
 
 
-void
-PrintQueueProbeInfo(QueueProbeClient& client, const char* label)
+status_t
+ReadQueueProbeInfo(QueueProbeClient& client, const char* label,
+	valleyview::RenderQueueInfo& info)
 {
-	valleyview::RenderQueueInfo info = {};
+	info = {};
 	info.header = valleyview::MakeRenderAbiHeader(sizeof(info));
 	status_t status = ioctl(client.device, valleyview::kRenderQueueGetInfo,
 		&info, sizeof(info));
@@ -870,44 +877,70 @@ PrintQueueProbeInfo(QueueProbeClient& client, const char* label)
 		" fence=%" B_PRIu64 "/%" B_PRIu64 "/%" B_PRIu64
 		" jobs=%" B_PRIu64 "/%" B_PRIu64 "/%" B_PRIu64 "/%" B_PRIu64
 		" no_reset=%" B_PRIu64 " queue_us=%" B_PRIu64 "/%" B_PRIu64
-		" execution_us=%" B_PRIu64 "/%" B_PRIu64 "\n",
+		" execution_us=%" B_PRIu64 "/%" B_PRIu64
+		" persistent=%" B_PRIu64 "/%" B_PRIu64 "/%" B_PRIu64
+		"/%" B_PRIu64 "/%" B_PRIu64 "/%" B_PRIu64
+		" ggtt=%" B_PRIu64 "/%" B_PRIu64 "/%" B_PRIu64
+		"/%" B_PRIu64
+		" physical=%" B_PRIu64 "/%" B_PRIu64 "/%" B_PRIu64
+		"/%" B_PRIu64 "\n",
 		label, client.device, status, info.status, info.mode, info.queuedJobs,
 		info.completionCount, info.queueHighWater, info.deviceQueuedJobs,
 		info.nextFence, info.lastStartedFence, info.lastRetiredFence,
 		info.submittedJobs, info.completedJobs, info.failedJobs,
 		info.cancelledJobs, info.noResetJobs, info.totalQueueLatencyUs,
-		info.maxQueueLatencyUs, info.totalExecutionUs, info.maxExecutionUs);
-}
-
-
-void
-DestroyQueueProbeClient(QueueProbeClient& client)
-{
-	CloseRenderBuffer(client.device, client.batch.handle);
-	if (client.context.handle != 0) {
-		valleyview::RenderContextDestroy destroy = {};
-		destroy.header = valleyview::MakeRenderAbiHeader(sizeof(destroy));
-		destroy.handle = client.context.handle;
-		ioctl(client.device, valleyview::kRenderDestroyContext, &destroy,
-			sizeof(destroy));
-	}
+		info.maxQueueLatencyUs, info.totalExecutionUs, info.maxExecutionUs,
+		info.persistentClaims, info.persistentContextSwitches,
+		info.persistentContextReuses, info.persistentReleases,
+		info.persistentFaultResets, info.persistentRestoreFailures,
+		info.ggttBinds, info.ggttEvictions, info.ggttResidentBytes,
+		info.ggttResidentMaxBytes, info.physicalEvictions,
+		info.physicalReloads, info.physicalResidentBytes,
+		info.physicalResidentMaxBytes);
+	return status == B_OK ? info.status : status;
 }
 
 
 status_t
-RunRenderQueueProbe(int firstDevice)
+DestroyQueueProbeClient(QueueProbeClient& client)
+{
+	status_t status = CloseRenderBuffer(client.device, client.batch.handle);
+	if (client.context.handle != 0) {
+		valleyview::RenderContextDestroy destroy = {};
+		destroy.header = valleyview::MakeRenderAbiHeader(sizeof(destroy));
+		destroy.handle = client.context.handle;
+		status_t destroyStatus = ioctl(client.device,
+			valleyview::kRenderDestroyContext, &destroy, sizeof(destroy));
+		if (destroyStatus == B_OK)
+			destroyStatus = destroy.status;
+		if (status == B_OK)
+			status = destroyStatus;
+	}
+	return status;
+}
+
+
+status_t
+RunRenderQueueProbe(int firstDevice, valleyview::RenderQueueMode mode)
 {
 	QueueProbeClient clients[2] = {};
+	valleyview::RenderQueueInfo firstInfo = {};
+	valleyview::RenderQueueInfo secondInfo = {};
+	valleyview::RenderQueueInfo recoveryInfo = {};
+	valleyview::RenderQueueInfo baselineInfo = {};
 	clients[0].device = firstDevice;
 	clients[1].device = open(kDevicePath, O_RDONLY);
 	if (clients[1].device < 0)
 		return B_ERROR;
 
-	status_t status = RunRcsProbe(clients[0].device);
+	status_t status = ReadQueueProbeInfo(clients[0], "baseline",
+		baselineInfo);
 	if (status == B_OK)
-		status = InitializeQueueProbeClient(clients[0]);
+		status = RunRcsProbe(clients[0].device);
 	if (status == B_OK)
-		status = InitializeQueueProbeClient(clients[1]);
+		status = InitializeQueueProbeClient(clients[0], mode);
+	if (status == B_OK)
+		status = InitializeQueueProbeClient(clients[1], mode);
 	constexpr uint32 kJobsPerClient = 16;
 	for (uint32 round = 0; status == B_OK && round < kJobsPerClient; round++) {
 		for (uint32 index = 0; index < 2; index++) {
@@ -935,13 +968,29 @@ RunRenderQueueProbe(int firstDevice)
 	for (uint32 index = 0; status == B_OK && index < 2; index++)
 		status = WaitQueueProbeFence(clients[index],
 			valleyview::kRenderFenceComplete);
-	PrintQueueProbeInfo(clients[0], "first");
-	PrintQueueProbeInfo(clients[1], "second");
+	status_t infoStatus = ReadQueueProbeInfo(clients[0], "first", firstInfo);
+	if (status == B_OK)
+		status = infoStatus;
+	infoStatus = ReadQueueProbeInfo(clients[1], "second", secondInfo);
+	if (status == B_OK)
+		status = infoStatus;
+	if (status == B_OK
+		&& mode == valleyview::kRenderQueueModeFailureOnlyReset
+		&& (firstInfo.noResetJobs != kJobsPerClient
+			|| secondInfo.noResetJobs != kJobsPerClient
+			|| firstInfo.persistentClaims
+				- baselineInfo.persistentClaims == 0
+			|| firstInfo.persistentContextSwitches
+				- baselineInfo.persistentContextSwitches == 0
+			|| firstInfo.persistentRestoreFailures
+				!= baselineInfo.persistentRestoreFailures)) {
+		status = B_BAD_DATA;
+	}
 
 	if (status == B_OK) {
 		valleyview::RenderQueueConfigure configure = {};
 		configure.header = valleyview::MakeRenderAbiHeader(sizeof(configure));
-		configure.mode = valleyview::kRenderQueueModeAsynchronous;
+		configure.mode = mode;
 		configure.flags = valleyview::kRenderQueueFailNextSubmission;
 		status = ioctl(clients[0].device, valleyview::kRenderQueueConfigure,
 			&configure, sizeof(configure));
@@ -954,19 +1003,36 @@ RunRenderQueueProbe(int firstDevice)
 	if (status == B_OK) {
 		valleyview::RenderQueueConfigure configure = {};
 		configure.header = valleyview::MakeRenderAbiHeader(sizeof(configure));
-		configure.mode = valleyview::kRenderQueueModeAsynchronous;
+		configure.mode = mode;
 		status = ioctl(clients[0].device, valleyview::kRenderQueueConfigure,
 			&configure, sizeof(configure));
-		if (status == B_OK)
+		for (uint32 index = 0; status == B_OK && index < 2; index++)
 			status = EnqueueQueueProbeJob(clients[0]);
 		if (status == B_OK)
 			status = WaitQueueProbeFence(clients[0],
 				valleyview::kRenderFenceComplete);
 	}
-	PrintQueueProbeInfo(clients[0], "recovery");
+	infoStatus = ReadQueueProbeInfo(clients[0], "recovery", recoveryInfo);
+	if (status == B_OK)
+		status = infoStatus;
+	if (status == B_OK
+		&& mode == valleyview::kRenderQueueModeFailureOnlyReset
+		&& (recoveryInfo.noResetJobs != kJobsPerClient + 2
+			|| recoveryInfo.persistentFaultResets
+				- baselineInfo.persistentFaultResets == 0
+			|| recoveryInfo.persistentContextReuses
+				- baselineInfo.persistentContextReuses == 0
+			|| recoveryInfo.persistentRestoreFailures
+				!= baselineInfo.persistentRestoreFailures)) {
+		status = B_BAD_DATA;
+	}
 
-	DestroyQueueProbeClient(clients[1]);
-	DestroyQueueProbeClient(clients[0]);
+	status_t cleanupStatus = DestroyQueueProbeClient(clients[1]);
+	if (status == B_OK)
+		status = cleanupStatus;
+	cleanupStatus = DestroyQueueProbeClient(clients[0]);
+	if (status == B_OK)
+		status = cleanupStatus;
 	close(clients[1].device);
 	return status;
 }
@@ -1145,6 +1211,202 @@ cleanup:
 	closeStatus = CloseRenderBuffer(device, source.handle);
 	if (status == B_OK)
 		status = closeStatus;
+	return status;
+}
+
+status_t
+RunRenderResidencyProbe(int device)
+{
+	constexpr uint32 kBufferCount = 80;
+	constexpr uint64 kSmallBytes = 1024 * 1024;
+	constexpr uint64 kLargeBytes = 32ull * 1024 * 1024;
+	valleyview::RenderContextCreate context = {};
+	valleyview::RenderBufferCreate buffers[kBufferCount + 1] = {};
+	valleyview::RenderBufferMap mappings[kBufferCount + 1] = {};
+	valleyview::RenderQueueInfo before = {};
+	valleyview::RenderQueueInfo after = {};
+	valleyview::RenderQueueInfo teardown = {};
+	status_t status = RunRcsProbe(device);
+	uint32 created = 0;
+
+	if (status == B_OK) {
+		context.header = valleyview::MakeRenderAbiHeader(sizeof(context));
+		status = ioctl(device, valleyview::kRenderCreateContext, &context,
+			sizeof(context));
+		if (status == B_OK)
+			status = context.status;
+	}
+	before.header = valleyview::MakeRenderAbiHeader(sizeof(before));
+	if (status == B_OK)
+		status = ioctl(device, valleyview::kRenderQueueGetInfo, &before,
+			sizeof(before));
+
+	for (uint32 index = 0; status == B_OK && index <= kBufferCount; index++) {
+		valleyview::RenderBufferCreate& buffer = buffers[index];
+		buffer.header = valleyview::MakeRenderAbiHeader(sizeof(buffer));
+		buffer.requestedSize = index == kBufferCount
+			? kLargeBytes : kSmallBytes;
+		buffer.flags = valleyview::kRenderBufferCpuCached;
+		status = ioctl(device, valleyview::kRenderCreateBuffer, &buffer,
+			sizeof(buffer));
+		if (status != B_OK)
+			break;
+		created++;
+		if (buffer.renderAddress == 0
+			|| buffer.gpuOffset
+				!= valleyview::kInvalidRenderGgttOffset) {
+			status = B_BAD_DATA;
+			break;
+		}
+
+		valleyview::RenderBufferMap& mapping = mappings[index];
+		mapping.header = valleyview::MakeRenderAbiHeader(sizeof(mapping));
+		mapping.handle = buffer.handle;
+		mapping.area = -1;
+		status = ioctl(device, valleyview::kRenderMapBuffer, &mapping,
+			sizeof(mapping));
+		if (status != B_OK)
+			break;
+		uint32* words = reinterpret_cast<uint32*>(
+			static_cast<addr_t>(mapping.address));
+		words[0] = 0x52455300u | index;
+		words[buffer.size / sizeof(uint32) - 1]
+			= 0x454e4400u | index;
+	}
+
+	if (status == B_OK) {
+		uint32* source = reinterpret_cast<uint32*>(
+			static_cast<addr_t>(mappings[0].address));
+		uint32* destination = reinterpret_cast<uint32*>(
+			static_cast<addr_t>(mappings[1].address));
+		for (uint32 index = 0;
+				index < valleyview::kRenderMemoryTestWords; index++) {
+			source[index] = valleyview::RenderMemoryTestWord(index,
+				valleyview::kRenderMemoryTestDefaultSeed);
+			destination[index]
+				= valleyview::RenderMemoryTestDestinationWord(index,
+					valleyview::kRenderMemoryTestDefaultSeed);
+		}
+		__sync_synchronize();
+		valleyview::RenderMemoryTest test = {};
+		test.header = valleyview::MakeRenderAbiHeader(sizeof(test));
+		test.sourceHandle = buffers[0].handle;
+		test.destinationHandle = buffers[1].handle;
+		test.seed = valleyview::kRenderMemoryTestDefaultSeed;
+		status = ioctl(device, valleyview::kRunRenderMemoryTest, &test,
+			sizeof(test));
+		if (status == B_OK)
+			status = test.status;
+	}
+	if (status == B_OK) {
+		constexpr uint32 kBatchOffset = valleyview::kPageSize;
+		constexpr uint32 kTargetOffset = 64;
+		constexpr uint32 kMarker = 0x50324452;
+		uint32* batch = reinterpret_cast<uint32*>(
+			static_cast<addr_t>(mappings[0].address) + kBatchOffset);
+		uint32* target = reinterpret_cast<uint32*>(
+			static_cast<addr_t>(mappings[1].address) + kTargetOffset);
+		*target = 0;
+		batch[0] = valleyview::kRenderPipeControlOpcode | 3;
+		batch[1] = (1u << 20) | (1u << 14);
+		batch[2] = static_cast<uint32>(
+			buffers[1].renderAddress + kTargetOffset);
+		batch[3] = kMarker;
+		batch[4] = 0;
+		batch[5] = valleyview::kRenderMiBatchBufferEnd;
+		__sync_synchronize();
+
+		valleyview::RenderSubmit submit = {};
+		submit.header = valleyview::MakeRenderAbiHeader(sizeof(submit));
+		submit.contextHandle = context.handle;
+		submit.batchHandle = buffers[0].handle;
+		submit.batchOffset = kBatchOffset;
+		submit.batchLength = 6 * sizeof(uint32);
+		submit.objectCount = 2;
+		submit.objectHandles[0] = buffers[0].handle;
+		submit.objectHandles[1] = buffers[1].handle;
+		status = ioctl(device, valleyview::kRenderSubmit, &submit,
+			sizeof(submit));
+		if (status == B_OK)
+			status = submit.status;
+		__sync_synchronize();
+		printf("render_residency_ppgtt status=%" B_PRId32
+			" addresses=%#" B_PRIx64 "/%#" B_PRIx64
+			" marker=%#08" B_PRIx32 "/%#08" B_PRIx32 "\n",
+			status, buffers[0].renderAddress, buffers[1].renderAddress,
+			kMarker, *target);
+		if (status == B_OK && *target != kMarker)
+			status = B_BAD_DATA;
+	}
+
+	for (uint32 index = 2; status == B_OK && index <= kBufferCount; index++) {
+		const uint32* words = reinterpret_cast<const uint32*>(
+			static_cast<addr_t>(mappings[index].address));
+		if (words[0] != (0x52455300u | index)
+			|| words[buffers[index].size / sizeof(uint32) - 1]
+				!= (0x454e4400u | index)) {
+			status = B_BAD_DATA;
+		}
+	}
+	after.header = valleyview::MakeRenderAbiHeader(sizeof(after));
+	if (status == B_OK)
+		status = ioctl(device, valleyview::kRenderQueueGetInfo, &after,
+			sizeof(after));
+	if (status == B_OK
+		&& (after.ggttBinds - before.ggttBinds < 2
+			|| after.ggttEvictions - before.ggttEvictions < 2
+			|| after.ggttResidentBytes != before.ggttResidentBytes
+			|| after.ggttResidentMaxBytes < 2 * kSmallBytes
+			|| after.physicalEvictions == before.physicalEvictions
+			|| after.physicalReloads - before.physicalReloads < 2
+			|| after.physicalResidentBytes
+				> valleyview::kRenderResidentBudgetBytes
+			|| after.physicalResidentMaxBytes
+				< valleyview::kRenderResidentBudgetBytes)) {
+		status = B_BAD_DATA;
+	}
+	printf("render_residency status=%" B_PRId32 " buffers=%" B_PRIu32
+		" bytes=%" B_PRIu64 " large=%" B_PRIu64
+		" ggtt=%" B_PRIu64 "/%" B_PRIu64 "/%" B_PRIu64
+		"/%" B_PRIu64
+		" physical=%" B_PRIu64 "/%" B_PRIu64 "/%" B_PRIu64
+		"/%" B_PRIu64 "\n", status, created,
+		kBufferCount * kSmallBytes + kLargeBytes, kLargeBytes,
+		after.ggttBinds - before.ggttBinds,
+		after.ggttEvictions - before.ggttEvictions,
+		after.ggttResidentBytes, after.ggttResidentMaxBytes,
+		after.physicalEvictions - before.physicalEvictions,
+		after.physicalReloads - before.physicalReloads,
+		after.physicalResidentBytes, after.physicalResidentMaxBytes);
+
+	for (uint32 index = created; index > 0; index--) {
+		status_t closeStatus = CloseRenderBuffer(device,
+			buffers[index - 1].handle);
+		if (status == B_OK)
+			status = closeStatus;
+	}
+	teardown.header = valleyview::MakeRenderAbiHeader(sizeof(teardown));
+	if (status == B_OK) {
+		status = ioctl(device, valleyview::kRenderQueueGetInfo, &teardown,
+			sizeof(teardown));
+		if (status == B_OK
+			&& teardown.physicalResidentBytes
+				!= before.physicalResidentBytes) {
+			status = B_BAD_DATA;
+		}
+	}
+	printf("render_residency_teardown status=%" B_PRId32
+		" physical=%" B_PRIu64 "/%" B_PRIu64 "\n", status,
+		teardown.physicalResidentBytes, before.physicalResidentBytes);
+	if (context.handle != 0) {
+		valleyview::RenderContextDestroy destroy = {};
+		destroy.header = valleyview::MakeRenderAbiHeader(sizeof(destroy));
+		destroy.handle = context.handle;
+		status_t destroyStatus = ioctl(device,
+			valleyview::kRenderDestroyContext, &destroy, sizeof(destroy));
+		if (status == B_OK)
+			status = destroyStatus == B_OK ? destroy.status : destroyStatus;
+	}
 	return status;
 }
 
@@ -1556,6 +1818,16 @@ main(int argc, char** argv)
 			close(device);
 			return 1;
 		}
+	} else if (argc == 2
+		&& strcmp(argv[1], "--render-residency-test") == 0) {
+		status = RunRenderResidencyProbe(device);
+		if (status != B_OK) {
+			fprintf(stderr,
+				"intel_valleyview_probe: render residency failed: %s\n",
+				strerror(status));
+			close(device);
+			return 1;
+		}
 	} else if (argc == 2 && strcmp(argv[1], "--rcs-test") == 0) {
 		status = RunRcsProbe(device);
 		if (status != B_OK) {
@@ -1576,8 +1848,13 @@ main(int argc, char** argv)
 			return 1;
 		}
 	} else if (argc == 2
-		&& strcmp(argv[1], "--render-queue-test") == 0) {
-		status = RunRenderQueueProbe(device);
+		&& (strcmp(argv[1], "--render-queue-test") == 0
+			|| strcmp(argv[1], "--render-persistent-test") == 0)) {
+		const valleyview::RenderQueueMode mode
+			= strcmp(argv[1], "--render-persistent-test") == 0
+			? valleyview::kRenderQueueModeFailureOnlyReset
+			: valleyview::kRenderQueueModeAsynchronous;
+		status = RunRenderQueueProbe(device, mode);
 		if (status != B_OK) {
 			fprintf(stderr,
 				"intel_valleyview_probe: render queue failed: %s\n",

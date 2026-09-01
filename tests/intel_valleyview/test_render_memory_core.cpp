@@ -12,6 +12,10 @@ using namespace valleyview;
 
 JR_TEST(intel_valleyview_render, normalizes_bounded_buffer_sizes)
 {
+	JR_CHECK_EQ(kRenderMaxBufferSize, 64ull * 1024 * 1024);
+	JR_CHECK_EQ(kRenderMaxClientBytes, 256ull * 1024 * 1024);
+	JR_CHECK_EQ(kRenderResidentBudgetBytes, 96ull * 1024 * 1024);
+	JR_CHECK_EQ(kRenderMaxClientBuffers, 256u);
 	uint64 size = 0;
 	JR_CHECK(!NormalizeRenderBufferSize(0, size));
 	JR_CHECK(NormalizeRenderBufferSize(1, size));
@@ -22,6 +26,21 @@ JR_TEST(intel_valleyview_render, normalizes_bounded_buffer_sizes)
 	JR_CHECK_EQ(size, kRenderMaxBufferSize);
 	JR_CHECK(!NormalizeRenderBufferSize(kRenderMaxBufferSize + 1, size));
 	JR_CHECK(!NormalizeRenderBufferSize(UINT64_MAX, size));
+}
+
+JR_TEST(intel_valleyview_render, evicts_only_idle_cpu_resident_buffers)
+{
+	JR_CHECK(CanEvictRenderBuffer(true, false, 0, kRenderDomainCpu,
+		kInvalidRenderGgttOffset));
+	JR_CHECK(!CanEvictRenderBuffer(false, false, 0, kRenderDomainCpu,
+		kInvalidRenderGgttOffset));
+	JR_CHECK(!CanEvictRenderBuffer(true, true, 0, kRenderDomainCpu,
+		kInvalidRenderGgttOffset));
+	JR_CHECK(!CanEvictRenderBuffer(true, false, 1, kRenderDomainCpu,
+		kInvalidRenderGgttOffset));
+	JR_CHECK(!CanEvictRenderBuffer(true, false, 0, kRenderDomainRcs,
+		kInvalidRenderGgttOffset));
+	JR_CHECK(!CanEvictRenderBuffer(true, false, 0, kRenderDomainCpu, 0));
 }
 
 

@@ -20,6 +20,8 @@
 
 namespace {
 
+constexpr uint32 kRenderMemoryLockFlags = B_DMA_IO | B_READ_DEVICE;
+
 void
 LockRenderDevice(ValleyViewDevice& device)
 {
@@ -129,24 +131,43 @@ AllocateRenderMemory(ValleyViewRenderBuffer& buffer,
 	}
 	buffer.address = NULL;
 	buffer.area = create_area(name, &buffer.address, B_ANY_KERNEL_ADDRESS,
-		buffer.size, B_32_BIT_FULL_LOCK,
+		buffer.size, B_NO_LOCK,
 		B_KERNEL_READ_AREA | B_KERNEL_WRITE_AREA);
 	if (buffer.area < B_OK)
 		return buffer.area;
+
+	memset(buffer.address, 0, buffer.size);
+	status_t status = lock_memory(buffer.address, buffer.size,
+		kRenderMemoryLockFlags);
+	if (status != B_OK) {
+		delete_area(buffer.area);
+		buffer.area = -1;
+		buffer.address = NULL;
+		return status;
+	}
 
 	buffer.physicalPages = static_cast<uint64*>(
 		malloc(buffer.pageCount * sizeof(uint64)));
 	buffer.savedPtes = static_cast<uint32*>(
 		malloc(buffer.pageCount * sizeof(uint32)));
 	if (buffer.physicalPages == NULL || buffer.savedPtes == NULL)
-		return B_NO_MEMORY;
-
-	status_t status = BuildPhysicalPageList(buffer);
-	if (status != B_OK)
+		status = B_NO_MEMORY;
+	else
+		status = BuildPhysicalPageList(buffer);
+	if (status != B_OK) {
+		free(buffer.savedPtes);
+		free(buffer.physicalPages);
+		buffer.savedPtes = NULL;
+		buffer.physicalPages = NULL;
+		unlock_memory(buffer.address, buffer.size, kRenderMemoryLockFlags);
+		delete_area(buffer.area);
+		buffer.area = -1;
+		buffer.address = NULL;
 		return status;
+	}
 
-	memset(buffer.address, 0, buffer.size);
 	memory_write_barrier();
+	buffer.resident = true;
 	return B_OK;
 }
 
@@ -182,6 +203,14 @@ ReleaseRenderBufferBacking(ValleyViewDevice& device,
 
 	if (!buffer->quarantined) {
 		status = UnbindRenderBufferGgtt(device, *buffer);
+		if (status == B_OK && buffer->resident) {
+			status = unlock_memory(buffer->address, buffer->size,
+				kRenderMemoryLockFlags);
+			if (status == B_OK)
+				buffer->resident = false;
+			else
+				buffer->quarantined = true;
+		}
 		if (status == B_OK && buffer->area >= B_OK) {
 			status = delete_area(buffer->area);
 			if (status != B_OK)
@@ -264,6 +293,8 @@ QuarantinePpgtt(ValleyViewClient& client, ValleyViewRenderBuffer* buffer,
 		state.directoryBuffer->quarantined = true;
 	if (state.scratchBuffer != NULL)
 		state.scratchBuffer->quarantined = true;
+	if (state.submissionBuffer != NULL)
+		state.submissionBuffer->quarantined = true;
 	if (buffer != NULL)
 		buffer->quarantined = true;
 	client.device->renderMemoryQuarantined = true;
@@ -350,6 +381,113 @@ MapRenderBufferPpgtt(ValleyViewClient& client,
 
 
 status_t
+ReplaceRenderBufferPpgttWithScratch(ValleyViewClient& client,
+	ValleyViewRenderBuffer& buffer)
+{
+	ValleyViewPpgttState& state = client.ppgtt;
+	const uint32 firstPage = buffer.ppgttOffset
+		/ valleyview::kPpgttPageBytes;
+	if (!buffer.resident || buffer.physicalPages == NULL
+		|| !HasPpgttResources(state)
+		|| !valleyview::ValidatePpgttVaRange(buffer.ppgttOffset, buffer.size)
+		|| buffer.pageCount > valleyview::kPpgttPageCount - firstPage) {
+		return B_BAD_VALUE;
+	}
+
+	uint32 scratchPte;
+	if (!GetPpgttScratchPte(state, scratchPte))
+		return B_BAD_DATA;
+	uint32* const entries = PpgttEntries(state);
+	for (uint32 page = 0; page < buffer.pageCount; page++) {
+		bool allocated;
+		uint32 expected;
+		if (!valleyview::GetPpgttBitmapBit(state.bitmap,
+				valleyview::kPpgttBitmapBytes, firstPage + page, allocated)
+			|| !allocated
+			|| !valleyview::EncodePpgttDataPte(buffer.physicalPages[page],
+				true, true, expected)
+			|| entries[firstPage + page] != expected) {
+			QuarantinePpgtt(client, &buffer,
+				"unexpected resident PTE during eviction");
+			return B_IO_ERROR;
+		}
+	}
+
+	for (uint32 page = 0; page < buffer.pageCount; page++)
+		entries[firstPage + page] = scratchPte;
+	status_t status = FlushPpgttCacheRange(entries + firstPage,
+		buffer.pageCount * sizeof(uint32));
+	for (uint32 page = 0; status == B_OK && page < buffer.pageCount; page++) {
+		if (entries[firstPage + page] != scratchPte)
+			status = B_IO_ERROR;
+	}
+	if (status != B_OK)
+		QuarantinePpgtt(client, &buffer, "failed physical eviction mapping");
+	return status;
+}
+
+
+status_t
+RestoreRenderBufferPpgtt(ValleyViewClient& client,
+	ValleyViewRenderBuffer& buffer)
+{
+	ValleyViewPpgttState& state = client.ppgtt;
+	const uint32 firstPage = buffer.ppgttOffset
+		/ valleyview::kPpgttPageBytes;
+	if (buffer.physicalPages == NULL || !HasPpgttResources(state)
+		|| !valleyview::ValidatePpgttVaRange(buffer.ppgttOffset, buffer.size)
+		|| buffer.pageCount > valleyview::kPpgttPageCount - firstPage) {
+		return B_BAD_VALUE;
+	}
+
+	uint32 scratchPte;
+	if (!GetPpgttScratchPte(state, scratchPte))
+		return B_BAD_DATA;
+	uint32* const entries = PpgttEntries(state);
+	for (uint32 page = 0; page < buffer.pageCount; page++) {
+		bool allocated;
+		uint32 ignored;
+		if (!valleyview::GetPpgttBitmapBit(state.bitmap,
+				valleyview::kPpgttBitmapBytes, firstPage + page, allocated)
+			|| !allocated || entries[firstPage + page] != scratchPte
+			|| !valleyview::EncodePpgttDataPte(buffer.physicalPages[page],
+				true, true, ignored)) {
+			QuarantinePpgtt(client, &buffer,
+				"unexpected scratch PTE during reload");
+			return B_IO_ERROR;
+		}
+	}
+
+	for (uint32 page = 0; page < buffer.pageCount; page++) {
+		valleyview::EncodePpgttDataPte(buffer.physicalPages[page],
+			true, true, entries[firstPage + page]);
+	}
+	status_t status = FlushPpgttCacheRange(entries + firstPage,
+		buffer.pageCount * sizeof(uint32));
+	for (uint32 page = 0; status == B_OK && page < buffer.pageCount; page++) {
+		uint32 expected;
+		if (!valleyview::EncodePpgttDataPte(buffer.physicalPages[page],
+				true, true, expected)
+			|| entries[firstPage + page] != expected) {
+			status = B_IO_ERROR;
+		}
+	}
+	if (status == B_OK)
+		return B_OK;
+
+	for (uint32 page = 0; page < buffer.pageCount; page++)
+		entries[firstPage + page] = scratchPte;
+	bool restored = FlushPpgttCacheRange(entries + firstPage,
+		buffer.pageCount * sizeof(uint32)) == B_OK;
+	for (uint32 page = 0; restored && page < buffer.pageCount; page++)
+		restored = entries[firstPage + page] == scratchPte;
+	if (!restored)
+		QuarantinePpgtt(client, &buffer, "failed physical reload rollback");
+	return status;
+}
+
+
+status_t
 ClearRenderBufferPpgtt(ValleyViewClient& client,
 	ValleyViewRenderBuffer& buffer)
 {
@@ -380,10 +518,15 @@ ClearRenderBufferPpgtt(ValleyViewClient& client,
 			QuarantinePpgtt(client, &buffer, "unowned buffer mapping");
 			return B_BAD_DATA;
 		}
-		uint32 expected;
-		if (!valleyview::EncodePpgttDataPte(buffer.physicalPages[page],
-				true, true, expected)
-			|| entries[firstPage + page] != expected) {
+		uint32 expected = scratchPte;
+		if (buffer.resident
+			&& (buffer.physicalPages == NULL
+				|| !valleyview::EncodePpgttDataPte(
+					buffer.physicalPages[page], true, true, expected))) {
+			QuarantinePpgtt(client, &buffer, "invalid resident backing");
+			return B_BAD_DATA;
+		}
+		if (entries[firstPage + page] != expected) {
 			QuarantinePpgtt(client, &buffer, "unexpected mapped PTE");
 			return B_IO_ERROR;
 		}
@@ -415,9 +558,137 @@ ClearRenderBufferPpgtt(ValleyViewClient& client,
 
 
 status_t
+EvictRenderBufferBacking(ValleyViewClient& client,
+	ValleyViewRenderBuffer& buffer)
+{
+	if (!valleyview::CanEvictRenderBuffer(buffer.resident,
+			buffer.quarantined, buffer.queuedReferenceCount, buffer.domain,
+			buffer.ggttOffset)
+		|| buffer.ppgttOffset == valleyview::kInvalidRenderPpgttOffset) {
+		return B_BUSY;
+	}
+
+	status_t status = ReplaceRenderBufferPpgttWithScratch(client, buffer);
+	if (status != B_OK)
+		return status;
+	status = unlock_memory(buffer.address, buffer.size,
+		kRenderMemoryLockFlags);
+	if (status != B_OK) {
+		QuarantinePpgtt(client, &buffer, "partial physical eviction");
+		return status;
+	}
+
+	free(buffer.savedPtes);
+	free(buffer.physicalPages);
+	buffer.savedPtes = NULL;
+	buffer.physicalPages = NULL;
+	buffer.resident = false;
+	client.residentBytes -= buffer.size;
+	ValleyViewDevice& device = *client.device;
+	device.renderPhysicalResidentBytes -= buffer.size;
+	device.renderPhysicalEvictions++;
+	return B_OK;
+}
+
+
+status_t
+EnsureClientResidentBudget(ValleyViewClient& client, uint64 requiredBytes)
+{
+	if (requiredBytes > valleyview::kRenderResidentBudgetBytes)
+		return B_NO_MEMORY;
+
+	while (client.residentBytes
+			> valleyview::kRenderResidentBudgetBytes - requiredBytes) {
+		ValleyViewRenderBuffer* candidate = NULL;
+		for (ValleyViewRenderBuffer* buffer = client.buffers;
+				buffer != NULL; buffer = buffer->next) {
+			if (!valleyview::CanEvictRenderBuffer(buffer->resident,
+					buffer->quarantined, buffer->queuedReferenceCount,
+					buffer->domain, buffer->ggttOffset)) {
+				continue;
+			}
+			if (candidate == NULL
+				|| buffer->residencySerial < candidate->residencySerial) {
+				candidate = buffer;
+			}
+		}
+		if (candidate == NULL)
+			return B_NO_MEMORY;
+		status_t status = EvictRenderBufferBacking(client, *candidate);
+		if (status != B_OK)
+			return status;
+	}
+	return B_OK;
+}
+
+
+status_t
+MakeRenderBufferResident(ValleyViewClient& client,
+	ValleyViewRenderBuffer& buffer)
+{
+	if (buffer.resident) {
+		buffer.residencySerial = ++client.residencySerial;
+		return B_OK;
+	}
+	if (buffer.quarantined
+		|| buffer.ppgttOffset == valleyview::kInvalidRenderPpgttOffset) {
+		return B_BAD_VALUE;
+	}
+
+	status_t status = EnsureClientResidentBudget(client, buffer.size);
+	if (status != B_OK)
+		return status;
+	status = lock_memory(buffer.address, buffer.size,
+		kRenderMemoryLockFlags);
+	if (status != B_OK)
+		return status;
+
+	buffer.physicalPages = static_cast<uint64*>(
+		malloc(buffer.pageCount * sizeof(uint64)));
+	buffer.savedPtes = static_cast<uint32*>(
+		malloc(buffer.pageCount * sizeof(uint32)));
+	if (buffer.physicalPages == NULL || buffer.savedPtes == NULL)
+		status = B_NO_MEMORY;
+	else
+		status = BuildPhysicalPageList(buffer);
+	if (status == B_OK)
+		status = RestoreRenderBufferPpgtt(client, buffer);
+	if (status != B_OK) {
+		if (buffer.quarantined) {
+			buffer.resident = true;
+			client.residentBytes += buffer.size;
+			client.device->renderPhysicalResidentBytes += buffer.size;
+			return status;
+		}
+		free(buffer.savedPtes);
+		free(buffer.physicalPages);
+		buffer.savedPtes = NULL;
+		buffer.physicalPages = NULL;
+		unlock_memory(buffer.address, buffer.size, kRenderMemoryLockFlags);
+		return status;
+	}
+
+	buffer.resident = true;
+	buffer.residencySerial = ++client.residencySerial;
+	client.residentBytes += buffer.size;
+	ValleyViewDevice& device = *client.device;
+	device.renderPhysicalResidentBytes += buffer.size;
+	if (device.renderPhysicalResidentBytes
+			> device.renderPhysicalResidentMaxBytes) {
+		device.renderPhysicalResidentMaxBytes
+			= device.renderPhysicalResidentBytes;
+	}
+	device.renderPhysicalReloads++;
+	return B_OK;
+}
+
+
+status_t
 ReleaseClientRenderBuffer(ValleyViewClient& client,
 	ValleyViewRenderBuffer* buffer)
 {
+	const bool resident = buffer->resident;
+	const uint64 size = buffer->size;
 	status_t status = B_OK;
 	if (client.ppgtt.quarantined) {
 		status = B_NOT_ALLOWED;
@@ -428,6 +699,10 @@ ReleaseClientRenderBuffer(ValleyViewClient& client,
 			buffer->quarantined = true;
 	}
 	status_t backingStatus = ReleaseRenderBufferBacking(*client.device, buffer);
+	if (resident && backingStatus == B_OK) {
+		client.residentBytes -= size;
+		client.device->renderPhysicalResidentBytes -= size;
+	}
 	return status != B_OK ? status : backingStatus;
 }
 
@@ -497,7 +772,7 @@ InitializeRenderSubmitResult(valleyview::RenderSubmit& submit)
 	const uint32 batchOffset = submit.batchOffset;
 	const uint32 batchLength = submit.batchLength;
 	const uint32 objectCount = submit.objectCount;
-	uint32 objectHandles[valleyview::kRenderMaxClientBuffers];
+	uint32 objectHandles[valleyview::kRenderSubmitMaxObjects];
 	memcpy(objectHandles, submit.objectHandles, sizeof(objectHandles));
 
 	memset(&submit, 0, sizeof(submit));
@@ -515,6 +790,7 @@ InitializeRenderSubmitResult(valleyview::RenderSubmit& submit)
 	submit.parserFailingDword
 		= valleyview::kRenderCommandInvalidDword;
 	submit.resetStatus = B_NO_INIT;
+	submit.persistentStatus = B_NO_INIT;
 	submit.ringRestoreStatus = B_NO_INIT;
 	submit.cacheRestoreStatus = B_NO_INIT;
 	submit.ppgttControlRestoreStatus = B_NO_INIT;
@@ -526,7 +802,8 @@ InitializeRenderSubmitResult(valleyview::RenderSubmit& submit)
 status_t
 PrepareRcsSubmissionWorkspace(ValleyViewRenderBuffer& workspace,
 	const void* batchData, uint32 ppDirBase,
-	valleyview::RenderSubmit& submit)
+	valleyview::RenderSubmit& submit, bool preserveHardwareContext,
+	bool switchContext = true, bool restoreInhibit = true)
 {
 	if (workspace.address == NULL
 		|| workspace.size != valleyview::kRcsSubmitWorkspaceBytes
@@ -535,7 +812,12 @@ PrepareRcsSubmissionWorkspace(ValleyViewRenderBuffer& workspace,
 	}
 
 	uint8* const memory = static_cast<uint8*>(workspace.address);
-	memset(memory, 0, workspace.size);
+	const size_t contextOffset
+		= valleyview::kRcsSubmitContextPage * valleyview::kPageSize;
+	// The inhibited switch still makes this the active hardware context image.
+	// Keep its saved bytes intact until ownership is released or reset.
+	memset(memory, 0, preserveHardwareContext
+		? contextOffset : workspace.size);
 	uint8* const batch = memory
 		+ valleyview::kRcsSubmitBatchPage * valleyview::kPageSize;
 	memcpy(batch, batchData, submit.batchLength);
@@ -576,8 +858,11 @@ PrepareRcsSubmissionWorkspace(ValleyViewRenderBuffer& workspace,
 			+ valleyview::kRcsSubmitResultPage * valleyview::kPageSize,
 		submit.hardwareContextOffset,
 		ppDirBase,
-		submit.completionMarker);
-	if (ringCount != valleyview::kRcsSubmitRingCommandCount)
+		submit.completionMarker, switchContext, restoreInhibit);
+	const size_t expectedRingCount = switchContext
+		? valleyview::kRcsSubmitRingCommandCount
+		: valleyview::kRcsSubmitRingNoSwitchCommandCount;
+	if (ringCount != expectedRingCount)
 		return B_BAD_DATA;
 	submit.ringTailBytes
 		= static_cast<uint32>(ringCount * sizeof(uint32));
@@ -695,10 +980,17 @@ ReleasePpgttResources(ValleyViewClient& client)
 	}
 
 	status_t status = B_OK;
+	if (state.submissionBuffer != NULL) {
+		ValleyViewRenderBuffer* buffer = state.submissionBuffer;
+		state.submissionBuffer = NULL;
+		status = ReleaseRenderBufferBacking(device, buffer);
+	}
 	if (state.directoryBuffer != NULL) {
 		ValleyViewRenderBuffer* buffer = state.directoryBuffer;
 		state.directoryBuffer = NULL;
-		status = ReleaseRenderBufferBacking(device, buffer);
+		status_t directoryStatus = ReleaseRenderBufferBacking(device, buffer);
+		if (status == B_OK)
+			status = directoryStatus;
 	}
 	if (state.scratchBuffer != NULL) {
 		ValleyViewRenderBuffer* buffer = state.scratchBuffer;
@@ -711,6 +1003,7 @@ ReleasePpgttResources(ValleyViewClient& client)
 	state.bitmap = NULL;
 	state.ppDirBase = 0;
 	state.quarantined = false;
+	state.hardwareContextGeneration = 0;
 	return status;
 }
 
@@ -767,6 +1060,14 @@ ValleyViewRenderBuffer*
 FindClientRenderBuffer(ValleyViewClient& client, uint32 handle)
 {
 	return FindRenderBuffer(client, handle);
+}
+
+
+status_t
+EnsureRenderBufferResident(ValleyViewClient& client,
+	ValleyViewRenderBuffer& buffer)
+{
+	return MakeRenderBufferResident(client, buffer);
 }
 
 
@@ -865,6 +1166,16 @@ CreateRenderContext(ValleyViewClient& client,
 		status = InitializePpgttTables(state);
 	if (status == B_OK)
 		status = BindRenderBufferGgtt(device, *state.directoryBuffer);
+	if (status == B_OK) {
+		status = AllocatePpgttBuffer(valleyview::kRcsSubmitWorkspaceBytes,
+			"intel_valleyview persistent RCS context",
+			kValleyViewRenderGgttData,
+			valleyview::kPpgttDirectoryAlignment
+				/ valleyview::kPpgttPageBytes,
+			state.submissionBuffer);
+	}
+	if (status == B_OK)
+		status = BindRenderBufferGgtt(device, *state.submissionBuffer);
 	if (status == B_OK
 		&& !valleyview::EncodePpgttDirectoryBase(
 			state.directoryBuffer->ggttOffset, device.snapshot.gmadrSize,
@@ -909,7 +1220,21 @@ DestroyRenderContext(ValleyViewClient& client,
 	const bool queueBusy = client.activeJob != NULL
 		|| client.queueHead != NULL;
 	mutex_unlock(&device.renderQueueLock);
-	request.status = queueBusy
+	UnlockRenderDevice(device);
+	if (queueBusy) {
+		request.status = B_BUSY;
+		return request.status;
+	}
+	request.status = ReleasePersistentRcsClient(client);
+	if (request.status != B_OK)
+		return request.status;
+
+	LockRenderDevice(device);
+	mutex_lock(&device.renderQueueLock);
+	const bool becameBusy = client.activeJob != NULL
+		|| client.queueHead != NULL;
+	mutex_unlock(&device.renderQueueLock);
+	request.status = becameBusy
 		? B_BUSY : DestroyPpgttContextLocked(client, request.handle);
 	UnlockRenderDevice(device);
 	return request.status;
@@ -942,11 +1267,19 @@ SubmitRenderCommands(ValleyViewClient& client,
 	}
 
 	ValleyViewDevice& device = *client.device;
+	if (resetAfterSubmission) {
+		status_t ownershipStatus = ReleasePersistentRcsOwnership(device);
+		if (ownershipStatus != B_OK) {
+			submit.status = ownershipStatus;
+			return ownershipStatus;
+		}
+	}
 	LockRenderDevice(device);
 	status_t status = B_OK;
 	bool executed = false;
+	const bool persistent = !resetAfterSubmission;
 	ValleyViewRenderBuffer* workspace = NULL;
-	ValleyViewRenderBuffer* objects[valleyview::kRenderMaxClientBuffers] = {};
+	ValleyViewRenderBuffer* objects[valleyview::kRenderSubmitMaxObjects] = {};
 	if (!device.nativeActive || device.registers == NULL || device.gpuFaulted
 		|| device.p0MemoryQuarantined || device.renderMemoryQuarantined
 		|| !device.rcsReady) {
@@ -971,6 +1304,10 @@ SubmitRenderCommands(ValleyViewClient& client,
 			break;
 		}
 		objects[index] = buffer;
+		status = MakeRenderBufferResident(client, *buffer);
+		if (status != B_OK)
+			break;
+		buffer->domain = valleyview::kRenderDomainRcs;
 		if (buffer->handle == submit.batchHandle)
 			batchBuffer = buffer;
 	}
@@ -985,7 +1322,15 @@ SubmitRenderCommands(ValleyViewClient& client,
 		submit.stage = valleyview::kRenderSubmitStageObjectsOwned;
 	}
 
-	if (status == B_OK) {
+	if (status == B_OK && persistent) {
+		workspace = client.ppgtt.submissionBuffer;
+		if (workspace == NULL || workspace->quarantined
+			|| workspace->ggttOffset
+				== valleyview::kInvalidRenderGgttOffset) {
+			status = B_NO_INIT;
+		}
+	}
+	if (status == B_OK && !persistent) {
 		status = AllocatePpgttBuffer(valleyview::kRcsSubmitWorkspaceBytes,
 			"intel_valleyview RCS submission",
 			kValleyViewRenderGgttData,
@@ -993,7 +1338,7 @@ SubmitRenderCommands(ValleyViewClient& client,
 				/ valleyview::kPpgttPageBytes,
 			workspace);
 	}
-	if (status == B_OK)
+	if (status == B_OK && !persistent)
 		status = BindRenderBufferGgtt(device, *workspace);
 	if (status == B_OK) {
 		const void* batchData = immutableBatch != NULL
@@ -1010,8 +1355,16 @@ SubmitRenderCommands(ValleyViewClient& client,
 		submit.sequence = device.rcsSubmitSequence;
 		submit.completionMarker = valleyview::kRcsSubmitMarkerBase
 			| (submit.sequence & 0x00ffffff);
+		const bool contextInitialized = persistent
+			&& device.rcsPersistentGeneration != 0
+			&& client.ppgtt.hardwareContextGeneration
+				== device.rcsPersistentGeneration;
+		const bool switchContext = !persistent
+			|| !device.rcsPersistentState.owned
+			|| device.rcsPersistentState.owner != client.persistentId;
 		status = PrepareRcsSubmissionWorkspace(*workspace, batchData,
-			client.ppgtt.ppDirBase, submit);
+			client.ppgtt.ppDirBase, submit, contextInitialized,
+			switchContext, !contextInitialized);
 	}
 	if (status == B_OK && !device.rcsSubmissionReady
 		&& (submit.batchLength != sizeof(uint32)
@@ -1023,14 +1376,15 @@ SubmitRenderCommands(ValleyViewClient& client,
 	}
 
 	if (status == B_OK) {
-		for (uint32 index = 0; index < submit.objectCount; index++)
-			objects[index]->domain = valleyview::kRenderDomainRcs;
 		memory_write_barrier();
 		mutex_unlock(&device.renderLock);
 		mutex_lock(&device.presentLock);
 		executed = true;
-		status = ExecuteRcsSubmission(device, *workspace,
-			client.ppgtt.ppDirBase, submit, resetAfterSubmission);
+		status = persistent
+			? ExecutePersistentRcsSubmission(client, *workspace,
+				client.ppgtt.ppDirBase, submit)
+			: ExecuteRcsSubmission(device, *workspace,
+				client.ppgtt.ppDirBase, submit, true);
 		mutex_unlock(&device.presentLock);
 		mutex_lock(&device.renderLock);
 	}
@@ -1049,7 +1403,7 @@ SubmitRenderCommands(ValleyViewClient& client,
 		memory_read_barrier();
 	}
 
-	if (workspace != NULL) {
+	if (workspace != NULL && !persistent) {
 		status_t workspaceStatus = ReleaseRenderBufferBacking(device,
 			workspace);
 		workspace = NULL;
@@ -1059,6 +1413,14 @@ SubmitRenderCommands(ValleyViewClient& client,
 		} else if (status == B_OK)
 			status = workspaceStatus;
 	}
+	if (workspace != NULL && persistent && status == B_OK) {
+		client.ppgtt.hardwareContextGeneration
+			= device.rcsPersistentGeneration;
+		submit.diagnosticFlags
+			|= valleyview::kRenderSubmitWorkspaceRestored;
+	}
+	if (persistent && status != B_OK)
+		client.ppgtt.hardwareContextGeneration = 0;
 
 	if (executed) {
 		device.rcsSubmissions++;
@@ -1104,6 +1466,11 @@ CreateRenderBuffer(ValleyViewClient& client,
 		UnlockRenderDevice(device);
 		return B_NO_MEMORY;
 	}
+	status_t status = EnsureClientResidentBudget(client, size);
+	if (status != B_OK) {
+		UnlockRenderDevice(device);
+		return status;
+	}
 
 	ValleyViewRenderBuffer* buffer = static_cast<ValleyViewRenderBuffer*>(
 		calloc(1, sizeof(ValleyViewRenderBuffer)));
@@ -1129,9 +1496,17 @@ CreateRenderBuffer(ValleyViewClient& client,
 		return B_NO_MEMORY;
 	}
 
-	status_t status = AllocateRenderMemory(*buffer);
-	if (status == B_OK)
-		status = BindRenderBufferGgtt(device, *buffer);
+	status = AllocateRenderMemory(*buffer);
+	if (status == B_OK) {
+		buffer->residencySerial = ++client.residencySerial;
+		client.residentBytes += size;
+		device.renderPhysicalResidentBytes += size;
+		if (device.renderPhysicalResidentBytes
+				> device.renderPhysicalResidentMaxBytes) {
+			device.renderPhysicalResidentMaxBytes
+				= device.renderPhysicalResidentBytes;
+		}
+	}
 	if (status == B_OK && client.ppgtt.ready)
 		status = MapRenderBufferPpgtt(client, *buffer);
 	if (status != B_OK) {
@@ -1313,14 +1688,20 @@ SubmitRenderDirectPresent(ValleyViewClient& client,
 	ValleyViewRenderBuffer* buffer = FindRenderBuffer(client,
 		request.sourceHandle);
 	status_t status = B_OK;
+	bool boundForPresent = false;
 	if (buffer == NULL || buffer->quarantined
 		|| (buffer->closePending && !queued)
 		|| (!queued && buffer->queuedReferenceCount != 0)
 		|| buffer->domain != valleyview::kRenderDomainCpu
-		|| buffer->ggttOffset == valleyview::kInvalidRenderGgttOffset
 		|| request.sourceOffset > buffer->size
 		|| sourceBytes > buffer->size - request.sourceOffset) {
 		status = B_BAD_VALUE;
+	}
+	if (status == B_OK
+		&& (status = MakeRenderBufferResident(client, *buffer)) == B_OK
+		&& buffer->ggttOffset == valleyview::kInvalidRenderGgttOffset) {
+		status = BindRenderBufferGgtt(device, *buffer);
+		boundForPresent = status == B_OK;
 	}
 	if (status == B_OK)
 		buffer->domain = valleyview::kRenderDomainBcs;
@@ -1334,7 +1715,16 @@ SubmitRenderDirectPresent(ValleyViewClient& client,
 		mutex_unlock(&device.presentLock);
 
 		mutex_lock(&device.renderLock);
-		buffer->domain = valleyview::kRenderDomainCpu;
+		if (device.gpuFaulted || device.renderMemoryQuarantined) {
+			buffer->quarantined = true;
+		} else {
+			buffer->domain = valleyview::kRenderDomainCpu;
+		}
+		if (boundForPresent && !buffer->quarantined) {
+			status_t evictionStatus = UnbindRenderBufferGgtt(device, *buffer);
+			if (status == B_OK)
+				status = evictionStatus;
+		}
 		mutex_unlock(&device.renderLock);
 	}
 	if (status == B_OK)
@@ -1377,6 +1767,8 @@ RunRenderMemoryTest(ValleyViewClient& client,
 	ValleyViewRenderBuffer* destination = FindRenderBuffer(client,
 		destinationHandle);
 	status_t status = B_OK;
+	bool sourceBound = false;
+	bool destinationBound = false;
 	if (!device.nativeActive || device.gpuFaulted
 		|| device.p0MemoryQuarantined || device.renderMemoryQuarantined) {
 		status = B_NO_INIT;
@@ -1388,6 +1780,10 @@ RunRenderMemoryTest(ValleyViewClient& client,
 		|| destination->domain != valleyview::kRenderDomainCpu) {
 		status = B_BAD_VALUE;
 	}
+	if (status == B_OK)
+		status = MakeRenderBufferResident(client, *source);
+	if (status == B_OK)
+		status = MakeRenderBufferResident(client, *destination);
 
 	if (status == B_OK
 		&& FindRenderTestMismatch(static_cast<const uint32*>(source->address),
@@ -1401,6 +1797,16 @@ RunRenderMemoryTest(ValleyViewClient& client,
 			valleyview::kRenderMemoryTestWords, seed, true,
 			test.mismatchOffset, test.observed)) {
 		status = B_BAD_DATA;
+	}
+	if (status == B_OK
+		&& source->ggttOffset == valleyview::kInvalidRenderGgttOffset) {
+		status = BindRenderBufferGgtt(device, *source);
+		sourceBound = status == B_OK;
+	}
+	if (status == B_OK
+		&& destination->ggttOffset == valleyview::kInvalidRenderGgttOffset) {
+		status = BindRenderBufferGgtt(device, *destination);
+		destinationBound = status == B_OK;
 	}
 	if (status == B_OK) {
 		test.stage = valleyview::kRenderMemoryTestInputsVerified;
@@ -1432,6 +1838,16 @@ RunRenderMemoryTest(ValleyViewClient& client,
 	}
 	if (status == B_OK)
 		test.stage = valleyview::kRenderMemoryTestOutputVerified;
+	if (destinationBound && !destination->quarantined) {
+		status_t evictionStatus = UnbindRenderBufferGgtt(device, *destination);
+		if (status == B_OK)
+			status = evictionStatus;
+	}
+	if (sourceBound && !source->quarantined) {
+		status_t evictionStatus = UnbindRenderBufferGgtt(device, *source);
+		if (status == B_OK)
+			status = evictionStatus;
+	}
 
 	device.renderMemoryTests++;
 	if (status != B_OK)

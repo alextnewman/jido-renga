@@ -114,3 +114,47 @@ Preserve that baseline while adding the nonblocking latest-frame queue.
 The version 12 Winky baseline is an eight-request single-BO burst at queue depth
 six with seven same-stream drops, 1–16 us ioctl latency, ordered successful
 retirement, and no fallback. Preserve it alongside the 18/18 direct matrix.
+
+For the version 14 B+D+E candidate, `--p2-lab` must run the persistent
+two-client switch/fault probe and residency probe before one Safe, one queued,
+and 24 direct semantic cases. Require no healthy resets, a nonzero switch/reuse
+count, one fault reset, no restore failure, balanced lazy GGTT binds/evictions,
+and stable data for 112 MiB across 81 BOs. Treat physical backing as locked;
+do not call this physical-page eviction.
+
+Persistent ownership includes the render/media forcewake and GT-wake reference.
+BCS borrows it under `bcsLock`; release it only after reset-to-baseline on
+fault, Safe handoff, teardown, or final driver shutdown.
+
+The version 14 Winky baseline is 32 healthy jobs, 31 switches, zero healthy
+resets, one recovered fault reset, zero restore failures, 112 MiB across 81
+stable-VA BOs, balanced lazy GGTT residency, and 24/24 semantic direct cases.
+Do not describe this as physical-page eviction or broad CTS conformance.
+
+For the completed version 15 engine, user BO areas are pageable and each
+client may wire at most 96 MiB for GPU access. Evict only idle CPU-domain BOs
+with no queued reference or GGTT binding. Replace and flush their complete
+stable PPGTT range with scratch before unwiring; on reload, wire first, rebuild
+the physical list, and restore that same range. Any partial unwire or uncertain
+PTE transition quarantines the context. Internal PPGTT, ring, HWS, and hardware
+context resources remain permanently wired and outside this budget.
+
+The version 15 `--p2-lab` gate requires physical eviction, at least two
+reloads, an RCS write through a reloaded stable PPGTT VA, a 96-MiB residency
+ceiling, and baseline physical residency after close. It then runs all 32
+isolated direct cases, including pixel-verified blending, scissoring, mipmapped
+and cube textures, readback, element-buffer drawing, four-sample FBO resolve,
+and the explicit OpenGL 3.1/GLSL 1.40 limit gate. Do not substitute
+allocation-only feature checks or describe it as Piglit/CTS certification.
+
+Keep window color and staging resources linear for direct presentation. Do not
+force multisample render targets linear: Gen7 requires them tiled and Crocus
+uses their MCS metadata for resolve. This private layout does not advertise an
+external tiled modifier.
+
+The version 15 Winky baseline is 32 healthy two-client jobs without reset, one
+recovered injected fault, zero restore failures, 112 MiB across 81 stable-VA
+BOs, a 96-MiB physical high-water mark, 18 evictions, two reloads, a verified
+RCS write through reloaded PPGTT addresses, zero residual residency, and 32/32
+semantic direct cases with no launch failure. P2 is complete at this boundary;
+EGL and browser integration begin P3.

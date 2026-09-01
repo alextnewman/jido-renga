@@ -42,7 +42,7 @@ inline bool
 ValidateRenderObjectReferences(const RenderObjectReference* references,
 	uint32 count, uint32 batchHandle)
 {
-	if (references == NULL || count == 0 || count > kRenderMaxClientBuffers
+	if (references == NULL || count == 0 || count > kRenderSubmitMaxObjects
 		|| batchHandle == 0) {
 		return false;
 	}

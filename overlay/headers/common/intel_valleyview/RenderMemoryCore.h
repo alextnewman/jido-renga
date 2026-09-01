@@ -10,9 +10,10 @@
 
 namespace valleyview {
 
-constexpr uint64 kRenderMaxBufferSize = 16ull * 1024 * 1024;
-constexpr uint64 kRenderMaxClientBytes = 64ull * 1024 * 1024;
-constexpr uint32 kRenderMaxClientBuffers = kRenderSubmitMaxObjects;
+constexpr uint64 kRenderMaxBufferSize = 64ull * 1024 * 1024;
+constexpr uint64 kRenderMaxClientBytes = 256ull * 1024 * 1024;
+constexpr uint64 kRenderResidentBudgetBytes = 96ull * 1024 * 1024;
+constexpr uint32 kRenderMaxClientBuffers = 256;
 constexpr uint32 kRenderFirstGgttPage = 1;
 constexpr uint32 kInvalidRenderGgttOffset = UINT32_MAX;
 constexpr uint32 kInvalidRenderPpgttOffset = UINT32_MAX;
@@ -129,6 +130,15 @@ CanTransitionRenderBufferDomain(RenderBufferDomain current,
 		&& requested != kRenderDomainRcs
 		&& (flags & ~kRenderSupportedBufferFlags) == 0
 		&& (flags & kRenderBufferCpuCached) != 0;
+}
+
+inline bool
+CanEvictRenderBuffer(bool resident, bool quarantined, uint32 queuedReferences,
+	RenderBufferDomain domain, uint32 ggttOffset)
+{
+	return resident && !quarantined && queuedReferences == 0
+		&& domain == kRenderDomainCpu
+		&& ggttOffset == kInvalidRenderGgttOffset;
 }
 
 

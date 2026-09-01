@@ -484,6 +484,10 @@ Control(void* cookie, uint32 operation, void* buffer, size_t length)
 			info.graphicsGeneration = 7;
 			info.gpuAddressBits = 32;
 			info.pageSize = valleyview::kPageSize;
+			info.maxBufferSize = valleyview::kRenderMaxBufferSize;
+			info.maxClientBytes = valleyview::kRenderMaxClientBytes;
+			info.maxClientBuffers = valleyview::kRenderMaxClientBuffers;
+			info.maxSubmitObjects = valleyview::kRenderSubmitMaxObjects;
 			info.capabilities = valleyview::kRenderCapabilityDeviceInfo;
 
 			mutex_lock(&device->lock);
@@ -517,7 +521,9 @@ Control(void* cookie, uint32 operation, void* buffer, size_t length)
 						if (device->renderQueueReady) {
 							info.capabilities
 								|= valleyview::kRenderCapabilityQueuedSubmission
-									| valleyview::kRenderCapabilityTimelineFences;
+									| valleyview::kRenderCapabilityTimelineFences
+									| valleyview::
+										kRenderCapabilityPersistentRcsContext;
 						}
 						info.submissionEngines
 							|= valleyview::kRenderEngineRcs;

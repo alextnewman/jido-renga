@@ -191,10 +191,11 @@ range, saves every displaced scratch entry, installs snooped writable PTEs, and
 verifies both installation and exact restoration. Buffer pages are quarantined
 rather than freed if restoration cannot be proven.
 
-Buffers are write-back CPU mappings with snooped GGTT entries. Color, staging,
-batch, and state resources are linear. Depth and stencil BOs expose only their
-raw hardware layout to the CPU; Crocus does not advertise a logically detiled
-mapping. Mappings are non-transferable kernel areas revoked when their handle
+Buffers are write-back CPU mappings with snooped GGTT entries. Single-sample
+color, staging, batch, and state resources are linear. Multisample render
+targets use the hardware-required tiled layout; depth and stencil BOs expose
+only their raw hardware layout to the CPU. Crocus does not advertise a
+logically detiled mapping. Mappings are non-transferable kernel areas revoked when their handle
 or client closes. Teardown detaches every inherited clone from the backing cache
 before releasing BO accounting, so forked mappings cannot retain pinned pages.
 Their tracked domains are CPU, the kernel-owned BCS, and synchronous RCS
@@ -303,8 +304,8 @@ vertex regions, triangle edge positions and widths at six rows, representative
 interpolation samples, and an untouched 8,304-dword allocation guard. The
 checksum and every count remain in probe output for offline diagnosis.
 
-This remains a host-validated hardware candidate until the combined Winky run,
-but it uses the same transport as the installed Crocus screen.
+The combined Winky run hardware-validates this corpus through the same transport
+used by the installed Crocus screen.
 
 ### Haiku Crocus renderer
 
@@ -327,9 +328,10 @@ display-list save BOs at 4 MiB, and uses direct transfer records plus atomic
 Mesa-internal locks for texture upload and sampler validation.
 
 The HGL frontend creates the Crocus screen directly from
-`/dev/misc/intel_valleyview_probe`. Color and staging resources remain linear;
-Gen7 depth uses Y tiling and separate stencil uses W tiling as required by the
-hardware. `flush_frontbuffer` maps only the retired linear color resource,
+`/dev/misc/intel_valleyview_probe`. Single-sample color and staging resources
+remain linear; Gen7 multisample color and depth use tiled layouts and separate
+stencil uses W tiling as required by the hardware. `flush_frontbuffer` maps
+only the retired linear single-sample color resource,
 copies it into a Haiku `BBitmap`, and hands it to the existing `BGLRenderer`
 clipping/direct-mode presentation path. The screen therefore reaches the
 P0-backed desktop without exposing overlay paths or GPU mappings at runtime. If
@@ -379,7 +381,7 @@ keeps this Safe GL path as a separately selectable recovery mode while moving
 healthy work to queued timelines, persistent contexts, and fence-aware direct
 presentation. EGL remains outside that phase.
 
-Render protocol version 12 carries the P2 lab queue: immutable enqueue, explicit
+Render protocol version 15 carries the P2 lab queue: immutable enqueue, explicit
 BO access, 64-bit timeline waits, completion dequeue, `select()` readiness,
 bounded per-client/device depth, a round-robin kernel worker, and complete
 submission-cleanup status in each completion record. Failed retired fences are
@@ -405,6 +407,48 @@ or BCS. It preserves BO lifetime through BCS completion and coalesces obsolete
 queued frames per window. Winky proves bounded 1–16 us present ioctls, queue
 depth six, seven same-stream drops, ordered retirement through fence 11, and
 the complete 18-case direct regression with zero failures or mapped fallback.
+
+Version 14 retains one trusted 192-KiB submission
+workspace per render context. Same-owner jobs reuse the active context;
+initialized client switches save and restore extended state; timeout, explicit
+Safe ownership transfer, and teardown reset to the captured baseline. Metrics
+separate claims, reuses, switches, releases, fault resets, and restore failures.
+The owner holds the proven forcewake/GT-wake power reference across idle
+intervals; BCS borrows it rather than acquiring a conflicting claim.
+
+Winky proves 32 healthy persistent jobs across two clients, 31 switches, zero
+healthy resets, one injected fault reset with recovery, and zero restore
+failures. The 24-case direct corpus then completes with full retained-state
+masks on every RCS job.
+
+User BOs now keep stable PPGTT addresses without permanent GGTT mappings.
+Direct presentation and BCS tests bind them into GGTT only for the bounded copy
+and restore those PTEs immediately afterward. Reported limits are 64 MiB per
+BO, 256 MiB and 256 BOs per client, and 64 objects per submission.
+
+Protocol version 15 makes user BO areas pageable and caps pinned physical
+backing at 96 MiB per client. Eviction replaces the BO's stable PPGTT range
+with the client's scratch PTE, unwires its pages, and leaves the kernel and
+Mesa virtual mappings intact. Reload wires the same pageable data, rebuilds
+the physical-page list, restores the same PPGTT VA, and relies on the trusted
+submission wrapper's TLB invalidation before RCS access. Queued references,
+active engine domains, GGTT bindings, quarantine, and internal context
+resources are never eviction candidates. Failures roll back to scratch or
+quarantine the context; they do not expose stale physical addresses.
+
+The 112-MiB/81-BO probe now exceeds the physical budget, requires eviction and
+reload counters to advance, checks data through mappings that survive the
+unwire/re-wire cycle, and requires physical residency to return to its baseline
+after close. Winky completes this gate with 18 physical evictions, two reloads,
+an RCS marker written through the reloaded original PPGTT addresses, a
+96-MiB physical-residency high-water mark, and zero residual residency.
+
+The complete version-15 OpenGL gate also passes 32/32 process-isolated direct
+cases with zero launch failures. It asserts the Crocus OpenGL 3.1 compatibility
+profile and reported limits, then pixel-verifies blending, scissoring, mipmapped
+and cube textures, readback, element-buffer drawing, and a four-sample tiled
+renderbuffer resolve. This is the hardware-proven P2 profile boundary, not
+Piglit or CTS certification.
 
 `intel_valleyview_probe --render-memory-test` creates two client-owned buffers,
 clones both into the process, writes coordinate-dependent source and destination

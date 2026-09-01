@@ -47,6 +47,8 @@ struct ValleyViewRenderBuffer {
 	ValleyViewRenderGgttEncoding ggttEncoding;
 	valleyview::RenderBufferDomain domain;
 	uint32					queuedReferenceCount;
+	uint64					residencySerial;
+	bool					resident;
 	bool					closePending;
 	bool					quarantined;
 	ValleyViewRenderBuffer*	next;
@@ -55,10 +57,12 @@ struct ValleyViewRenderBuffer {
 struct ValleyViewPpgttState {
 	ValleyViewRenderBuffer*	directoryBuffer;
 	ValleyViewRenderBuffer*	scratchBuffer;
+	ValleyViewRenderBuffer*	submissionBuffer;
 	uint8*					bitmap;
 	uint32					ppDirBase;
 	bool					ready;
 	bool					quarantined;
+	uint32					hardwareContextGeneration;
 };
 
 struct ValleyViewRenderJob {
@@ -88,10 +92,13 @@ struct ValleyViewClient {
 	ValleyViewClient*		queueNext;
 	ValleyViewRenderBuffer*	buffers;
 	uint64					allocatedBytes;
+	uint64					residentBytes;
+	uint64					residencySerial;
 	uint32					bufferCount;
 	uint32					nextHandle;
 	uint32					contextHandle;
 	uint32					contextGeneration;
+	uint32					persistentId;
 	ValleyViewPpgttState		ppgtt;
 	valleyview::RenderClientQueueState queueState;
 	valleyview::RenderQueueMode queueMode;
@@ -226,6 +233,28 @@ struct ValleyViewDevice {
 	uint64						renderDirectPresentFailures;
 	uint64						renderDirectPresentsQueued;
 	uint64						renderDirectPresentsDropped;
+	valleyview::RcsPersistentOwnershipState rcsPersistentState;
+	ValleyViewClient*		rcsPersistentOwner;
+	valleyview::GpuRegisterSnapshot rcsPersistentGlobalBaseline;
+	valleyview::RcsRegisterSnapshot rcsPersistentRingBaseline;
+	uint32						rcsPersistentL3Baseline[3];
+	uint32						rcsPersistentPpgttBaseline[2];
+	uint64						rcsPersistentDisplayBaseline;
+	valleyview::GpuDiagnostics rcsPersistentForcewake;
+	uint64						rcsPersistentReleases;
+	uint64						rcsPersistentFaultResets;
+	uint64						rcsPersistentRestoreFailures;
+	uint32						rcsPersistentGeneration;
+	bool						rcsPersistentForcewakeHeld;
+	bool						rcsPersistentWakeChanged;
+	uint64						renderGgttBinds;
+	uint64						renderGgttEvictions;
+	uint64						renderGgttResidentBytes;
+	uint64						renderGgttResidentMaxBytes;
+	uint64						renderPhysicalEvictions;
+	uint64						renderPhysicalReloads;
+	uint64						renderPhysicalResidentBytes;
+	uint64						renderPhysicalResidentMaxBytes;
 	sem_id						renderQueueSem;
 	thread_id					renderQueueThread;
 	ValleyViewClient*		renderClients;
@@ -236,6 +265,7 @@ struct ValleyViewDevice {
 	bool						renderQueueReady;
 	uint32						bcsSequence;
 	uint32						rcsSubmitSequence;
+	uint32						nextPersistentId;
 	valleyview::FirmwareSnapshot	snapshot;
 };
 
@@ -287,6 +317,9 @@ status_t DestroyRenderContext(ValleyViewClient& client,
 status_t SubmitRenderCommands(ValleyViewClient& client,
 	valleyview::RenderSubmit& submit, const void* immutableBatch = NULL,
 	bool resetAfterSubmission = true);
+status_t ReleasePersistentRcsClient(ValleyViewClient& client);
+status_t ReleasePersistentRcsOwnership(ValleyViewDevice& device,
+	ValleyViewClient* expectedOwner = NULL, bool fault = false);
 status_t InitializeRenderQueue(ValleyViewDevice& device);
 void ShutdownRenderQueue(ValleyViewDevice& device);
 status_t RegisterRenderQueueClient(ValleyViewClient& client);
@@ -311,6 +344,8 @@ status_t DeselectRenderQueue(ValleyViewClient& client, uint8 event,
 	selectsync* sync);
 ValleyViewRenderBuffer* FindClientRenderBuffer(ValleyViewClient& client,
 	uint32 handle);
+status_t EnsureRenderBufferResident(ValleyViewClient& client,
+	ValleyViewRenderBuffer& buffer);
 void ReleaseRenderQueueReferences(ValleyViewClient& client,
 	const uint32* handles, uint32 count);
 status_t MapRenderBuffer(ValleyViewClient& client,
@@ -337,5 +372,8 @@ status_t ExecuteRcsDiagnostic(ValleyViewDevice& device,
 status_t ExecuteRcsSubmission(ValleyViewDevice& device,
 	ValleyViewRenderBuffer& workspace, uint32 ppDirBase,
 	valleyview::RenderSubmit& submit, bool resetAfterSubmission = true);
+status_t ExecutePersistentRcsSubmission(ValleyViewClient& client,
+	ValleyViewRenderBuffer& workspace, uint32 ppDirBase,
+	valleyview::RenderSubmit& submit);
 
 #endif

@@ -94,10 +94,12 @@ results are never dropped.
    retirement, and reset only on failure.
 3. **P2C — asynchronous presentation:** fence-aware frame queues and BCS direct
    presentation with no CPU readback in direct mode.
-4. **P2D — scalable memory:** residency, eviction, truthful limits, tiled color,
-   MSAA, and larger resource budgets.
-5. **P2E — conformance:** broad Piglit coverage, advertised desktop profile,
-   compatibility regression, stress, and multi-client fault recovery.
+4. **P2D — scalable memory:** stable-VA physical residency and eviction,
+   truthful limits, MSAA allocation, and larger resource budgets. Tiling is
+   advertised only if the Haiku winsys carries its metadata end to end.
+5. **P2E — conformance:** broad process-isolated GL semantics, an asserted
+   desktop profile and limits, compatibility regression, stress, and
+   multi-client fault recovery.
 
 P3 begins with EGL and a shareable offscreen/window-surface contract.
 
@@ -130,22 +132,77 @@ queued presents, 18 executed copies, seven drops, zero presentation failures,
 and zero mapped fallbacks. P0 retains its existing shadow-to-scanout worker;
 that ownership boundary is intentional.
 
-## First lab image
+P2B is hardware-proven on Winky. Two clients retired 32 healthy jobs with 31
+context switches and zero healthy resets. An injected failure caused one
+reset-to-baseline, then the client recovered; restore failures remained zero.
+Real Crocus contexts retain ring, HWS, PP_DIR, cache, saved extended state, and
+the shared power reference through rendering and BCS presentation.
 
-The P2 lab implements three runtime modes in one driver and renderer:
+The integrated P2D bootstrap is hardware-proven at 112 MiB across 81 BOs,
+including one 32-MiB allocation. Data and stable PPGTT addresses survive lazy
+GGTT residency; bind/evict counters balance and resident bytes return to zero.
+That result predates physical-page eviction.
+
+The integrated P2E corpus completes 24/24 process-isolated cases. Added coverage
+includes 32-bit indices, buffer subdata, complete FBOs, nonzero occlusion
+queries, instanced draws, and 3D textures. This is a strong feature gate, not a
+replacement for broad Piglit/CTS profile conformance.
+
+## Integrated B+D+E milestone
+
+Render protocol version 14 established the integrated milestone:
 
 - `safe`: the proven synchronous P1 transaction;
 - `queued`: immutable enqueue, timeline fence, fair kernel worker, and Safe GL
   execution on the worker;
-- `direct`: queued Safe execution plus clipped BCS copies from the retired
-  Crocus color BO into P0's framebuffer shadow.
+- `persistent`: lifetime-owned ring, HWS, trusted shadow, hardware context, and
+  PPGTT workspace with reset only on fault or ownership release; and
+- `direct`: persistent command execution plus P2C presentation.
 
-The failure-only-reset ABI value is reserved but not accepted or advertised.
-Merely omitting reset cannot restore the context state changed by
-`MI_SET_CONTEXT`; P2B must retain a kernel-owned hardware context and switch it
-explicitly. `direct` removes GPU readback, the temporary `BBitmap`, and the CPU
-direct-buffer copy, but P0 still performs its existing framebuffer-to-scanout
-copy and vblank latch.
+Initialized client switches save and restore extended context state. Adjacent
+jobs on the same owner omit redundant `MI_SET_CONTEXT`; first use remains
+restore-inhibited. Mixed Safe work explicitly releases persistent ownership
+back to the captured baseline. Persistent ownership also carries a render/media
+forcewake and GT-wake reference so ring, HWS, context, and PP_DIR state survive
+idle intervals; BCS borrows that reference under the shared engine lock.
+
+User render BOs are PPGTT-only by default. Their stable render VA survives
+lazy GGTT bind/evict cycles used by BCS presentation and diagnostics. The
+milestone raises the truthful bootstrap limits to 64 MiB per BO, 256 MiB and
+256 BOs per client, while retaining the 64-object submission bound. Physical
+pages remain locked; swapping physical backing is later P2D work and is not
+claimed by this milestone.
+
+## Completed P2 engine
+
+Render protocol version 15 closes the physical-residency and profile gates.
+User BOs use pageable areas, while a 96-MiB per-client budget bounds the pages
+wired for GPU access. Stable PPGTT VA is independent of those wires:
+
+1. LRU eviction selects only idle CPU-domain BOs with no queued reference,
+   GGTT binding, or quarantine.
+2. The complete PPGTT range is atomically checked and replaced with scratch
+   PTEs before pages are unwired.
+3. Mesa's long-lived CPU mapping remains valid because it maps the pageable
+   area rather than a disposable physical allocation.
+4. Submission or presentation re-wires the data, rebuilds its physical list,
+   restores the same PPGTT VA, and executes behind the existing trusted TLB
+   invalidation.
+5. A failed transition rolls back to scratch or quarantines the context.
+
+Internal PPGTT, ring, HWS, context, and presentation workspaces remain wired
+and are outside the client budget. Window color and staging resources remain
+linear; private multisample render targets use the Gen7-required tiled layout.
+No externally shareable tiled modifier is advertised without matching kernel
+metadata.
+
+The conformance gate contains 32 isolated cases. It retains every
+proven compatibility and recovery case and adds an explicit OpenGL 3.1/GLSL
+1.40 profile-and-limit check, alpha blending, scissoring, mipmapped and cube
+textures, readback, element-buffer indexing, and a complete four-sample FBO.
+The profile gate requires the Crocus Intel renderer, 8K 2D/cube textures, 2K
+3D textures, 16 vertex attributes, eight draw buffers, and at least four
+samples. EGL, GLES, and browser surfaces remain P3.
 
 Run the complete lab matrix with:
 
@@ -153,15 +210,25 @@ Run the complete lab matrix with:
 intel_valleyview_gl_suite --p2-lab
 ```
 
-After the queue gate has passed, the command runs one explicit Safe control,
-one queued control, and all 18 direct cases from a `BDirectWindow`. It does not
-repeat the raw queue burst, failure injection, or complete Safe/queued matrices.
-Queue captures report queue/execution latency, direct presentation results, and
-submission cleanup status. The first direct case also submits eight presentation
-requests against one retired render BO in a single swap. This bypasses normal
-render-buffer backpressure and deterministically exercises coalescing; require
-multiple queued presents, at least one dropped present, ordered fence
-retirement, and bounded enqueue time.
+The command first runs a persistent two-client switch/fault/recovery probe and
+a residency probe with 80 one-MiB BOs plus one 32-MiB BO. It then runs one Safe
+control, one queued control, and all 32 direct cases from a `BDirectWindow`.
+The first direct case retains the proven eight-request collapse burst.
+
+Require zero healthy resets, nonzero context switches and reuses, exactly one
+fault reset, zero restore failures, stable data beyond the former 64-MiB/64-BO
+limits, nonzero physical evictions and at least two reloads, physical residency
+no higher than 96 MiB with baseline restoration at teardown, balanced GGTT
+bind/evict counters, 32 semantic GL passes, P2C frame collapse, and clean
+teardown.
+
+The complete version-15 gate is hardware-proven on Winky. It retired 32
+healthy two-client jobs without a reset, recovered the injected fault with no
+restore failure, held 112 MiB across 81 BOs while limiting physical residency
+to 96 MiB, recorded 18 evictions and two reloads, wrote the expected RCS marker
+through the reloaded original PPGTT addresses, and returned physical residency
+to zero. All 32 direct semantic cases passed, including the four-sample tiled
+renderbuffer resolve, with zero launch or case failures.
 
 ## Required evidence
 
@@ -170,14 +237,15 @@ high-water marks, enqueue-to-start and start-to-retire latency, context
 switches, resets, dropped presentation frames, CPU/GPU cache transitions, and
 copy paths.
 
-P2 is not complete until:
+The P2 completion boundary requires:
 
 - two clients make bounded forward progress without cross-client access;
 - fence waits, timeouts, cancellation, close, and `select()` notification are
   deterministic;
-- the 18-case GL suite completes without a healthy-path reset;
+- the 32-case GL suite completes without a healthy-path reset and confirms the
+  advertised OpenGL 3.1 compatibility limits;
 - injected timeout and parser failures preserve P0 and Safe GL recovery;
-- GLTeapot reaches the display refresh rate in direct mode without CPU
-  frontbuffer copies; and
+- direct presentation remains nonblocking and avoids CPU frontbuffer copies;
+  and
 - all reported resource and API limits match allocations that actually
   succeed.

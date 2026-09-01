@@ -14,7 +14,7 @@ JR_TEST(intel_valleyview_render_submit, validates_bounded_batch_ranges)
 {
 	JR_CHECK_EQ(kRcsSubmitBatchPages * kPageSize,
 		kRenderCommandMaxBatchBytes);
-	JR_CHECK_EQ(kRenderSubmitMaxObjects, kRenderMaxClientBuffers);
+	JR_CHECK(kRenderSubmitMaxObjects < kRenderMaxClientBuffers);
 	JR_CHECK(ValidateRenderSubmitBatchRange(2 * kPageSize, 0, 4));
 	JR_CHECK(ValidateRenderSubmitBatchRange(2 * kPageSize, kPageSize,
 		kPageSize));
@@ -42,5 +42,5 @@ JR_TEST(intel_valleyview_render_submit, requires_unique_owned_object_handles)
 	JR_CHECK(!ValidateRenderSubmitObjectHandles(zero, 3, 7));
 	JR_CHECK(!ValidateRenderSubmitObjectHandles(duplicate, 3, 7));
 	JR_CHECK(!ValidateRenderSubmitObjectHandles(valid,
-		kRenderMaxClientBuffers + 1, 7));
+		kRenderSubmitMaxObjects + 1, 7));
 }
