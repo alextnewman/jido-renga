@@ -9,8 +9,9 @@
 # source tree is never touched):
 #
 #   <output>/UserBuildConfig — renders config/UserBuildConfig.in (substituting
-#   the absolute path to this repo). Sets JIDO_RENGA_TOP and defers the overlay
-#   SubInclude. Jamrules globs & includes this automatically.
+#   the absolute path to this repo and derivative version). Defines the branded
+#   release profile, sets JIDO_RENGA_TOP, and defers the overlay SubInclude.
+#   Jamrules globs & includes this automatically.
 #
 # The edit is wrapped in a clearly delimited marker block, so weave is
 # idempotent and never clobbers content the user keeps in that file. Revision
@@ -58,8 +59,23 @@ merge_block() {
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 JR_TOP=$(CDPATH= cd -- "$script_dir/.." && pwd -P)
 template="$JR_TOP/config/UserBuildConfig.in"
+revisionConf="$JR_TOP/config/revision.conf"
 
 [ -f "$template" ] || { echo "weave: missing template: $template" >&2; exit 1; }
+[ -f "$revisionConf" ] || {
+	echo "weave: missing revision config: $revisionConf" >&2
+	exit 1
+}
+
+JIDO_RENGA_VERSION=
+# shellcheck disable=SC1090
+. "$revisionConf"
+case "$JIDO_RENGA_VERSION" in
+	''|*[!0-9A-Za-z._-]*)
+		echo "weave: invalid JIDO_RENGA_VERSION: $JIDO_RENGA_VERSION" >&2
+		exit 1
+		;;
+esac
 
 # Pick the output dir.
 out="${1:-${HAIKU_OUTPUT_DIR:-}}"
@@ -74,9 +90,13 @@ fi
 
 out=$(CDPATH= cd -- "$out" && pwd -P)
 
-# UserBuildConfig: JIDO_RENGA_TOP + deferred overlay walk.
-userBuildConfig=$(sed -e "s|@JIDO_RENGA_TOP@|$JR_TOP|g" "$template")
+# UserBuildConfig: branded release profile, JIDO_RENGA_TOP, and overlay walk.
+userBuildConfig=$(sed \
+	-e "s|@JIDO_RENGA_TOP@|$JR_TOP|g" \
+	-e "s|@JIDO_RENGA_VERSION@|$JIDO_RENGA_VERSION|g" \
+	"$template")
 merge_block "$out/UserBuildConfig" "$GRAFT_BEGIN" "$GRAFT_END" "$userBuildConfig"
 
 echo "weave: grafted Jidō Renga into $out/UserBuildConfig"
 echo "       JIDO_RENGA_TOP = $JR_TOP"
+echo "       release-jido-renga-anyboot = jido-renga-$JIDO_RENGA_VERSION-<arch>-anyboot.iso"

@@ -99,11 +99,10 @@ cd ..
 tools/build-crocus generated.x86_64
 cd generated.x86_64
 
-# 5. (optional) Fold the selected BSP's add-ons into a bootable anyboot image
-#    instead of building them loose. The overlay composes each into haiku.hpkg
-#    and applies that BSP's declared upstream omissions without editing captive
-#    sources or package recipes.
-../tools/jr-jam -q @nightly-anyboot           # -> haiku-nightly-anyboot.iso
+# 5. Fold the selected BSP into Haiku's full release package profile. The
+#    branded profile is defined through UserBuildConfig, not captive rules.
+../tools/jr-jam -q @release-jido-renga-anyboot
+# -> jido-renga-<version>-<arch>-anyboot.iso
 
 # 6. (optional) Build the composed root package or a local repository containing
 #    only that package.
@@ -287,8 +286,8 @@ cd generated.x86_64
   intel_valleyview intel_valleyview.accelerant intel_valleyview_probe \
   jr_uvc_probe jr_uvc_collect jr_mic_probe jr_mic_collect
 
-# Compose the real package/image, not only loose add-ons.
-../tools/jr-jam -q @nightly-anyboot
+# Compose the real release package/image, not only loose add-ons.
+../tools/jr-jam -q @release-jido-renga-anyboot
 
 # Inspect the system package using the host package tool.
 package_tool=$(find objects/linux -path '*/tools/package/package' \

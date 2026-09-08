@@ -1,11 +1,11 @@
 [submodule "haiku"]
 	path = haiku
 	url = https://github.com/haiku/haiku.git
-	branch = master
+	branch = r1beta6
 [submodule "buildtools"]
 	path = buildtools
 	url = https://github.com/haiku/buildtools.git
-	branch = master
+	branch = r1beta6
 [submodule "mesa"]
 	path = mesa
 	url = https://github.com/alextnewman/mesa.git

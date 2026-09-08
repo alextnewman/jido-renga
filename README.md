@@ -25,9 +25,10 @@
 by humans and AI together.**
 
 Jidō Renga builds machine-specific Haiku support without maintaining a parallel
-Haiku fork. Haiku and its buildtools remain pinned, unmodified submodules;
-project-owned drivers are grafted into the build through an overlay, and a
-maintained Mesa fork supplies the hardware OpenGL renderer.
+Haiku fork. Haiku and its buildtools are pinned to the upstream `r1beta6`
+maintenance branches as unmodified submodules; project-owned drivers are
+grafted into the build through an overlay, and a maintained Mesa fork supplies
+the hardware OpenGL renderer.
 
 The name means "automatic linked verse." Each supported machine is one verse:
 a focused board-support package (BSP) containing the drivers and image policy
@@ -89,7 +90,7 @@ tools/weave generated.x86_64
 ```
 
 Build the Haiku development package, the maintained Crocus renderer, and the
-composed boot image:
+composed release image:
 
 ```sh
 cd generated.x86_64
@@ -97,12 +98,16 @@ cd generated.x86_64
 cd ..
 tools/build-crocus generated.x86_64
 cd generated.x86_64
-../tools/jr-jam -q @nightly-anyboot
+../tools/jr-jam -q @release-jido-renga-anyboot
 ```
 
 The bootable image is written to
-`generated.x86_64/haiku-nightly-anyboot.iso`. Flash it with the image-writing
-tool of your choice and boot the Winky from that media.
+`generated.x86_64/jido-renga-0.2.0-x86_64-anyboot.iso`. The profile uses
+Haiku's complete `release-*` package policy and official-release defines while
+the overlay composes the Winky BSP and Jidō Renga package identity. Flash it
+with the image-writing tool of your choice and boot the Winky from that media.
+
+For a smaller development image, `@nightly-anyboot` remains available.
 
 To build only the composed system package or its local repository:
 
