@@ -196,6 +196,7 @@ struct ValleyViewDevice {
 	int32						presentStatus;
 	int32						presentBcsStatus;
 	thread_id					presentThread;
+	sem_id						presentWakeSem;
 	bool						presentRunning;
 	bool						presentEnabled;
 	bool						presentUsesBcs;

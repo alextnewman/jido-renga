@@ -136,6 +136,8 @@ public:
 	HostCapabilities Capabilities() const;
 	void PowerOn(uint8_t voltage);
 	void PowerOff();
+	// Removable-media observation reads Present State directly and is separate
+	// from the command worker's cached convergence state.
 	bool CardPresent() const;
 
 	// eMMC vendor hardware reset: pulse Power Control bit 4 before CMD0 to force

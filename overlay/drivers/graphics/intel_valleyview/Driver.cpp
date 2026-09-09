@@ -398,6 +398,7 @@ InitDriver(device_node* node, void** cookie)
 	device->presentStatus = B_NO_INIT;
 	device->presentBcsStatus = B_NO_INIT;
 	device->presentThread = -1;
+	device->presentWakeSem = -1;
 	device->renderQueueSem = -1;
 	device->renderQueueThread = -1;
 	device->activeScanout = -1;

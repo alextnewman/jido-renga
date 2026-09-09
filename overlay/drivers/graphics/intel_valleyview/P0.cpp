@@ -741,7 +741,9 @@ PresentWorker(void* cookie)
 		}
 		if (!device.presentEnabled) {
 			mutex_unlock(&device.presentLock);
-			snooze(1000);
+			status_t status = acquire_sem(device.presentWakeSem);
+			if (status != B_OK && status != B_INTERRUPTED)
+				break;
 			continue;
 		}
 
@@ -819,9 +821,18 @@ StartPresentWorker(ValleyViewDevice& device)
 		mutex_unlock(&device.presentLock);
 		return B_OK;
 	}
+	device.presentWakeSem = create_sem(0, "intel_valleyview present wake");
+	if (device.presentWakeSem < B_OK) {
+		status_t status = device.presentWakeSem;
+		device.presentWakeSem = -1;
+		mutex_unlock(&device.presentLock);
+		return status;
+	}
 	const int32 live = ScanoutIndex(device,
 		ReadMmio(device, valleyview::kPlaneSurfaceLiveA));
 	if (live < 0) {
+		delete_sem(device.presentWakeSem);
+		device.presentWakeSem = -1;
 		mutex_unlock(&device.presentLock);
 		return B_BAD_DATA;
 	}
@@ -839,6 +850,8 @@ StartPresentWorker(ValleyViewDevice& device)
 		device.presentRunning = false;
 		device.presentEnabled = false;
 		device.presentStatus = status;
+		delete_sem(device.presentWakeSem);
+		device.presentWakeSem = -1;
 		mutex_unlock(&device.presentLock);
 		return status;
 	}
@@ -849,6 +862,8 @@ StartPresentWorker(ValleyViewDevice& device)
 		device.presentRunning = false;
 		device.presentEnabled = false;
 		device.presentStatus = status;
+		delete_sem(device.presentWakeSem);
+		device.presentWakeSem = -1;
 	}
 	mutex_unlock(&device.presentLock);
 	return status;
@@ -860,10 +875,13 @@ StopPresentWorker(ValleyViewDevice& device)
 {
 	mutex_lock(&device.presentLock);
 	const thread_id thread = device.presentThread;
+	const sem_id wakeSem = device.presentWakeSem;
 	device.presentRunning = false;
 	device.presentEnabled = false;
 	mutex_unlock(&device.presentLock);
 
+	if (wakeSem >= B_OK)
+		release_sem(wakeSem);
 	status_t status = B_OK;
 	if (thread >= B_OK) {
 		status_t threadResult = B_OK;
@@ -874,7 +892,10 @@ StopPresentWorker(ValleyViewDevice& device)
 
 	mutex_lock(&device.presentLock);
 	device.presentThread = -1;
+	device.presentWakeSem = -1;
 	mutex_unlock(&device.presentLock);
+	if (wakeSem >= B_OK)
+		delete_sem(wakeSem);
 	return status;
 }
 
@@ -960,7 +981,10 @@ UnblankDisplay(ValleyViewDevice& device)
 	device.pendingScanout = -1;
 	device.presentPendingTimedOut = false;
 	device.presentEnabled = true;
+	const sem_id wakeSem = device.presentWakeSem;
 	mutex_unlock(&device.presentLock);
+	if (wakeSem >= B_OK)
+		release_sem(wakeSem);
 	device.softBlanked = false;
 	ProgramCursor(device);
 	WriteMmio(device, valleyview::kPwmControlA, device.savedPwmControl);

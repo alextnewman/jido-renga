@@ -16,10 +16,9 @@ namespace jr::sdhci {
 
 
 namespace {
-	// Timed condition-variable waits cover missed interrupts without busy-spinning
-	// a controller that can wedge under aggressive polling.
+	// Timed in-command waits cover missed interrupts without busy-spinning a
+	// controller that can wedge under aggressive polling.
 	constexpr bigtime_t	kRecheckIntervalUs = 2000;			// in-command meow recheck
-	constexpr bigtime_t	kDispatchRecheckUs = 100LL * 1000;	// idle-worker recheck (~100ms)
 	// Per-attempt wall-clock budget when the command carries no timeout of its
 	// own (data commands ask for seconds via their constraints).
 	constexpr bigtime_t	kDefaultAttemptBudgetUs = 2000LL * 1000;	// ~2s
@@ -455,12 +454,13 @@ SdhciEngine::_WorkerLoop()
 		if (!fWorkerRunning)
 			break;
 
-		// Arm before checking the mailbox to close the lost-wakeup window. The
-		// timeout covers an absent interrupt.
+		// Arm before checking the mailbox to close the lost-wakeup window.
+		// Completion backstops belong inside active transactions; an idle engine
+		// sleeps until enqueue, interrupt, or shutdown explicitly wakes it.
 		ConditionVariableEntry entry;
 		fMeowCV.Add(&entry);
 		if (fMailbox.Empty() && fWorkerRunning)
-			entry.Wait(B_RELATIVE_TIMEOUT, kDispatchRecheckUs);
+			entry.Wait();
 	}
 	return 0;
 }
@@ -1108,7 +1108,8 @@ SdhciEngine::PowerOff()
 bool
 SdhciEngine::CardPresent() const
 {
-	return Has(fQuirks, Quirk::EmmcHardwareReset) || fVcState.cardInserted;
+	return Has(fQuirks, Quirk::EmmcHardwareReset)
+		|| fRegs->presentState.CardInserted();
 }
 
 

@@ -245,6 +245,10 @@ this path on Winky.
 | ISR | every controller | Filter raw status and wake worker |
 
 The eMMC ADMA2 path also uses Haiku scheduler threads.
+An idle engine worker waits indefinitely for enqueue, interrupt, or shutdown.
+Only an active transaction uses a timed completion recheck.
+The separate removable-media watcher reads the hardware Present State directly;
+it does not wake the command worker or participate in meow convergence.
 
 ## Invariants
 

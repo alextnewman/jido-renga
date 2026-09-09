@@ -84,6 +84,8 @@ Brightness control preserves the firmware PWM period. Soft DPMS serializes
 with presentation and blanks the backlight, cursor, and primary plane without
 power-cycling the panel link. Unblanking starts from a confirmed detached plane,
 populates one scanout, confirms its latch, and only then restarts presentation.
+While blanked, the presentation worker blocks on a semaphore rather than
+periodically polling disabled state.
 
 ## Render discovery and contexts
 
@@ -236,7 +238,9 @@ The driver supports Winky's:
 - PWM brightness and soft DPMS; and
 - Crocus OpenGL 3.1 compatibility rendering.
 
-The panel fitter stays in firmware AUTO mode. Presentation copies complete
-frames rather than consuming app_server damage notifications. Suspend/resume,
-other ValleyView devices, ports, pipes, display timings, EGL, and browser
-surface integration are not implemented.
+The panel fitter stays in firmware AUTO mode. While the display is active,
+presentation copies complete frames rather than consuming app_server damage
+notifications and confirms scanout latching with bounded register polling. The
+worker sleeps indefinitely while soft-blanked. Suspend/resume, other ValleyView
+devices, ports, pipes, display timings, EGL, and browser surface integration are
+not implemented.

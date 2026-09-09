@@ -127,6 +127,8 @@ mailbox body. This is a complete success response.
 IPC and period servicing are polling-based and host interrupts remain masked.
 Polling is bounded, and persistent allocation or routing failures are latched
 instead of retried on every buffer exchange.
+Stopping streams releases their DMA rings and DSP allocations, but the current
+runtime does not return the DSP, codec, or `PLT_CLK0` to a powered-down state.
 
 ## Playback
 
